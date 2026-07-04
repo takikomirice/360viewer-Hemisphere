@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>360° Viewer - Hemisphere</title>
+  <!-- Pannellum: 360度パノラマビューアライブラリ -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+  <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+  <?!= include("styles") ?>
+</head>
+<body>
+
+<!-- ローディング画面 -->
+<div id="loading">
+  <div class="loading-ring"></div>
+  <p>360° 画像を読み込んでいます...</p>
+</div>
+
+<!-- Pannellum ビューアコンテナ -->
+<div id="panorama"></div>
+
+<!-- シーン遷移オーバーレイ（暗転クロスフェード） -->
+<div id="scene-transition-overlay"></div>
+
+<!-- 2D平面マップ表示コンテナ（2Dモード時のみ表示） -->
+<div id="flat-map-container">
+  <div id="flat-map-inner"></div>
+</div>
+
+<!-- =============================================
+     UI オーバーレイ
+============================================= -->
+<div id="ui-overlay">
+
+  <!-- トップバー -->
+  <div id="topbar">
+    <div class="topbar-left">
+      <!-- アイコン: globe -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="2" y1="12" x2="22" y2="12"/>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      <span class="topbar-title">360°Viewer - Hemisphere</span>
+    </div>
+
+    <div class="topbar-right">
+      <!-- 一括入力ドロップダウン（編集モード時のみ表示） -->
+      <div id="bulk-input-group">
+        <button id="bulk-input-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="bulk-input-dropdown">
+          <span>一括入力</span>
+          <svg class="chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div id="bulk-input-dropdown" role="menu" aria-label="一括入力メニュー">
+          <button type="button" class="bulk-input-item" role="menuitem" data-action="update-dropdowns">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
+              <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
+            </svg>
+            入力用スプシのリストを更新
+          </button>
+          <button type="button" class="bulk-input-item" role="menuitem" data-action="import-student-data">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            入力用スプシを一括取り込み
+          </button>
+        </div>
+      </div>
+      <!-- 埋め込みコード生成ボタン -->
+      <button id="embed-btn" onclick="openEmbedModal()" title="埋め込みコードを表示">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+        <span>埋め込みコード</span>
+      </button>
+      <!-- 状態バッジ -->
+      <div id="mode-badge">
+        <span class="dot"></span>
+        <span id="mode-label">閲覧中</span>
+      </div>
+      <!-- モード切り替えボタン -->
+      <button id="mode-toggle" onclick="toggleMode()">
+        <svg id="toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- ペンアイコン (pencil) -->
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+        <span id="toggle-label">編集モード</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- シーン一覧サイドバー（フォルダモード時のみ表示） -->
+  <div id="scene-sidebar" class="hidden">
+    <div id="scene-sidebar-title">
+      <span>シーン一覧</span>
+      <div class="scene-sidebar-actions">
+        <button id="scene-refresh-btn" type="button" onclick="refreshSceneList()" title="シーン一覧を更新">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/>
+            <polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
+            <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
+          </svg>
+        </button>
+        <!-- 折りたたみボタン -->
+        <button id="sidebar-collapse-btn" onclick="toggleSidebar()" title="サイドバーを閉じる">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- サブフォルダ内に入ったときに表示する「戻る」ボタン -->
+    <button id="sidebar-back-btn" onclick="goBackFolder()">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+      <span id="sidebar-back-label">← 戻る</span>
+    </button>
+    <button id="upload-btn" onclick="openUploadModal()" title="写真をアップロード">⬆ 写真をアップロード</button>
+    <button id="open-folder-btn" onclick="openCurrentFolderInDrive()" title="Driveフォルダを開く" style="display:none;">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13" style="vertical-align:-1px;margin-right:4px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Driveで開く
+    </button>
+    <div id="scene-list"></div>
+  </div>
+  <div id="scene-context-menu">
+    <button type="button" class="scene-context-menu-btn" data-action="rename">名前を変更</button>
+    <button type="button" class="scene-context-menu-btn" data-action="properties">プロパティを表示</button>
+    <button type="button" class="scene-context-menu-btn danger" data-action="delete">写真を削除</button>
+  </div>
+  <div id="scene-properties-backdrop">
+    <div id="scene-properties-dialog" role="dialog" aria-modal="true" aria-labelledby="scene-properties-title">
+      <div class="popup-header">
+        <div class="popup-header-left">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6m0 10v6m11-11h-6M7 12H1"/>
+          </svg>
+          <span id="scene-properties-title" class="popup-header-title">写真のプロパティ</span>
+        </div>
+        <button type="button" class="popup-close-btn" onclick="closeScenePropertiesDialog()">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div id="scene-properties-content" class="scene-properties-list"></div>
+      <div class="popup-buttons" style="margin-top:16px">
+        <button type="button" class="btn-cancel" onclick="closeScenePropertiesDialog()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ホットスポット右クリックメニュー（編集モード） -->
+  <div id="hotspot-context-menu">
+    <button type="button" class="hs-context-btn" id="hs-ctx-edit-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+      </svg>
+      編集
+    </button>
+    <button type="button" class="hs-context-btn" id="hs-ctx-move-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="5 9 2 12 5 15"/>
+        <polyline points="9 5 12 2 15 5"/>
+        <polyline points="15 19 12 22 9 19"/>
+        <polyline points="19 9 22 12 19 15"/>
+        <line x1="2" y1="12" x2="22" y2="12"/>
+        <line x1="12" y1="2" x2="12" y2="22"/>
+      </svg>
+      移動
+    </button>
+    <button type="button" class="hs-context-btn danger" id="hs-ctx-delete-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/><path d="M14 11v6"/>
+        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+      </svg>
+      削除
+    </button>
+  </div>
+
+  <!-- サイドバー展開タブ（折りたたみ時に左端に表示） -->
+  <button id="sidebar-expand-tab" class="hidden" onclick="toggleSidebar()" title="シーン一覧を開く">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="9 18 15 12 9 6"/>
+    </svg>
+  </button>
+
+  <!-- 編集モードバナー -->
+  <div id="edit-banner">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 20h9"/>
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+    </svg>
+    <span>編集モードが有効です。360度画像の任意の場所をクリックしてホットスポットを追加できます。</span>
+  </div>
+
+  <!-- ホットスポット入力ポップアップ（編集モード時） -->
+  <div id="hotspot-popup">
+    <div class="popup-header">
+      <div class="popup-header-left">
+        <!-- アイコン: map-pin -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+          <circle cx="12" cy="10" r="3"/>
+        </svg>
+        <span id="popup-header-title" class="popup-header-title">ホットスポットを追加</span>
+      </div>
+      <button class="popup-close-btn" onclick="closePopup()">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- タイプ選択画面（新規追加×フォルダモード時） -->
+    <div id="hs-type-selector" style="display:none">
+      <div class="hs-type-buttons">
+        <button type="button" class="hs-type-btn" onclick="selectHotspotType('info')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span class="hs-type-btn-text">
+            <span class="hs-type-btn-title">情報を表示</span>
+            <span class="hs-type-btn-desc">説明・写真・リンクを表示</span>
+          </span>
+        </button>
+        <button type="button" class="hs-type-btn" onclick="selectHotspotType('quiz')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span class="hs-type-btn-text">
+            <span class="hs-type-btn-title">クイズ (はてな)</span>
+            <span class="hs-type-btn-desc">問い→答えのフリップカード</span>
+          </span>
+        </button>
+        <button type="button" class="hs-type-btn" onclick="selectHotspotType('jump')">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 8 16 12 12 16"/>
+            <line x1="8" y1="12" x2="16" y2="12"/>
+          </svg>
+          <span class="hs-type-btn-text">
+            <span class="hs-type-btn-title">シーンへジャンプ</span>
+            <span class="hs-type-btn-desc">クリックで別シーンへ移動</span>
+          </span>
+        </button>
+      </div>
+      <div class="popup-buttons">
+        <button class="btn-cancel" onclick="closePopup()">キャンセル</button>
+      </div>
+    </div>
+
+    <!-- フォーム画面（情報 or ジャンプ） -->
+    <div id="hs-form" style="display:none">
+
+      <div id="marker-style-panel" class="marker-style-panel">
+        <button id="marker-style-toggle" type="button" class="marker-style-toggle" onclick="toggleMarkerStylePanel()">
+          <span class="marker-style-toggle-main">
+            <span id="marker-style-preview" class="marker-preview marker-shape-circle marker-color-blue">
+              <span class="hs-marker-core marker-icon-info"></span>
+            </span>
+            <span class="marker-style-toggle-text">
+              <span class="marker-style-toggle-label">マーカー見た目</span>
+              <span id="marker-style-summary-text" class="marker-style-summary">丸・水色・情報</span>
+            </span>
+          </span>
+          <svg class="marker-style-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div class="marker-style-controls">
+          <div class="marker-style-control">
+            <label class="form-label" for="marker-shape">形</label>
+            <select id="marker-shape" class="form-select">
+              <option value="circle">丸</option>
+              <option value="square">四角</option>
+              <option value="diamond">菱形</option>
+              <option value="star">星</option>
+            </select>
+          </div>
+          <div class="marker-style-control">
+            <label class="form-label" for="marker-color">色</label>
+            <select id="marker-color" class="form-select">
+              <option value="blue">水色</option>
+              <option value="green">緑</option>
+              <option value="orange">オレンジ</option>
+              <option value="purple">紫</option>
+              <option value="white">白</option>
+              <option value="gray">灰色</option>
+              <option value="yellow">黄色</option>
+              <option value="red">赤色</option>
+            </select>
+          </div>
+          <div class="marker-style-control">
+            <label class="form-label" for="marker-icon">アイコン</label>
+            <select id="marker-icon" class="form-select">
+              <option value="info">情報</option>
+              <option value="photo">写真</option>
+              <option value="wifi">Wi-Fi</option>
+              <option value="quiz">クイズ (はてな)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="input-label">ラベル（表示名）</label>
+        <input type="text" id="input-label" class="form-input"
+               placeholder="例：山頂の望遠台" maxlength="50" autocomplete="off">
+      </div>
+
+      <!-- 情報モード用フィールド -->
+      <div id="hs-info-fields">
+        <!-- 通常の説明欄（情報モード） -->
+        <div class="form-group" id="hs-desc-group">
+          <label class="form-label" for="input-desc">詳細説明</label>
+          <textarea id="input-desc" class="form-textarea"
+                    placeholder="例：標高 1,523m。晴れた日には遠くの都市まで見渡せる絶景ポイント。"
+                    maxlength="300"></textarea>
+        </div>
+        <!-- クイズ用の質問・答え欄（クイズモード時のみ表示） -->
+        <div id="hs-quiz-desc-group" style="display:none">
+          <div class="form-group">
+            <label class="form-label" for="quiz-input-question">質問</label>
+            <textarea id="quiz-input-question" class="form-textarea"
+                      placeholder="例: この山の高さは何メートルですか？"
+                      maxlength="200"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="quiz-input-answer">答え</label>
+            <textarea id="quiz-input-answer" class="form-textarea"
+                      placeholder="例: 3776m（富士山）"
+                      maxlength="200"></textarea>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="input-link-url">リンク（任意）</label>
+          <input type="url" id="input-link-url" class="form-input"
+                 placeholder="https://example.com" maxlength="300" autocomplete="off">
+        </div>
+        <div class="form-group" id="photo-select-group" style="display:none">
+          <label class="form-label" for="input-photo-id">写真（任意）</label>
+          <select id="input-photo-id" class="form-select"></select>
+        </div>
+      </div>
+
+      <!-- ジャンプモード用フィールド -->
+      <div id="hs-jump-fields" style="display:none">
+        <div class="form-group">
+          <label class="form-label" for="input-jump-scene">ジャンプ先シーン</label>
+          <select id="input-jump-scene" class="form-select"></select>
+        </div>
+      </div>
+
+      <div class="popup-buttons">
+        <button id="hs-back-btn" class="btn-cancel" onclick="onBackOrCancelClick()">← 戻る</button>
+        <button id="btn-save" class="btn-save" onclick="onSaveClick()">
+          <span class="spinner"></span>
+          <span id="save-label">保存する</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toast">
+    <svg id="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="20 6 9 17 4 12"/>
+    </svg>
+    <span id="toast-msg"></span>
+  </div>
+
+  <!-- 操作ヒントバー -->
+  <div id="hint-bar">
+    <div class="hint-item">
+      <!-- move アイコン -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
+        <polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/>
+        <line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>
+      </svg>
+      <span>ドラッグで視点変更</span>
+    </div>
+    <div class="hint-sep"></div>
+    <div class="hint-item">
+      <!-- mouse-pointer アイコン -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4l11.733 11.733M4 4v6.667M4 4h6.667"/>
+      </svg>
+      <span>マーカーをクリックで詳細表示</span>
+    </div>
+  </div>
+
+  <!-- ホームボタン（写真右上・全画面ボタンの下） -->
+  <button id="btn-home" onclick="goHome()" title="ホームへ戻る">🏠</button>
+
+  <!-- 全画面ボタン（写真右上） -->
+  <button id="fullscreen-btn" onclick="toggleFullscreen()" title="全画面表示">
+    <svg id="fullscreen-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 3 21 3 21 9"/>
+      <polyline points="9 21 3 21 3 15"/>
+      <line x1="21" y1="3" x2="14" y2="10"/>
+      <line x1="3" y1="21" x2="10" y2="14"/>
+    </svg>
+  </button>
+
+  <!-- 画質切り替えボタン（写真右上・ホームボタンの下） -->
+  <button id="quality-toggle-btn" onclick="toggleQuality()" title="画質切り替え">
+    <span class="qt-dot"></span>
+    <span id="quality-toggle-label">速度優先</span>
+  </button>
+
+  <!-- ジャイロ（傾き連動）トグルボタン -->
+  <button id="gyro-toggle-btn" onclick="toggleGyro()" title="ジャイロON">
+    <!-- スマホを傾けているコンパス/ジャイロアイコン -->
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <polygon points="12 2 14.5 9.5 12 8 9.5 9.5" fill="currentColor" stroke="none"/>
+      <polygon points="12 22 9.5 14.5 12 16 14.5 14.5" fill="currentColor" opacity="0.4" stroke="none"/>
+      <line x1="12" y1="8" x2="12" y2="16"/>
+    </svg>
+  </button>
+
+</div><!-- #ui-overlay -->
+
+<!-- =============================================
+     クイズ（はてな）モーダル
+============================================= -->
+<div id="quiz-modal-overlay" class="hidden">
+  <div class="quiz-card-container">
+    <div class="quiz-card" id="quiz-card">
+      <div class="quiz-card-front">
+        <h3 id="quiz-card-title"></h3>
+        <p id="quiz-card-question"></p>
+        <span class="flip-hint">クリックして答えを見る ↻</span>
+      </div>
+      <div class="quiz-card-back">
+        <h3>こたえ</h3>
+        <p id="quiz-card-answer"></p>
+        <a id="quiz-card-link" href="#" target="_blank" rel="noopener noreferrer" class="hidden">さらに詳しく</a>
+      </div>
+    </div>
+  </div>
+  <button id="quiz-modal-close">×</button>
+</div>
+
+<!-- 埋め込みコード生成モーダル -->
+<div id="embed-modal-backdrop" onclick="closeEmbedModal()"></div>
+<div id="embed-modal" role="dialog" aria-modal="true" aria-labelledby="embed-modal-title">
+  <div class="embed-modal-header">
+    <span id="embed-modal-title">埋め込みコード生成</span>
+    <button class="embed-modal-close" onclick="closeEmbedModal()" title="閉じる" aria-label="閉じる">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+  <div class="embed-modal-body">
+    <div class="embed-section">
+      <div class="embed-section-label">
+        <span class="embed-badge embed-badge-internal">内部公開用</span>
+        <span class="embed-section-desc">軽い / Googleドライブの閲覧権限が必要</span>
+      </div>
+      <div class="embed-code-row">
+        <textarea id="embed-code-internal" class="embed-textarea" readonly spellcheck="false"></textarea>
+        <button class="embed-copy-btn" onclick="copyEmbedCode('internal')" title="コピー">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>コピー</span>
+        </button>
+      </div>
+    </div>
+    <div class="embed-section">
+      <div class="embed-section-label">
+        <span class="embed-badge embed-badge-public">外部公開用</span>
+        <span class="embed-section-desc">重い（Base64）/ 権限フリー</span>
+      </div>
+      <div class="embed-code-row">
+        <textarea id="embed-code-public" class="embed-textarea" readonly spellcheck="false"></textarea>
+        <button class="embed-copy-btn" onclick="copyEmbedCode('public')" title="コピー">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>コピー</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- アップロードモーダル -->
+<div id="upload-modal">
+  <div id="upload-modal-inner">
+    <h3>写真をアップロード</h3>
+    <input type="file" id="upload-file-input" accept="image/*" multiple>
+    <div class="upload-type-row">
+      <span class="upload-type-label">タイプ</span>
+      <div class="upload-type-options">
+        <label><input type="radio" name="upload-type" value="360" checked> 360°パノラマ</label>
+        <label><input type="radio" name="upload-type" value="2d"> 2D平面マップ</label>
+      </div>
+    </div>
+    <p id="upload-status"></p>
+    <div class="upload-btns">
+      <button type="button" class="btn-upload-cancel" onclick="closeUploadModal()">キャンセル</button>
+      <button type="button" id="upload-confirm-btn" onclick="onUploadConfirm()">決定</button>
+    </div>
+  </div>
+</div>
+
+<?!= include("app") ?>
+</body>
+</html>

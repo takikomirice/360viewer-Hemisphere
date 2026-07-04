@@ -1,0 +1,2815 @@
+<script>
+// =============================================
+//  状態変数
+// =============================================
+var viewer          = null;   // Pannellumビューアインスタンス
+var isEditMode      = false;  // 現在編集モードかどうか
+var appMode         = '';     // URLパラメータ: 'public' | 'internal' | ''
+var isGyroActive    = false;  // ジャイロ（DeviceOrientation）ON/OFF状態
+var appBaseUrl      = '';     // WebアプリのベースURL（埋め込みコード生成用）
+var pendingPitch    = null;   // クリック地点のPitch（保存待ち）
+// 編集モード: ドラッグとクリックの判別用（ドラッグ後のclickでホットスポットを開かない）
+var EDIT_MODE_DRAG_THRESHOLD_PX = 5;
+var editModeDragStart   = null;   // mousedown時の { x, y } または null
+var editModeWasDragging = false;  // 直前にドラッグだった場合 true
+var pendingYaw      = null;   // クリック地点のYaw（保存待ち）
+var toastTimer      = null;   // トーストの自動非表示タイマー
+var allImages       = null;   // フォルダモード時の全画像リスト {id, name, imageUrl}
+var homeImageId     = null;   // ホーム画像のファイルID（[HOME]タグで指定）
+var folderStack     = [];     // サブフォルダナビゲーション用スタック [{id, name, items}]
+var rootFolderId    = null;   // ルートフォルダのDrive ID
+var currentFileId   = null;   // 現在表示中の画像ファイルID
+var previousSceneId = null;   // ジャンプ前のシーンID（振り返り視点計算用）
+var preloadedScenes = new Set(); // プリロード済みシーンIDのセット（先読みキャッシュ管理）
+var isSwitching     = false;  // シーン切替中フラグ（二重クリック防止）
+var imageQualityMode = 'fast'; // 画質モード: 'fast'(=w4096) | 'high'(=s0)
+var loadPollInterval = null;  // Pannellum loadイベントのポーリングインターバル
+var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
+var sidebarCollapsed = false; // サイドバー折りたたみ状態
+var sceneContextTargetId = null; // 右クリック対象のシーンID
+var isPanning       = false;  // 視点移動中かどうか
+var editingHotspot       = null;  // 編集中のホットスポットargs（nullなら新規）
+var currentPopupMode     = null;  // 'type' | 'info' | 'jump'
+var hotspotContextTarget = null;  // 右クリック対象のホットスポットargs
+var suppressNextPanoramaClick = false; // メニュー操作直後のクリック貫通を抑止
+var isMovingHotspot = false;      // ホットスポット移動モード中かどうか
+var movingHotspotTarget = null;   // 移動対象のホットスポットargs
+var photoCache           = {};    // 写真データURIのキャッシュ {photoId: dataUri}
+var activeJumpTooltip    = null;  // 表示中のジャンプツールチップ要素
+var DEFAULT_MARKER_SHAPE = 'circle';
+var DEFAULT_MARKER_COLOR = 'blue';
+var DEFAULT_MARKER_ICON = 'info';
+var MARKER_SHAPE_LABELS = {
+  circle: '丸',
+  square: '四角',
+  diamond: '菱形',
+  star: '星'
+};
+var MARKER_COLOR_LABELS = {
+  blue: '水色',
+  green: '緑',
+  orange: 'オレンジ',
+  purple: '紫',
+  white: '白',
+  gray: '灰色',
+  yellow: '黄色',
+  red: '赤色'
+};
+var MARKER_ICON_LABELS = {
+  info: '情報',
+  photo: '写真',
+  wifi: 'Wi-Fi',
+  quiz: 'クイズ'
+};
+var lastMarkerShape = DEFAULT_MARKER_SHAPE;
+var lastMarkerColor = DEFAULT_MARKER_COLOR;
+var lastMarkerIcon = DEFAULT_MARKER_ICON;
+var is2DMode = false;          // 現在2D平面マップモードかどうか
+var current2DHotspots = [];    // 2Dモード時の現在のホットスポット一覧
+
+// =============================================
+//  初期化: ページ読み込み後にGASからデータ取得
+// =============================================
+window.addEventListener('load', function () {
+  updateQualityToggleBtn(); // 初期ラベルを設定（デフォルト: 速度優先）
+  var panoramaEl = document.getElementById('panorama');
+  panoramaEl.addEventListener('click', onPanoramaClick);
+  panoramaEl.addEventListener('mousedown', onPanoramaPointerDown);
+  panoramaEl.addEventListener('mousedown', onPanoramaMouseDown);
+  panoramaEl.addEventListener('mousemove', onPanoramaMouseMove);
+  panoramaEl.addEventListener('mouseup', onPanoramaMouseUp);
+  panoramaEl.addEventListener('mouseleave', onPanoramaMouseUp);
+  panoramaEl.addEventListener('mouseup', onPanoramaPointerUp);
+  panoramaEl.addEventListener('mouseleave', onPanoramaPointerUp);
+  panoramaEl.addEventListener('touchstart', onPanoramaPointerDown, { passive: true });
+  panoramaEl.addEventListener('touchend', onPanoramaPointerUp, { passive: true });
+  panoramaEl.addEventListener('touchcancel', onPanoramaPointerUp, { passive: true });
+  document.getElementById('marker-shape').addEventListener('change', syncMarkerStyleSummaryFromInputs);
+  document.getElementById('marker-color').addEventListener('change', syncMarkerStyleSummaryFromInputs);
+  document.getElementById('marker-icon').addEventListener('change', function () {
+    syncMarkerStyleSummaryFromInputs();
+    setQuizDescMode(this.value === 'quiz');
+  });
+  document.getElementById('scene-context-menu').addEventListener('click', onSceneContextMenuClick);
+  document.getElementById('scene-context-menu').addEventListener('mousedown', function (evt) { evt.stopPropagation(); });
+  document.getElementById('scene-properties-backdrop').addEventListener('click', onScenePropertiesBackdropClick);
+  document.getElementById('hs-ctx-edit-btn').addEventListener('click', onHotspotEditClick);
+  document.getElementById('hs-ctx-move-btn').addEventListener('click', onHotspotMoveClick);
+  document.getElementById('hs-ctx-delete-btn').addEventListener('click', onHotspotDeleteClick);
+  document.getElementById('hotspot-context-menu').addEventListener('click', function (evt) { evt.stopPropagation(); });
+  document.getElementById('hotspot-context-menu').addEventListener('mousedown', function (evt) { evt.stopPropagation(); });
+  document.addEventListener('click', onDocumentClickForContextMenus);
+  document.addEventListener('keydown', onGlobalKeyDown);
+  var bulkInputTrigger = document.getElementById('bulk-input-trigger');
+  if (bulkInputTrigger) bulkInputTrigger.addEventListener('click', function (evt) { evt.stopPropagation(); toggleBulkInputDropdown(); });
+  document.getElementById('bulk-input-dropdown').addEventListener('click', onBulkInputDropdownClick);
+  window.addEventListener('resize', closeSceneContextMenu);
+
+  // ---- クイズモーダル: フリップ / クローズ ----
+  (function () {
+    var overlay  = document.getElementById('quiz-modal-overlay');
+    var card     = document.getElementById('quiz-card');
+    var closeBtn = document.getElementById('quiz-modal-close');
+
+    function closeQuizModal() {
+      overlay.classList.add('hidden');
+    }
+
+    // カードクリックでフリップ（裏面のリンクは除外）
+    card.addEventListener('click', function (evt) {
+      if (evt.target.closest('#quiz-card-link')) return; // リンクはそのまま遷移
+      card.classList.toggle('is-flipped');
+    });
+
+    // ×ボタンで閉じる
+    closeBtn.addEventListener('click', closeQuizModal);
+
+    // オーバーレイ背景クリックで閉じる（カード本体以外）
+    overlay.addEventListener('click', function (evt) {
+      if (!evt.target.closest('.quiz-card-container') && !evt.target.closest('#quiz-modal-close')) {
+        closeQuizModal();
+      }
+    });
+  }());
+  loadMarkerStylePreference();
+  syncMarkerStyleInputsFromPreference();
+  setMarkerStylePanelExpanded(false);
+
+  google.script.url.getLocation(function (loc) {
+    appMode = (loc.parameter && loc.parameter.mode) || '';
+    var qParam = (loc.parameter && loc.parameter.quality) || '';
+    if (qParam === 'high' || qParam === 'fast') imageQualityMode = qParam;
+    updateQualityToggleBtn();
+
+    if (appMode === 'internal' || appMode === 'public') {
+      var topbar = document.getElementById('topbar');
+      if (topbar) topbar.style.display = 'none';
+      var uploadBtn = document.getElementById('upload-btn');
+      if (uploadBtn) uploadBtn.style.display = 'none';
+      var openFolderBtnEl = document.getElementById('open-folder-btn');
+      if (openFolderBtnEl) openFolderBtnEl.style.setProperty('display', 'none', 'important');
+      var bulkInputGroupEl = document.getElementById('bulk-input-group');
+      if (bulkInputGroupEl) bulkInputGroupEl.style.setProperty('display', 'none', 'important');
+    }
+
+    google.script.run
+      .withSuccessHandler(onConfigLoaded)
+      .withFailureHandler(function () {
+        showLoadError('設定の読み込みに失敗しました。');
+      })
+      .getConfig(appMode);
+  });
+});
+
+/**
+ * 設定取得後: フォルダモードと単一画像モードを振り分ける
+ */
+function onConfigLoaded(config) {
+  if (config.error) {
+    showLoadError(config.error);
+    return;
+  }
+  appBaseUrl = config.execUrl || '';
+  rootFolderId = config.rootFolderId || null;
+
+  if (config.images) {
+    // フォルダモード: サイドバーを構築し、ホーム画像を初期ロード
+    allImages = config.images;
+    currentFileId = null;
+    buildSceneSidebar(allImages);
+
+    // ホーム画像を特定（フォルダアイテムを除外して検索）
+    var homeImg = null;
+    for (var i = 0; i < allImages.length; i++) {
+      if (allImages[i].type === 'folder') continue;
+      if (allImages[i].isHome) { homeImg = allImages[i]; break; }
+    }
+    if (!homeImg) {
+      for (var j = 0; j < allImages.length; j++) {
+        if (allImages[j].type !== 'folder') { homeImg = allImages[j]; break; }
+      }
+    }
+    homeImageId = homeImg ? homeImg.id : null;
+
+    var hasImageItems = !!homeImg;
+    if (!hasImageItems) {
+      syncActiveSceneItem(null);
+      if (allImages.length === 0) {
+        showSceneEmptyState('写真がありません。アップロードボタンから追加してください。');
+      } else {
+        showSceneEmptyState('フォルダをクリックして中の写真を選択してください。');
+      }
+    } else {
+      var homeBtnEl = document.getElementById('btn-home');
+      if (homeBtnEl) homeBtnEl.classList.add('visible');
+      loadScene(homeImg);
+    }
+  } else if (config.imageUrl) {
+    // 単一画像モード（後方互換）
+    currentFileId = null;
+    google.script.run
+      .withSuccessHandler(function (res) {
+        var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
+        var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
+        initViewer(config.imageUrl, spots, north);
+      })
+      .withFailureHandler(function () {
+        initViewer(config.imageUrl, [], null);
+      })
+      .loadHotspots('');
+  } else {
+    showLoadError('画像の設定が見つかりませんでした。');
+  }
+}
+
+// =============================================
+//  フォルダモード: サイドバー構築
+// =============================================
+
+/**
+ * 画像リストからサイドバーのシーン一覧を生成し表示する
+ *
+ * @param {Array} images  {id, name, imageUrl} の配列
+ */
+function buildSceneSidebar(images) {
+  var sidebar  = document.getElementById('scene-sidebar');
+  var list     = document.getElementById('scene-list');
+  var panorama = document.getElementById('panorama');
+
+  closeSceneContextMenu();
+  list.innerHTML = '';
+
+  // 「戻る」ボタンの表示切替
+  var backBtn = document.getElementById('sidebar-back-btn');
+  if (backBtn) {
+    if (folderStack.length > 0) {
+      backBtn.classList.add('visible');
+    } else {
+      backBtn.classList.remove('visible');
+    }
+  }
+
+  images.forEach(function (img) {
+    if (img.type === 'folder') {
+      // ---- サブフォルダアイテム ----
+      var folderEl = document.createElement('div');
+      folderEl.className = 'scene-folder-item';
+      folderEl.dataset.folderId = img.id;
+      folderEl.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>' +
+        '</svg>' +
+        '<span class="scene-folder-item-name">' + escapeHtml(img.name) + '</span>';
+      folderEl.addEventListener('click', function () {
+        openSubfolder(img);
+      });
+      list.appendChild(folderEl);
+    } else {
+      // ---- 画像アイテム ----
+      var item = document.createElement('div');
+      item.className = 'scene-item';
+      item.dataset.id = img.id;
+      item.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>' +
+        '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' +
+        '</svg>' +
+        '<span class="scene-item-name">' + escapeHtml(img.name) + '</span>';
+      item.addEventListener('click', function () {
+        if (isSwitching) return;
+        previousSceneId = null; // サイドバーからの移動は振り返り演出なし
+        loadScene(img);
+      });
+      item.addEventListener('contextmenu', function (evt) {
+        openSceneContextMenu(evt, img);
+      });
+      list.appendChild(item);
+    }
+  });
+
+  sidebar.classList.remove('hidden');
+  panorama.classList.add('with-sidebar');
+  document.getElementById('flat-map-container').classList.add('with-sidebar');
+}
+
+/**
+ * サブフォルダを開く：現在の一覧をスタックに保存し、指定フォルダの中身を表示する
+ * @param {{ id:string, name:string, type:'folder' }} folderItem
+ */
+function openSubfolder(folderItem) {
+  // 現在の状態をスタックに積む
+  folderStack.push({ id: folderItem.id, name: folderItem.name, items: allImages });
+
+  setSceneRefreshButtonState(true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setSceneRefreshButtonState(false);
+      if (!res || res.error) {
+        showToast('フォルダを開けませんでした: ' + ((res && res.error) || '不明なエラー'), 'error');
+        folderStack.pop();
+        return;
+      }
+      allImages = res.images || [];
+      buildSceneSidebar(allImages);
+      syncActiveSceneItem(null);
+    })
+    .withFailureHandler(function () {
+      setSceneRefreshButtonState(false);
+      showToast('フォルダの読み込みに失敗しました。', 'error');
+      folderStack.pop();
+    })
+    .navigateToFolder(folderItem.id);
+}
+
+/**
+ * 一つ上のフォルダに戻る
+ */
+function goBackFolder() {
+  if (folderStack.length === 0) return;
+  var prev = folderStack.pop();
+  allImages = prev.items;
+  buildSceneSidebar(allImages);
+  syncActiveSceneItem(currentFileId);
+}
+
+function syncActiveSceneItem(activeId) {
+  var items = document.querySelectorAll('.scene-item');
+  items.forEach(function (el) {
+    el.classList.toggle('active', !!activeId && el.dataset.id === activeId);
+  });
+}
+
+function setSceneRefreshButtonState(isLoading) {
+  var button = document.getElementById('scene-refresh-btn');
+  if (!button) return;
+  button.disabled = !!isLoading;
+  button.classList.toggle('loading', !!isLoading);
+}
+
+function refreshSceneList() {
+  if (isRefreshingSceneList || !allImages) return;
+
+  isRefreshingSceneList = true;
+  setSceneRefreshButtonState(true);
+  closeSceneContextMenu();
+
+  google.script.run
+    .withSuccessHandler(function (config) {
+      isRefreshingSceneList = false;
+      setSceneRefreshButtonState(false);
+
+      if (!config || config.error) {
+        showToast('シーン一覧の更新に失敗しました: ' + ((config && config.error) || '不明なエラー'), 'error');
+        return;
+      }
+      if (!config.images) {
+        showToast('フォルダ内の画像一覧を取得できませんでした。', 'error');
+        return;
+      }
+
+      allImages = config.images;
+      folderStack = []; // ルートに戻るためスタックをクリア
+      buildSceneSidebar(allImages);
+
+      var hasImgItems = allImages.some(function (i) { return i.type !== 'folder'; });
+      if (!hasImgItems) {
+        syncActiveSceneItem(null);
+        var emptyMsg = allImages.length === 0
+          ? '写真がありません。アップロードボタンから追加してください。'
+          : 'フォルダをクリックして中の写真を選択してください。';
+        showSceneEmptyState(emptyMsg);
+        showToast('シーン一覧を更新しました。', 'success');
+        return;
+      }
+
+      if (!currentFileId) {
+        syncActiveSceneItem(null);
+        showSceneEmptyState('シーン一覧から写真を選択してください。');
+        showToast('シーン一覧を更新しました。', 'success');
+        return;
+      }
+
+      var nextCurrent = getSceneImageById(currentFileId);
+      if (nextCurrent) {
+        syncActiveSceneItem(currentFileId);
+        showToast('シーン一覧を更新しました。', 'success');
+        return;
+      }
+
+      currentFileId = null;
+      showToast('現在の写真が見つからなかったため、先頭の写真を表示します。', 'success');
+      previousSceneId = null;
+      loadScene(allImages[0]);
+    })
+    .withFailureHandler(function () {
+      isRefreshingSceneList = false;
+      setSceneRefreshButtonState(false);
+      showToast('通信エラーが発生しました。再度お試しください。', 'error');
+    })
+    .getConfig(appMode);
+}
+
+function getSceneImageById(fileId) {
+  if (!allImages || !fileId) return null;
+  for (var i = 0; i < allImages.length; i++) {
+    if (allImages[i].id === fileId) return allImages[i];
+  }
+  return null;
+}
+
+function openSceneContextMenu(evt, img) {
+  if (appMode === 'internal' || appMode === 'public') return;
+  if (!img || !img.id) return;
+  evt.preventDefault();
+  evt.stopPropagation();
+
+  var menu = document.getElementById('scene-context-menu');
+  sceneContextTargetId = img.id;
+  menu.classList.add('visible');
+
+  var menuWidth = menu.offsetWidth || 168;
+  var menuHeight = menu.offsetHeight || 132;
+  var x = Math.min(evt.clientX, window.innerWidth - menuWidth - 10);
+  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  menu.style.left = Math.max(10, x) + 'px';
+  menu.style.top = Math.max(70, y) + 'px';
+}
+
+function closeSceneContextMenu() {
+  var menu = document.getElementById('scene-context-menu');
+  menu.classList.remove('visible');
+  menu.style.left = '';
+  menu.style.top = '';
+  sceneContextTargetId = null;
+}
+
+function onSceneContextMenuClick(evt) {
+  var action = evt.target && evt.target.dataset ? evt.target.dataset.action : '';
+  if (!action) return;
+
+  var targetId = sceneContextTargetId;
+  closeSceneContextMenu();
+
+  var img = getSceneImageById(targetId);
+  if (!img) return;
+
+  if (action === 'rename') {
+    requestSceneRename(img);
+  } else if (action === 'properties') {
+    openSceneProperties(img);
+  } else if (action === 'delete') {
+    requestSceneDelete(img);
+  }
+}
+
+function closeBulkInputDropdown() {
+  var group = document.getElementById('bulk-input-group');
+  var trigger = document.getElementById('bulk-input-trigger');
+  if (group) group.classList.remove('open');
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function toggleBulkInputDropdown() {
+  var group = document.getElementById('bulk-input-group');
+  var trigger = document.getElementById('bulk-input-trigger');
+  if (!group || !trigger) return;
+  var isOpen = group.classList.toggle('open');
+  trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function onDocumentClickForContextMenus(evt) {
+  if (!evt.target.closest('#scene-context-menu')) {
+    closeSceneContextMenu();
+  }
+  if (!evt.target.closest('#hotspot-context-menu')) {
+    closeHotspotContextMenu();
+  }
+  if (!evt.target.closest('#bulk-input-group')) {
+    closeBulkInputDropdown();
+  }
+}
+
+function onGlobalKeyDown(evt) {
+  if (evt.key !== 'Escape') return;
+  closeSceneContextMenu();
+  closeScenePropertiesDialog();
+  closeHotspotContextMenu();
+  closeBulkInputDropdown();
+  if (isMovingHotspot) {
+    isMovingHotspot = false;
+    movingHotspotTarget = null;
+    showToast('移動をキャンセルしました。', 'error');
+  }
+}
+
+// =============================================
+//  ホットスポット右クリックメニュー（編集モード）
+// =============================================
+function openHotspotContextMenu(evt, args) {
+  closeHotspotContextMenu();
+  hotspotContextTarget = args;
+
+  var menu = document.getElementById('hotspot-context-menu');
+  menu.classList.add('visible');
+
+  var menuWidth  = menu.offsetWidth  || 152;
+  var menuHeight = menu.offsetHeight || 88;
+  var x = Math.min(evt.clientX, window.innerWidth  - menuWidth  - 10);
+  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  menu.style.left = Math.max(10, x) + 'px';
+  menu.style.top  = Math.max(70, y) + 'px';
+}
+
+function closeHotspotContextMenu() {
+  var menu = document.getElementById('hotspot-context-menu');
+  menu.classList.remove('visible');
+  menu.style.left = '';
+  menu.style.top  = '';
+  hotspotContextTarget = null;
+}
+
+function onHotspotEditClick() {
+  suppressNextPanoramaClick = true;
+  setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
+  var target = hotspotContextTarget;
+  closeHotspotContextMenu();
+  if (!target) return;
+
+  // マーカー位置からポップアップを表示（画面中央に近い位置）
+  var cx = window.innerWidth  / 2;
+  var cy = window.innerHeight / 2;
+  openPopup(cx, cy, target);
+}
+
+function onHotspotDeleteClick() {
+  suppressNextPanoramaClick = true;
+  setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
+  var target = hotspotContextTarget;
+  closeHotspotContextMenu();
+  if (!target) return;
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (result.success) {
+        if (is2DMode) {
+          // 2Dモード: current2DHotspots から削除して再描画
+          current2DHotspots = current2DHotspots.filter(function (hs) { return hs !== target; });
+          render2DHotspots(current2DHotspots);
+        } else {
+          try { viewer.removeHotSpot(target._pannellumId); } catch (e) { /* ignore */ }
+        }
+        showToast('ホットスポットを削除しました。', 'success');
+      } else {
+        showToast('削除に失敗しました: ' + (result.error || '不明なエラー'), 'error');
+      }
+    })
+    .withFailureHandler(function () {
+      showToast('通信エラーが発生しました。再度お試しください。', 'error');
+    })
+    .deleteHotspot({
+      id: target.id,
+      fileId: currentFileId || ''
+    });
+}
+
+function onHotspotMoveClick() {
+  suppressNextPanoramaClick = true;
+  setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
+  var target = hotspotContextTarget;
+  closeHotspotContextMenu();
+  if (!target) return;
+
+  isMovingHotspot = true;
+  movingHotspotTarget = target;
+  showToast('移動先の場所をクリックしてください。(Escキーでキャンセル)', 'success');
+}
+
+function requestSceneRename(img) {
+  var currentName = String(img.name || '');
+  var nextName = window.prompt('新しい写真名を入力してください。', currentName);
+  if (nextName === null) return;
+
+  nextName = nextName.trim();
+  if (!nextName) {
+    showToast('名前を空にはできません。', 'error');
+    return;
+  }
+  if (nextName === currentName) return;
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (!result || !result.success) {
+        showToast('名前の変更に失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
+        return;
+      }
+      applySceneRenameLocally(img.id, result.name || nextName);
+      showToast('写真名を変更しました。', 'success');
+    })
+    .withFailureHandler(function () {
+      showToast('通信エラーが発生しました。再度お試しください。', 'error');
+    })
+    .renameImageFile(img.id, nextName);
+}
+
+function requestSceneDelete(img) {
+  var sceneName = String((img && img.name) || '');
+  var ok = window.confirm(
+    '「' + sceneName + '」を削除しますか？\n' +
+    '削除した写真はGoogleドライブのゴミ箱に移動され、\n' +
+    'このシーンに紐づくホットスポットも削除されます。'
+  );
+  if (!ok) return;
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (!result || !result.success) {
+        showToast('写真の削除に失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
+        return;
+      }
+      applySceneDeleteLocally(img.id);
+      var deletedHotspots = Number(result.deletedHotspots || 0);
+      var detail = deletedHotspots > 0 ? '（ホットスポット ' + deletedHotspots + ' 件も削除）' : '';
+      showToast('写真を削除しました。' + detail, 'success');
+    })
+    .withFailureHandler(function () {
+      showToast('通信エラーが発生しました。再度お試しください。', 'error');
+    })
+    .deleteImageFile(img.id);
+}
+
+function applySceneDeleteLocally(fileId) {
+  if (!allImages || !fileId) return;
+  var removedIndex = -1;
+  var nextImages = allImages.filter(function (img, index) {
+    var keep = img.id !== fileId;
+    if (!keep) removedIndex = index;
+    return keep;
+  });
+  if (removedIndex < 0) return;
+
+  allImages = nextImages;
+  closeScenePropertiesDialog();
+  closeSceneContextMenu();
+  buildSceneSidebar(allImages);
+
+  // 削除対象が現在表示中でない場合は表示中シーンを維持する
+  if (currentFileId && currentFileId !== fileId) {
+    syncActiveSceneItem(currentFileId);
+    return;
+  }
+
+  // 現在表示中シーンを削除した場合
+  if (viewer) {
+    try { viewer.destroy(); } catch (e) { /* ignore */ }
+    viewer = null;
+  }
+  hide2DView();
+  hideJumpTooltip();
+  current2DHotspots = [];
+  is2DMode = false;
+
+  // 画像アイテム（フォルダを除く）の中から次に表示するシーンを選ぶ
+  var imageItems = allImages.filter(function (i) { return i.type !== 'folder'; });
+  if (imageItems.length === 0) {
+    currentFileId = null;
+    showSceneEmptyState('シーンがありません。写真をアップロードしてください。');
+    return;
+  }
+
+  var nextIndex = Math.min(Math.max(removedIndex, 0), imageItems.length - 1);
+  previousSceneId = null;
+  loadScene(imageItems[nextIndex]);
+}
+
+function applySceneRenameLocally(fileId, newName) {
+  var target = getSceneImageById(fileId);
+  if (!target) return;
+
+  target.name = newName;
+  allImages.sort(function(a, b) { return a.name.localeCompare(b.name, 'ja'); });
+  buildSceneSidebar(allImages);
+  syncActiveSceneItem(currentFileId);
+}
+
+function openSceneProperties(img) {
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (!result || !result.success || !result.properties) {
+        showToast('プロパティの取得に失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
+        return;
+      }
+      renderSceneProperties(result.properties);
+    })
+    .withFailureHandler(function () {
+      showToast('通信エラーが発生しました。再度お試しください。', 'error');
+    })
+    .getImageFileProperties(img.id);
+}
+
+function renderSceneProperties(props) {
+  var content = document.getElementById('scene-properties-content');
+  var shotDate = props.exifDate
+    ? escapeHtml(formatDateTime(props.exifDate))
+    : escapeHtml(formatDateTime(props.lastUpdated));
+  var cameraLabel = (props.cameraMake || props.cameraModel)
+    ? escapeHtml([props.cameraMake, props.cameraModel].filter(Boolean).join(' '))
+    : '不明';
+  var resolutionLabel = (props.width != null && props.height != null)
+    ? escapeHtml(props.width + ' × ' + props.height + ' px')
+    : '不明';
+  var northLabel = (props.northOffset != null)
+    ? escapeHtml(props.northOffset + '度 (北基準)')
+    : '情報なし';
+
+  var rows = [
+    { key: '名前',       value: escapeHtml(props.name || '') },
+    { key: '撮影日時',   value: shotDate },
+    { key: 'カメラ機種', value: cameraLabel },
+    { key: '解像度',     value: resolutionLabel },
+    { key: '撮影方位',   value: northLabel },
+    { key: 'ファイルサイズ', value: escapeHtml(formatFileSize(props.sizeBytes)) },
+    { key: 'Drive URL',  value: props.url ? '<a href="' + escapeHtml(props.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(props.url) + '</a>' : 'なし' }
+  ];
+
+  content.innerHTML = rows.map(function (row) {
+    return '' +
+      '<div class="scene-properties-row">' +
+      '  <div class="scene-properties-key">' + row.key + '</div>' +
+      '  <div class="scene-properties-value">' + row.value + '</div>' +
+      '</div>';
+  }).join('');
+
+  document.getElementById('scene-properties-backdrop').classList.add('visible');
+}
+
+function closeScenePropertiesDialog() {
+  document.getElementById('scene-properties-backdrop').classList.remove('visible');
+}
+
+function onScenePropertiesBackdropClick(evt) {
+  if (evt.target.id === 'scene-properties-backdrop') {
+    closeScenePropertiesDialog();
+  }
+}
+
+function formatFileSize(bytes) {
+  var size = Number(bytes);
+  if (!isFinite(size) || size < 0) return '不明';
+  if (size < 1024) return size + ' B';
+  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
+  if (size < 1024 * 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + ' MB';
+  return (size / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+}
+
+function formatDateTime(value) {
+  if (!value) return '不明';
+  var date = new Date(value);
+  if (isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('ja-JP');
+}
+
+/**
+ * ホームボタン押下時: homeImageId のシーンへ遷移する
+ */
+function goHome() {
+  if (!homeImageId) return;
+  var homeImg = getSceneImageById(homeImageId);
+  if (homeImg) {
+    previousSceneId = null; // ホームへの移動は振り返り演出なし
+    loadScene(homeImg);
+  }
+}
+
+/**
+ * 現在の画質モードに応じたGoogleusercontent URLサフィックスを返す。
+ * @returns {string} '=w4096' または '=s0'
+ */
+function getQualitySuffix() {
+  return imageQualityMode === 'high' ? '=s0' : '=w4096';
+}
+
+/**
+ * ホットスポットのジャンプ先シーン画像を先読み（プリロード）してブラウザキャッシュに乗せる。
+ * @param {Array} hotspots ホットスポット配列
+ */
+function preloadJumpScenes(hotspots) {
+  if (!Array.isArray(hotspots)) return;
+  hotspots.forEach(function (hs) {
+    var sceneId = hs.jumpSceneId;
+    if (!sceneId || preloadedScenes.has(sceneId)) return;
+    preloadedScenes.add(sceneId);
+    var url = 'https://lh3.googleusercontent.com/d/' + sceneId + getQualitySuffix();
+    var img = new Image();
+    img.src = url;
+  });
+}
+
+/**
+ * 指定した画像シーンを読み込む。
+ * viewer を破棄して再生成し、その画像専用のホットスポットを取得する。
+ *
+ * @param {{ id:string, name:string, imageUrl:string }} imgData
+ */
+function loadScene(imgData) {
+  isSwitching   = true;
+  currentFileId = imgData.id;
+
+  // 暗転オーバーレイをパノラマ領域に合わせて表示（フェードアウト開始）
+  var _transOverlay = document.getElementById('scene-transition-overlay');
+  if (_transOverlay) {
+    var _tSidebar = document.getElementById('scene-sidebar');
+    var _tHasSidebar = _tSidebar &&
+                       !_tSidebar.classList.contains('hidden') &&
+                       !sidebarCollapsed &&
+                       window.innerWidth > 600;
+    _transOverlay.style.left = _tHasSidebar ? '200px' : '0';
+    _transOverlay.classList.add('active');
+  }
+
+  // ホバーツールチップ・情報ポップアップを閉じる
+  hideJumpTooltip();
+  var infoPop = document.getElementById('active-info-popup');
+  if (infoPop) infoPop.remove();
+
+  // ローディング表示（写真エリアのみカバー）
+  showSceneLoading();
+
+  // アクティブ状態を更新
+  syncActiveSceneItem(imgData.id);
+  closeSceneContextMenu();
+
+  // 既存ビューアを破棄
+  if (viewer) {
+    clearInterval(loadPollInterval);
+    try { viewer.destroy(); } catch (e) { /* ignore */ }
+    viewer = null;
+  }
+
+  // ファイル名に [2D] が含まれているか判定
+  var sceneIs2D = !!(imgData.name && imgData.name.indexOf('[2D]') !== -1);
+  is2DMode = sceneIs2D;
+
+  // GASコールが返ってこない場合のタイムアウト（30秒）
+  var sceneLoadTimer = setTimeout(function () {
+    if (isSwitching) {
+      isSwitching = false;
+      showLoadError('画像の読み込みがタイムアウトしました。再度お試しください。');
+    }
+  }, 30000);
+
+  /**
+   * 取得した imageUrl・hotspots・northOffset でビューアを起動するヘルパー
+   * @param {string} imageUrl
+   * @param {Array}  spots
+   * @param {number|null} northOffset
+   */
+  function startViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
+    clearTimeout(sceneLoadTimer);
+    if (sceneIs2D) {
+      show2DView(imageUrl);
+      render2DHotspots(spots || []);
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('fullscreen-btn').classList.add('visible');
+      document.getElementById('quality-toggle-btn').classList.add('visible');
+      document.getElementById('gyro-toggle-btn').classList.add('visible');
+      var ov = document.getElementById('scene-transition-overlay');
+      if (ov) ov.classList.remove('active');
+    } else {
+      hide2DView();
+      initViewer(imageUrl, spots || [], northOffset || null, initialYaw, initialPitch);
+    }
+    isSwitching = false;
+  }
+
+  /** loadHotspots の戻り値 { hotspots, northOffset } を分解して startViewer を呼ぶ */
+  function onHotspotsLoaded(imageUrl) {
+    return function (res) {
+      var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
+      var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
+
+      // 振り返り視点: 前シーンに向かうホットスポットの真反対を初期視点とする
+      var initialYaw = null;
+      if (previousSceneId) {
+        for (var _i = 0; _i < spots.length; _i++) {
+          if (spots[_i].jumpSceneId === previousSceneId) {
+            initialYaw = spots[_i].yaw + 180;
+            if (initialYaw > 180) initialYaw -= 360;
+            break;
+          }
+        }
+      }
+
+// ジャンプ先シーンを非同期でプリロード（次のシーン移動を高速化）
+      setTimeout(function () { preloadJumpScenes(spots); }, 0);
+
+      // ★追加: 画面が完全に暗転するまで 350ms 待ってから次のシーンを展開する
+      setTimeout(function() {
+        startViewer(imageUrl, spots, north, initialYaw);
+      }, 350);
+    };
+  }
+
+  if (appMode === 'public') {
+    // public モード: GAS 経由で Base64 URL を取得してから loadHotspots を呼ぶ
+    var fallbackUrl = 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
+    google.script.run
+      .withSuccessHandler(function (res) {
+        var imageUrl = (res && res.success) ? res.imageUrl : fallbackUrl;
+        google.script.run
+          .withSuccessHandler(onHotspotsLoaded(imageUrl))
+          .withFailureHandler(function () { startViewer(imageUrl, [], null); })
+          .loadHotspots(imgData.id);
+      })
+      .withFailureHandler(function () {
+        google.script.run
+          .withSuccessHandler(onHotspotsLoaded(fallbackUrl))
+          .withFailureHandler(function () { startViewer(fallbackUrl, [], null); })
+          .loadHotspots(imgData.id);
+      })
+      .getImageDataUri(imgData.id, 'public');
+  } else {
+    // internal / 未指定: lh3 直リンクを直接組み立て
+    var sceneImageUrl = imgData.imageUrl
+      ? imgData.imageUrl
+      : 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
+
+    google.script.run
+      .withSuccessHandler(onHotspotsLoaded(sceneImageUrl))
+      .withFailureHandler(function () { startViewer(sceneImageUrl, [], null); })
+      .loadHotspots(imgData.id);
+  }
+}
+
+/**
+ * ローディング表示をパノラマエリアに合わせて表示する
+ */
+function showSceneLoading() {
+  var loading = document.getElementById('loading');
+  var sidebar = document.getElementById('scene-sidebar');
+  var hasSidebar = sidebar &&
+                   !sidebar.classList.contains('hidden') &&
+                   !sidebarCollapsed &&
+                   window.innerWidth > 600;
+  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.innerHTML = '<div class="loading-ring"></div><p>読み込んでいます...</p>';
+  loading.classList.remove('hidden');
+}
+
+function showSceneEmptyState(message) {
+  var loading = document.getElementById('loading');
+  var sidebar = document.getElementById('scene-sidebar');
+  var hasSidebar = sidebar &&
+                   !sidebar.classList.contains('hidden') &&
+                   !sidebarCollapsed &&
+                   window.innerWidth > 600;
+  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.innerHTML =
+    '<p style="font-size:14px;color:#71717A;text-align:center;padding:0 20px">' +
+    escapeHtml(message || 'シーン一覧から写真を選択してください。') +
+    '</p>';
+  loading.classList.remove('hidden');
+  document.getElementById('fullscreen-btn').classList.remove('visible');
+  document.getElementById('quality-toggle-btn').classList.remove('visible');
+  document.getElementById('gyro-toggle-btn').classList.remove('visible');
+  // シーン切り替え時にジャイロを停止・状態リセット
+  if (isGyroActive) {
+    if (viewer) { try { viewer.stopOrientation(); } catch (e) { /* ignore */ } }
+    isGyroActive = false;
+    updateGyroBtn();
+  }
+}
+
+/**
+ * Pannellumビューアを初期化し、ホットスポットを展開する
+ *
+ * @param {string} imageUrl  パノラマ画像URL
+ * @param {Array}  spots     ホットスポット配列
+ */
+function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
+  // Pannellum用にホットスポット設定を変換
+  var pannellumSpots = spots.map(function (hs, i) {
+    var pid = 'hs_' + i;
+    hs._pannellumId = pid;
+    return {
+      id: pid,
+      pitch: hs.pitch,
+      yaw:   hs.yaw,
+      type:  'custom',
+      cssClass: 'hs-marker',
+      createTooltipFunc: buildMarkerElement,
+      createTooltipArgs: hs,
+      clickHandlerFunc:  onMarkerClick,
+      clickHandlerArgs:  hs
+    };
+  });
+
+  var viewerConfig = {
+    type:           'equirectangular',
+    panorama:        imageUrl,
+    crossOrigin:    'anonymous',
+    autoLoad:        true,
+    autoRotate:     -1.5,
+    showControls:    false,
+    hotSpots:        pannellumSpots
+  };
+
+  // 振り返り視点: 前シーンのホットスポット方向の真反対を初期yawとして設定
+  if (typeof initialYaw === 'number' && isFinite(initialYaw)) {
+    viewerConfig.yaw = initialYaw;
+  }
+  if (typeof initialPitch === 'number' && isFinite(initialPitch)) {
+    viewerConfig.pitch = initialPitch;
+  }
+
+  // 有効な方位情報があればコンパスを有効化する
+  if (typeof northOffset === 'number' && isFinite(northOffset)) {
+    viewerConfig.compass = true;
+    viewerConfig.northOffset = northOffset;
+  }
+
+  viewer = pannellum.viewer('panorama', viewerConfig);
+
+  // パノラマ読み込み完了 → ローディング非表示・全画面ボタン表示
+  var loadHandled = false;
+  function onPanoramaLoaded() {
+    if (loadHandled) return;
+    loadHandled = true;
+    clearInterval(loadPollInterval);
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('fullscreen-btn').classList.add('visible');
+    document.getElementById('quality-toggle-btn').classList.add('visible');
+    document.getElementById('gyro-toggle-btn').classList.add('visible');
+    // 暗転オーバーレイを解除（フェードイン）
+    var ov = document.getElementById('scene-transition-overlay');
+    if (ov) ov.classList.remove('active');
+  }
+
+  viewer.on('load', onPanoramaLoaded);
+
+  // フォールバック: isLoaded()を0.5秒ごとにポーリング（最大60秒）
+  // loadイベントが発火しない場合でも確実にローディングを解除する
+  loadPollInterval = setInterval(function () {
+    if (viewer && viewer.isLoaded()) onPanoramaLoaded();
+  }, 500);
+  setTimeout(function () { clearInterval(loadPollInterval); }, 60000);
+
+  // エラー発生時
+  viewer.on('error', function () {
+    if (loadHandled) return;
+    loadHandled = true;
+    clearInterval(loadPollInterval);
+    var ov = document.getElementById('scene-transition-overlay');
+    if (ov) ov.classList.remove('active');
+    showLoadError('パノラマ画像の読み込みに失敗しました。');
+  });
+}
+
+// =============================================
+//  画質切り替えトグル
+// =============================================
+
+/**
+ * 画質トグルボタンの表示を現在の imageQualityMode に合わせて更新する。
+ */
+function updateQualityToggleBtn() {
+  var btn = document.getElementById('quality-toggle-btn');
+  var lbl = document.getElementById('quality-toggle-label');
+  if (!btn || !lbl) return;
+  if (imageQualityMode === 'high') {
+    btn.classList.remove('mode-fast');
+    btn.classList.add('mode-high');
+    lbl.textContent = '高画質';
+  } else {
+    btn.classList.remove('mode-high');
+    btn.classList.add('mode-fast');
+    lbl.textContent = '速度優先';
+  }
+}
+
+/**
+ * 画質モードをトグルし、現在の視点を保持したまま現在シーンを再ロードする。
+ */
+function toggleQuality() {
+  if (!currentFileId || isSwitching) return;
+
+  // 現在の視点を退避
+  var savedPitch = (viewer && typeof viewer.getPitch === 'function') ? viewer.getPitch() : null;
+  var savedYaw   = (viewer && typeof viewer.getYaw   === 'function') ? viewer.getYaw()   : null;
+
+  // モード反転
+  imageQualityMode = imageQualityMode === 'high' ? 'fast' : 'high';
+  updateQualityToggleBtn();
+
+  // プリロードキャッシュをクリア（品質変更後は古いキャッシュ不要）
+  preloadedScenes.clear();
+
+  // 現在表示中のシーン画像データを取得して再ロード
+  var imgData = getSceneImageById(currentFileId);
+  if (!imgData) return;
+
+  // imgData の imageUrl に埋め込まれている =s0 / =w4096 を新しいサフィックスで置き換える
+  var newImgData = Object.assign({}, imgData);
+  if (newImgData.imageUrl) {
+    newImgData.imageUrl = newImgData.imageUrl.replace(/=(s0|w\d+)$/, getQualitySuffix());
+  }
+
+  // isSwitching を管理しながら再ロード（previousSceneId は保持しない）
+  var prevPreviousSceneId = previousSceneId;
+  previousSceneId = null; // 画質切り替え時は振り返り視点ではなく退避した視点を使う
+
+  // startViewer が initialPitch/initialYaw を受け取れるよう loadScene を直接呼ばず
+  // ホットスポットを再取得しつつ退避した視点で再起動する
+  isSwitching = true;
+  showSceneLoading();
+  syncActiveSceneItem(imgData.id);
+  if (viewer) {
+    clearInterval(loadPollInterval);
+    try { viewer.destroy(); } catch (e) { /* ignore */ }
+    viewer = null;
+  }
+
+  var sceneLoadTimer = setTimeout(function () {
+    if (isSwitching) {
+      isSwitching = false;
+      showLoadError('画像の読み込みがタイムアウトしました。再度お試しください。');
+    }
+  }, 30000);
+
+  function onQualityHotspotsLoaded(imageUrl) {
+    return function (res) {
+      clearTimeout(sceneLoadTimer);
+      var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
+      var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
+      previousSceneId = prevPreviousSceneId;
+      hide2DView();
+      initViewer(imageUrl, spots, north, savedYaw, savedPitch);
+      document.getElementById('fullscreen-btn').classList.add('visible');
+      document.getElementById('quality-toggle-btn').classList.add('visible');
+      document.getElementById('gyro-toggle-btn').classList.add('visible');
+      isSwitching = false;
+    };
+  }
+
+  var baseUrl = newImgData.imageUrl
+    ? newImgData.imageUrl
+    : 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
+
+  google.script.run
+    .withSuccessHandler(onQualityHotspotsLoaded(baseUrl))
+    .withFailureHandler(function () {
+      clearTimeout(sceneLoadTimer);
+      previousSceneId = prevPreviousSceneId;
+      hide2DView();
+      initViewer(baseUrl, [], null, savedYaw, savedPitch);
+      document.getElementById('fullscreen-btn').classList.add('visible');
+      document.getElementById('quality-toggle-btn').classList.add('visible');
+      document.getElementById('gyro-toggle-btn').classList.add('visible');
+      isSwitching = false;
+    })
+    .loadHotspots(imgData.id);
+}
+
+// =============================================
+//  ジャイロ（DeviceOrientation）トグル
+// =============================================
+
+/**
+ * ジャイロボタンの表示状態を isGyroActive に合わせて更新する。
+ */
+function updateGyroBtn() {
+  var btn = document.getElementById('gyro-toggle-btn');
+  if (!btn) return;
+  btn.classList.toggle('gyro-active', isGyroActive);
+  btn.title = isGyroActive ? 'ジャイロOFF' : 'ジャイロON';
+}
+
+/**
+ * ジャイロ操作をON/OFFする。
+ * iOS 13+ では DeviceOrientationEvent.requestPermission() を呼び出して
+ * ユーザーの許可を得てから startOrientation() を実行する。
+ */
+function toggleGyro() {
+  if (isGyroActive) {
+    // ---- OFF ----
+    if (viewer) {
+      try { viewer.stopOrientation(); } catch (e) { /* ignore */ }
+    }
+    isGyroActive = false;
+    updateGyroBtn();
+    return;
+  }
+
+  // ---- ON ----
+  function startGyro() {
+    if (!viewer) return;
+    try {
+      viewer.startOrientation();
+      isGyroActive = true;
+      updateGyroBtn();
+    } catch (e) {
+      showToast('ジャイロの起動に失敗しました', 'error');
+    }
+  }
+
+  // iOS 13+ Safari: requestPermission が必要
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(function (permission) {
+        if (permission === 'granted') {
+          startGyro();
+        } else {
+          showToast('ジャイロの許可が得られませんでした', 'error');
+        }
+      })
+      .catch(function () {
+        showToast('ジャイロの許可リクエストに失敗しました', 'error');
+      });
+  } else {
+    // Android / デスクトップ等: 許可不要でそのまま開始
+    startGyro();
+  }
+}
+
+// =============================================
+//  サイドバー折りたたみ / 展開
+// =============================================
+
+/**
+ * サイドバーの折りたたみ状態をトグルする（フォルダモード専用）
+ */
+function toggleSidebar() {
+  if (!allImages) return;
+
+  var sidebar   = document.getElementById('scene-sidebar');
+  var expandTab = document.getElementById('sidebar-expand-tab');
+  var panorama  = document.getElementById('panorama');
+
+  sidebarCollapsed = !sidebarCollapsed;
+
+  var flatMap = document.getElementById('flat-map-container');
+  if (sidebarCollapsed) {
+    // 折りたたみ: panorama を先に広げてからサイドバーをスライドアウト
+    panorama.classList.remove('with-sidebar');
+    flatMap.classList.remove('with-sidebar');
+    sidebar.classList.add('collapsed');
+    expandTab.classList.remove('hidden');
+    // Pannellumのリサイズ通知（アニメーション完了後）
+    setTimeout(function () {
+      window.dispatchEvent(new Event('resize'));
+    }, 320);
+  } else {
+    // 展開: サイドバーをスライドインしてから panorama を縮める
+    sidebar.classList.remove('collapsed');
+    expandTab.classList.add('hidden');
+    setTimeout(function () {
+      panorama.classList.add('with-sidebar');
+      flatMap.classList.add('with-sidebar');
+      window.dispatchEvent(new Event('resize'));
+    }, 280);
+  }
+}
+
+// =============================================
+//  全画面表示切り替え (確実なハイブリッド版)
+// =============================================
+
+var isCssFullscreen = false;
+
+function toggleFullscreen() {
+  // すでにCSS全画面状態（古いフォールバック）なら解除
+  if (isCssFullscreen) {
+    exitCssFullscreen_();
+    return;
+  }
+
+  var doc = document.documentElement;
+  var requestFS = doc.requestFullscreen || doc.webkitRequestFullscreen || doc.mozRequestFullScreen || doc.msRequestFullscreen;
+  var isFS = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+
+  if (!isFS) {
+    if (requestFS) {
+      try {
+        // 1. まずはネイティブ全画面を試みる
+        var promise = requestFS.call(doc);
+        if (promise && promise.catch) {
+          promise.catch(function (err) {
+            console.warn("Fullscreen API error:", err);
+            // 2. ブロックされた場合は別タブで開き直す
+            openInNewTab_();
+          });
+        }
+      } catch (err) {
+        console.warn("Fullscreen API try-catch error:", err);
+        openInNewTab_();
+      }
+    } else {
+      // API自体が存在しない古いブラウザ等でも別タブへ
+      openInNewTab_();
+    }
+  } else {
+    // 全画面解除
+    var exitFS = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+    if (exitFS) {
+      exitFS.call(document);
+    }
+  }
+}
+
+// 別タブで開き直す処理
+function openInNewTab_() {
+  var targetUrl = appBaseUrl || window.location.href;
+  if (appMode && targetUrl.indexOf('mode=') === -1) {
+    var separator = targetUrl.indexOf('?') !== -1 ? '&' : '?';
+    targetUrl += separator + 'mode=' + appMode;
+  }
+  window.open(targetUrl, '_blank', 'noopener,noreferrer');
+}
+
+function enterCssFullscreen_() {
+  isCssFullscreen = true;
+  document.body.classList.add('is-fullscreen', 'css-fullscreen');
+  updateFullscreenIcon_(true);
+}
+
+function exitCssFullscreen_() {
+  isCssFullscreen = false;
+  document.body.classList.remove('is-fullscreen', 'css-fullscreen');
+  updateFullscreenIcon_(false);
+}
+
+function updateFullscreenIcon_(isFullscreen) {
+  var icon = document.getElementById('fullscreen-icon');
+  var btn = document.getElementById('fullscreen-btn');
+  if (isFullscreen) {
+    icon.innerHTML =
+      '<polyline points="4 14 10 14 10 20"/>' +
+      '<polyline points="20 10 14 10 14 4"/>' +
+      '<line x1="10" y1="14" x2="3" y2="21"/>' +
+      '<line x1="21" y1="3" x2="14" y2="10"/>';
+    btn.title = '全画面を終了';
+  } else {
+    icon.innerHTML =
+      '<polyline points="15 3 21 3 21 9"/>' +
+      '<polyline points="9 21 3 21 3 15"/>' +
+      '<line x1="21" y1="3" x2="14" y2="10"/>' +
+      '<line x1="3" y1="21" x2="10" y2="14"/>';
+    btn.title = '全画面表示';
+  }
+}
+
+// 全画面状態変化でアイコンを切り替える
+['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'].forEach(function(evtName) {
+  document.addEventListener(evtName, function () {
+    var isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+    document.body.classList.toggle('is-fullscreen', isFullscreen);
+    updateFullscreenIcon_(isFullscreen);
+  });
+});
+
+function normalizeMarkerShape(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return MARKER_SHAPE_LABELS[normalized] ? normalized : DEFAULT_MARKER_SHAPE;
+}
+
+function normalizeMarkerColor(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return MARKER_COLOR_LABELS[normalized] ? normalized : DEFAULT_MARKER_COLOR;
+}
+
+function normalizeMarkerIcon(value) {
+  var normalized = String(value || '').trim().toLowerCase();
+  return MARKER_ICON_LABELS[normalized] ? normalized : DEFAULT_MARKER_ICON;
+}
+
+function applyMarkerClasses(target, shape, color) {
+  if (!target) return;
+  var normalizedShape = normalizeMarkerShape(shape);
+  var normalizedColor = normalizeMarkerColor(color);
+  target.classList.remove('marker-shape-circle', 'marker-shape-square', 'marker-shape-diamond', 'marker-shape-star');
+  target.classList.remove('marker-color-blue', 'marker-color-green', 'marker-color-orange', 'marker-color-purple', 'marker-color-white', 'marker-color-gray', 'marker-color-yellow', 'marker-color-red');
+  target.classList.add('marker-shape-' + normalizedShape, 'marker-color-' + normalizedColor);
+}
+
+function applyMarkerIconClass(target, icon) {
+  if (!target) return;
+  var normalizedIcon = normalizeMarkerIcon(icon);
+  target.classList.remove('marker-icon-info', 'marker-icon-photo', 'marker-icon-wifi', 'marker-icon-quiz');
+  target.classList.add('marker-icon-' + normalizedIcon);
+}
+
+function updateMarkerStyleSummary(shape, color, icon) {
+  var normalizedShape = normalizeMarkerShape(shape);
+  var normalizedColor = normalizeMarkerColor(color);
+  var normalizedIcon = normalizeMarkerIcon(icon);
+  var preview = document.getElementById('marker-style-preview');
+  var previewIcon = preview.querySelector('.hs-marker-core');
+  var summary = document.getElementById('marker-style-summary-text');
+  applyMarkerClasses(preview, normalizedShape, normalizedColor);
+  applyMarkerIconClass(previewIcon, normalizedIcon);
+  summary.textContent = MARKER_SHAPE_LABELS[normalizedShape] + '・' + MARKER_COLOR_LABELS[normalizedColor] + '・' + MARKER_ICON_LABELS[normalizedIcon];
+}
+
+function loadMarkerStylePreference() {
+  try {
+    lastMarkerShape = normalizeMarkerShape(window.localStorage.getItem('hsMarkerShape'));
+    lastMarkerColor = normalizeMarkerColor(window.localStorage.getItem('hsMarkerColor'));
+    lastMarkerIcon = normalizeMarkerIcon(window.localStorage.getItem('hsMarkerIcon'));
+  } catch (e) {
+    lastMarkerShape = DEFAULT_MARKER_SHAPE;
+    lastMarkerColor = DEFAULT_MARKER_COLOR;
+    lastMarkerIcon = DEFAULT_MARKER_ICON;
+  }
+}
+
+function persistMarkerStylePreference(shape, color, icon) {
+  var normalizedShape = normalizeMarkerShape(shape);
+  var normalizedColor = normalizeMarkerColor(color);
+  var normalizedIcon = normalizeMarkerIcon(icon);
+  lastMarkerShape = normalizedShape;
+  lastMarkerColor = normalizedColor;
+  lastMarkerIcon = normalizedIcon;
+  try {
+    window.localStorage.setItem('hsMarkerShape', normalizedShape);
+    window.localStorage.setItem('hsMarkerColor', normalizedColor);
+    window.localStorage.setItem('hsMarkerIcon', normalizedIcon);
+  } catch (e) {
+    // localStorage が使えない環境でもメモリ上の既定値は維持する
+  }
+  updateMarkerStyleSummary(normalizedShape, normalizedColor, normalizedIcon);
+}
+
+function syncMarkerStyleInputsFromPreference() {
+  var shapeInput = document.getElementById('marker-shape');
+  var colorInput = document.getElementById('marker-color');
+  var iconInput = document.getElementById('marker-icon');
+  shapeInput.value = lastMarkerShape;
+  colorInput.value = lastMarkerColor;
+  iconInput.value = lastMarkerIcon;
+  updateMarkerStyleSummary(lastMarkerShape, lastMarkerColor, lastMarkerIcon);
+}
+
+function syncMarkerStyleSummaryFromInputs() {
+  var shapeInput = document.getElementById('marker-shape');
+  var colorInput = document.getElementById('marker-color');
+  var iconInput = document.getElementById('marker-icon');
+  updateMarkerStyleSummary(shapeInput.value, colorInput.value, iconInput.value);
+}
+
+function repositionHotspotPopupWithinViewport() {
+  var popup = document.getElementById('hotspot-popup');
+  if (!popup.classList.contains('visible')) return;
+  var left = parseFloat(popup.style.left || '0');
+  var top = parseFloat(popup.style.top || '0');
+  var maxLeft = Math.max(10, window.innerWidth - popup.offsetWidth - 10);
+  var maxTop = Math.max(10, window.innerHeight - popup.offsetHeight - 10);
+  popup.style.left = Math.min(Math.max(left, 10), maxLeft) + 'px';
+  popup.style.top = Math.min(Math.max(top, 70), maxTop) + 'px';
+}
+
+function setMarkerStylePanelExpanded(isExpanded) {
+  document.getElementById('marker-style-panel').classList.toggle('expanded', isExpanded);
+  repositionHotspotPopupWithinViewport();
+}
+
+function toggleMarkerStylePanel() {
+  var panel = document.getElementById('marker-style-panel');
+  setMarkerStylePanelExpanded(!panel.classList.contains('expanded'));
+}
+
+/**
+ * ポップアップの表示モードを切り替える
+ * @param {string} mode  'type' | 'info' | 'jump'
+ */
+function setPopupMode(mode) {
+  var inFolderMode = !!(allImages && allImages.length > 0);
+  currentPopupMode = mode;
+  var typeSelector = document.getElementById('hs-type-selector');
+  var form         = document.getElementById('hs-form');
+  var infoFields   = document.getElementById('hs-info-fields');
+  var jumpFields   = document.getElementById('hs-jump-fields');
+  var photoGroup   = document.getElementById('photo-select-group');
+  var backBtn      = document.getElementById('hs-back-btn');
+
+  if (mode === 'type') {
+    typeSelector.style.display = '';
+    form.style.display         = 'none';
+    document.getElementById('popup-header-title').textContent = 'ホットスポットを追加';
+  } else {
+    typeSelector.style.display = 'none';
+    form.style.display         = '';
+    infoFields.style.display   = mode === 'info' ? '' : 'none';
+    jumpFields.style.display   = mode === 'jump' ? '' : 'none';
+    // 写真セレクトはフォルダモード×情報モードのみ
+    if (photoGroup) photoGroup.style.display = (inFolderMode && mode === 'info') ? '' : 'none';
+    // 戻るボタン: 新規追加×フォルダモードなら「← 戻る」、それ以外は「キャンセル」
+    var canGoBack = !editingHotspot && inFolderMode;
+    backBtn.textContent = canGoBack ? '← 戻る' : 'キャンセル';
+    // タイトル・保存ボタンテキスト
+    if (!editingHotspot) {
+      document.getElementById('popup-header-title').textContent =
+        mode === 'jump' ? 'ジャンプスポットを追加' : '情報スポットを追加';
+      document.getElementById('save-label').textContent = '保存する';
+    }
+    setMarkerStylePanelExpanded(false);
+    setTimeout(function () { document.getElementById('input-label').focus(); }, 60);
+  }
+  repositionHotspotPopupWithinViewport();
+}
+
+/**
+ * quiz/info の説明欄を切り替える。
+ * isQuiz=true → 質問・答えの2欄を表示、通常説明欄を非表示
+ */
+function setQuizDescMode(isQuiz) {
+  document.getElementById('hs-desc-group').style.display      = isQuiz ? 'none' : '';
+  document.getElementById('hs-quiz-desc-group').style.display = isQuiz ? '' : 'none';
+}
+
+/** タイプ選択ボタンクリック */
+function selectHotspotType(type) {
+  if (type === 'quiz') {
+    setPopupMode('info');
+    document.getElementById('marker-icon').value = 'quiz';
+    syncMarkerStyleSummaryFromInputs();
+    document.getElementById('quiz-input-question').value = '';
+    document.getElementById('quiz-input-answer').value   = '';
+    setQuizDescMode(true);
+    document.getElementById('popup-header-title').textContent = 'クイズスポットを追加';
+  } else {
+    setPopupMode(type);
+    setQuizDescMode(false);
+  }
+}
+
+/** フォーム画面の「戻る / キャンセル」ボタン */
+function onBackOrCancelClick() {
+  var inFolderMode = !!(allImages && allImages.length > 0);
+  if (!editingHotspot && inFolderMode) {
+    setPopupMode('type');
+  } else {
+    closePopup();
+  }
+}
+
+// =============================================
+//  ホットスポットマーカー要素の生成
+//  Pannellumの createTooltipFunc として呼ばれる
+// =============================================
+function buildMarkerElement(container, args) {
+  var core = document.createElement('span');
+  core.className = 'hs-marker-core';
+  container.textContent = '';
+  applyMarkerClasses(container, args && args.markerShape, args && args.markerColor);
+  applyMarkerIconClass(core, args && args.markerIcon);
+  container.appendChild(core);
+
+  // 編集モード: 右クリックでコンテキストメニューを表示
+  container.addEventListener('contextmenu', function (evt) {
+    if (!isEditMode) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+    openHotspotContextMenu(evt, args);
+  });
+
+  // ホバーツールチップ
+  if (args && args.jumpSceneId) {
+    // ジャンプ先がある場合: ジャンプ先シーン名を表示
+    container.addEventListener('mouseenter', function () {
+      if (isEditMode) return;
+      showJumpTooltip(container, args.jumpSceneId);
+    });
+    container.addEventListener('mouseleave', function () {
+      hideJumpTooltip();
+    });
+  } else if (args && args.label) {
+    // 通常ホットスポット: ラベルを表示
+    container.addEventListener('mouseenter', function () {
+      if (isEditMode) return;
+      showLabelTooltip(container, args.label);
+    });
+    container.addEventListener('mouseleave', function () {
+      hideJumpTooltip();
+    });
+  }
+}
+
+// =============================================
+//  閲覧モード: マーカークリックで情報を表示
+// =============================================
+function onMarkerClick(evt, args) {
+  if (isEditMode) return; // 編集モード中は無効
+
+  // ジャンプ機能: jumpSceneId が設定されていればシーン移動
+  if (args && args.jumpSceneId) {
+    hideJumpTooltip();
+    var target = getSceneImageById(args.jumpSceneId);
+    if (target) {
+      previousSceneId = currentFileId; // 振り返り視点用: 移動前のシーンIDを記憶
+      loadScene(target);
+    } else {
+      showToast('ジャンプ先のシーンが見つかりません。', 'error');
+    }
+    return;
+  }
+
+  // クイズモード: icon が 'quiz' の場合はフリップカードモーダルを表示
+  if (args && args.markerIcon === 'quiz') {
+    var quizOverlay = document.getElementById('quiz-modal-overlay');
+    var quizCard    = document.getElementById('quiz-card');
+    var parts       = (args.description || '').split('|');
+    var question    = parts[0].trim() || '問題が設定されていません';
+    var answer      = parts.length > 1 ? parts[1].trim() : '答えが設定されていません';
+    var linkUrl     = normalizeHttpUrl(args.linkUrl);
+
+    document.getElementById('quiz-card-title').textContent    = args.label || 'クイズ';
+    document.getElementById('quiz-card-question').innerHTML = escapeHtml(question).replace(/\r?\n|\r/g, '<br>');
+    document.getElementById('quiz-card-answer').innerHTML   = escapeHtml(answer).replace(/\r?\n|\r/g, '<br>');
+
+    var linkEl = document.getElementById('quiz-card-link');
+    if (linkUrl) {
+      linkEl.href = linkUrl;
+      linkEl.classList.remove('hidden');
+    } else {
+      linkEl.href = '#';
+      linkEl.classList.add('hidden');
+    }
+
+    quizCard.classList.remove('is-flipped');
+    quizOverlay.classList.remove('hidden');
+    return;
+  }
+
+  // 情報表示モード: 既存のポップアップを閉じる
+  var existing = document.getElementById('active-info-popup');
+  if (existing) existing.remove();
+
+  var popup = document.createElement('div');
+  popup.id = 'active-info-popup';
+  popup.className = 'info-popup';
+
+  // 画面端からはみ出ないよう位置を補正
+  var x = Math.min(evt.clientX + 12, window.innerWidth  - 310);
+  var y = Math.max(evt.clientY - 110, 68);
+  y = Math.min(y, window.innerHeight - 180);
+  popup.style.left = x + 'px';
+  popup.style.top  = y + 'px';
+
+  var linkUrl = normalizeHttpUrl(args && args.linkUrl);
+  var linkHtml = '';
+  if (linkUrl) {
+    linkHtml =
+      '<div style="margin-top:10px">' +
+      '  <a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+      '     style="font-size:13px;font-weight:600;color:#2563eb;text-decoration:underline">' +
+      '    リンクを開く' +
+      '  </a>' +
+      '</div>';
+  }
+
+  // 写真プレースホルダー（写真IDがあれば後から差し替え）
+  var photoHtml = '';
+  if (args && args.photoId) {
+    photoHtml = '<div class="info-popup-photo-placeholder" id="popup-photo-area">写真を読み込んでいます...</div>';
+  }
+
+  popup.innerHTML =
+    '<div class="info-popup-header">' +
+    '  <span class="info-popup-title">' + escapeHtml(args.label) + '</span>' +
+    '  <button class="info-popup-close" onclick="document.getElementById(\'active-info-popup\').remove()">&times;</button>' +
+    '</div>' +
+    '<div class="info-popup-divider"></div>' +
+    photoHtml +
+    (args.description ? '<p class="info-popup-body">' + escapeHtml(args.description).replace(/\r?\n|\r/g, '<br>') + '</p>' : '') +
+    linkHtml;
+
+  document.getElementById('ui-overlay').appendChild(popup);
+
+  // 写真の遅延ロード
+  if (args && args.photoId) {
+    renderPhotoInPopup(popup, args.photoId);
+  }
+}
+
+/**
+ * 情報ポップアップに写真を表示する（GASから取得、キャッシュあり）
+ */
+function renderPhotoInPopup(popup, photoId) {
+  function showPhotoInArea(dataUri) {
+    var area = popup.querySelector('#popup-photo-area');
+    if (!area) return;
+    var img = document.createElement('img');
+    img.className = 'info-popup-photo';
+    img.src = dataUri;
+    img.alt = '';
+    area.parentNode.replaceChild(img, area);
+  }
+
+  // キャッシュあり
+  if (photoCache[photoId]) {
+    showPhotoInArea(photoCache[photoId]);
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      var area = popup.querySelector('#popup-photo-area');
+      if (!area) return; // popup が閉じられた場合
+      if (result && result.success) {
+        photoCache[photoId] = result.dataUri;
+        showPhotoInArea(result.dataUri);
+      } else {
+        area.textContent = '写真を読み込めませんでした';
+      }
+    })
+    .withFailureHandler(function () {
+      var area = popup.querySelector('#popup-photo-area');
+      if (area) area.textContent = '写真を読み込めませんでした';
+    })
+    .getHotspotPhotoDataUri(photoId);
+}
+
+/**
+ * ラベルホバーツールチップを表示する（通常ホットスポット用）
+ */
+function showLabelTooltip(markerEl, label) {
+  hideJumpTooltip();
+  var tip = document.createElement('div');
+  tip.className = 'jump-hover-tooltip';
+  tip.textContent = label;
+
+  var rect = markerEl.getBoundingClientRect();
+  tip.style.left = (rect.left + rect.width / 2) + 'px';
+  tip.style.top  = (rect.top - 44) + 'px';
+
+  document.getElementById('ui-overlay').appendChild(tip);
+  activeJumpTooltip = tip;
+}
+
+/**
+ * ジャンプ先ホバーツールチップを表示する
+ */
+function showJumpTooltip(markerEl, jumpSceneId) {
+  hideJumpTooltip();
+  var scene = getSceneImageById(jumpSceneId);
+  var sceneName = scene ? scene.name : jumpSceneId;
+
+  var tip = document.createElement('div');
+  tip.className = 'jump-hover-tooltip';
+  tip.innerHTML =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+    '<polyline points="9 18 15 12 9 6"/>' +
+    '</svg>' +
+    escapeHtml(sceneName) + ' へ';
+
+  var rect = markerEl.getBoundingClientRect();
+  tip.style.left = (rect.left + rect.width / 2) + 'px';
+  tip.style.top  = (rect.top - 44) + 'px';
+
+  document.getElementById('ui-overlay').appendChild(tip);
+  activeJumpTooltip = tip;
+}
+
+/**
+ * ジャンプ先ホバーツールチップを非表示にする
+ */
+function hideJumpTooltip() {
+  if (activeJumpTooltip) {
+    activeJumpTooltip.remove();
+    activeJumpTooltip = null;
+  }
+}
+
+// =============================================
+//  モード切り替え
+// =============================================
+function toggleMode() {
+  isEditMode = !isEditMode;
+
+  var topbar     = document.getElementById('topbar');
+  var badge      = document.getElementById('mode-badge');
+  var modeLabel  = document.getElementById('mode-label');
+  var toggleLbl  = document.getElementById('toggle-label');
+  var toggleIco  = document.getElementById('toggle-icon');
+  var editBanner = document.getElementById('edit-banner');
+  var panoramaEl = document.getElementById('panorama');
+  var sidebar    = document.getElementById('scene-sidebar');
+  var expandTab  = document.getElementById('sidebar-expand-tab');
+
+  var bulkInputGroup = document.getElementById('bulk-input-group');
+
+  var uploadBtn = document.getElementById('upload-btn');
+  var openFolderBtn = document.getElementById('open-folder-btn');
+
+  if (isEditMode) {
+    // --- 編集モードへ ---
+    if (bulkInputGroup) bulkInputGroup.style.display = 'flex';
+    if (uploadBtn) uploadBtn.style.display = 'block';
+    if (openFolderBtn && rootFolderId) openFolderBtn.style.display = 'block';
+    topbar.classList.add('edit-active');
+    badge.classList.add('edit-active');
+    modeLabel.textContent = '編集中';
+    toggleLbl.textContent = '閲覧モード';
+    toggleIco.innerHTML =
+      '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>' +
+      '<circle cx="12" cy="12" r="3"/>';
+    editBanner.classList.add('visible');
+    sidebar.classList.add('with-banner');
+    expandTab.classList.add('with-banner');
+    panoramaEl.style.cursor = 'crosshair';
+    if (viewer) viewer.stopAutoRotate();
+
+    var infoPop = document.getElementById('active-info-popup');
+    if (infoPop) infoPop.remove();
+
+    // 2Dモード: 編集用カーソルとバナーテキスト更新
+    if (is2DMode) {
+      var flatImg = document.getElementById('flat-map-img');
+      if (flatImg) flatImg.style.cursor = 'crosshair';
+      var editBannerSpan = editBanner.querySelector('span');
+      if (editBannerSpan) editBannerSpan.textContent = '編集モードが有効です。2D画像の任意の場所をクリックしてホットスポットを追加できます。';
+      render2DHotspots(current2DHotspots); // コンテキストメニューイベントを付け替え
+    } else {
+      var editBannerSpan = editBanner.querySelector('span');
+      if (editBannerSpan) editBannerSpan.textContent = '編集モードが有効です。360度画像の任意の場所をクリックしてホットスポットを追加できます。';
+    }
+
+  } else {
+    // --- 閲覧モードへ ---
+    if (bulkInputGroup) bulkInputGroup.style.display = 'none';
+    if (uploadBtn) uploadBtn.style.display = 'none';
+    if (openFolderBtn) openFolderBtn.style.display = 'none';
+    topbar.classList.remove('edit-active');
+    badge.classList.remove('edit-active');
+    modeLabel.textContent = '閲覧中';
+    toggleLbl.textContent = '編集モード';
+    toggleIco.innerHTML =
+      '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>' +
+      '<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>';
+    editBanner.classList.remove('visible');
+    sidebar.classList.remove('with-banner');
+    expandTab.classList.remove('with-banner');
+    panoramaEl.style.cursor = 'grab';
+    closePopup();
+    editModeDragStart = null;
+    editModeWasDragging = false;
+    if (viewer) viewer.startAutoRotate(-1.5);
+
+    // 2Dモード: 閲覧用カーソルに戻す
+    if (is2DMode) {
+      var flatImg = document.getElementById('flat-map-img');
+      if (flatImg) flatImg.style.cursor = 'default';
+      render2DHotspots(current2DHotspots); // コンテキストメニューイベントを取り除いて再描画
+    }
+  }
+}
+
+function shouldIgnorePanoramaPointer(evt) {
+  return !!(evt.target && evt.target.closest('#topbar, #edit-banner, #hotspot-popup, #scene-sidebar, #scene-context-menu, #hotspot-context-menu, #scene-properties-backdrop, .hs-marker, .info-popup, #fullscreen-btn, #gyro-toggle-btn'));
+}
+
+function setPanningState(isActive) {
+  isPanning = isActive;
+  document.body.classList.toggle('is-panning', isActive);
+}
+
+function onPanoramaPointerDown(evt) {
+  if (shouldIgnorePanoramaPointer(evt)) return;
+  setPanningState(true);
+}
+
+function onPanoramaPointerUp() {
+  if (!isPanning) return;
+  setPanningState(false);
+}
+
+// =============================================
+//  編集モード: ドラッグとクリックの判別（mousedown/move/up）
+// =============================================
+function onPanoramaMouseDown(evt) {
+  if (!isEditMode) return;
+  if (shouldIgnorePanoramaPointer(evt)) return;
+  editModeDragStart   = { x: evt.clientX, y: evt.clientY };
+  editModeWasDragging = false;
+}
+
+function onPanoramaMouseMove(evt) {
+  if (!isEditMode || !editModeDragStart) return;
+  var dx = evt.clientX - editModeDragStart.x;
+  var dy = evt.clientY - editModeDragStart.y;
+  if (dx * dx + dy * dy > EDIT_MODE_DRAG_THRESHOLD_PX * EDIT_MODE_DRAG_THRESHOLD_PX) {
+    editModeWasDragging = true;
+  }
+}
+
+function onPanoramaMouseUp() {
+  editModeDragStart = null;
+}
+
+// =============================================
+//  編集モード: パノラマクリックで座標取得
+// =============================================
+function onPanoramaClick(evt) {
+  if (!isEditMode) return;
+  if (suppressNextPanoramaClick) {
+    suppressNextPanoramaClick = false;
+    return;
+  }
+
+  // ドラッグ後のクリックは無視（ホットスポット追加を開かない）
+  if (editModeWasDragging) {
+    editModeWasDragging = false;
+    return;
+  }
+  editModeWasDragging = false;
+
+  // UIコントロールへのクリックは除外
+  if (shouldIgnorePanoramaPointer(evt)) return;
+
+  // ── 移動モード ──────────────────────────────────────
+  if (isMovingHotspot) {
+    var target = movingHotspotTarget;
+    if (!target) {
+      isMovingHotspot = false;
+      return;
+    }
+
+    var newCoords;
+    try {
+      newCoords = viewer.mouseEventToCoords(evt);
+    } catch (e) {
+      showToast('座標の取得に失敗しました。再度クリックしてください。', 'error');
+      return;
+    }
+
+    var newPitch = newCoords[0];
+    var newYaw   = newCoords[1];
+
+    // 二重クリック防止
+    isMovingHotspot = false;
+    movingHotspotTarget = null;
+
+    showToast('移動中...', 'success');
+
+    var saveData = {
+      fileId:      currentFileId || '',
+      label:       target.label       || '',
+      description: target.description || '',
+      linkUrl:     target.linkUrl     || '',
+      markerShape: target.markerShape || '',
+      markerColor: target.markerColor || '',
+      markerIcon:  target.markerIcon  || '',
+      pitch:       newPitch,
+      yaw:         newYaw,
+      photoId:     target.photoId     || '',
+      jumpSceneId: target.jumpSceneId || ''
+    };
+
+    google.script.run
+      .withSuccessHandler(function (result) {
+        if (result.success) {
+          target.pitch = newPitch;
+          target.yaw   = newYaw;
+          updateSpotInViewer(target, target);
+          showToast('ホットスポットを移動しました！', 'success');
+        } else {
+          isMovingHotspot = false;
+          movingHotspotTarget = null;
+          showToast('移動に失敗しました: ' + (result.error || '不明なエラー'), 'error');
+        }
+      })
+      .withFailureHandler(function () {
+        isMovingHotspot = false;
+        movingHotspotTarget = null;
+        showToast('通信エラーが発生しました。再度お試しください。', 'error');
+      })
+      .updateHotspot(saveData, target.id);
+
+    return;
+  }
+
+  // ── 通常モード: 新規ホットスポット追加 ───────────────
+  try {
+    // Pannellum APIでマウス座標 → パノラマ座標（Pitch/Yaw）に変換
+    var coords = viewer.mouseEventToCoords(evt);
+    pendingPitch = coords[0];
+    pendingYaw   = coords[1];
+    openPopup(evt.clientX, evt.clientY);
+  } catch (e) {
+    showToast('座標の取得に失敗しました。再度クリックしてください。', 'error');
+  }
+}
+
+// =============================================
+//  入力ポップアップの開閉
+// =============================================
+
+/**
+ * ホットスポット入力ポップアップを開く
+ *
+ * @param {number} clientX   クリック位置X（画面座標）
+ * @param {number} clientY   クリック位置Y（画面座標）
+ * @param {Object} [editArgs] 編集時: 既存ホットスポットのargs。未指定なら新規追加
+ */
+function openPopup(clientX, clientY, editArgs) {
+  var popup = document.getElementById('hotspot-popup');
+  var inFolderMode = !!(allImages && allImages.length > 0);
+
+  if (editArgs) {
+    // 編集モード: 既存データを入力欄にセット
+    editingHotspot = editArgs;
+    pendingPitch   = editArgs.pitch;
+    pendingYaw     = editArgs.yaw;
+    document.getElementById('input-label').value    = editArgs.label || '';
+    document.getElementById('input-link-url').value = editArgs.linkUrl || '';
+    document.getElementById('marker-shape').value   = normalizeMarkerShape(editArgs.markerShape);
+    document.getElementById('marker-color').value   = normalizeMarkerColor(editArgs.markerColor);
+    document.getElementById('marker-icon').value    = normalizeMarkerIcon(editArgs.markerIcon);
+    syncMarkerStyleSummaryFromInputs();
+    var isQuizEdit = normalizeMarkerIcon(editArgs.markerIcon) === 'quiz';
+    if (isQuizEdit) {
+      var parts = (editArgs.description || '').split('|');
+      document.getElementById('quiz-input-question').value = parts[0] || '';
+      document.getElementById('quiz-input-answer').value   = parts.length > 1 ? parts[1] : '';
+      document.getElementById('input-desc').value = '';
+    } else {
+      document.getElementById('input-desc').value = editArgs.description || '';
+    }
+    setQuizDescMode(isQuizEdit);
+    document.getElementById('popup-header-title').textContent =
+      isQuizEdit ? 'クイズスポットを編集' : 'ホットスポットを編集';
+    document.getElementById('save-label').textContent = '更新する';
+  } else {
+    // 新規追加モード
+    editingHotspot = null;
+    document.getElementById('input-label').value         = '';
+    document.getElementById('input-desc').value          = '';
+    document.getElementById('quiz-input-question').value = '';
+    document.getElementById('quiz-input-answer').value   = '';
+    document.getElementById('input-link-url').value      = '';
+    setQuizDescMode(false);
+    syncMarkerStyleInputsFromPreference();
+    document.getElementById('popup-header-title').textContent = 'ホットスポットを追加';
+    document.getElementById('save-label').textContent = '保存する';
+  }
+
+  // フォルダモードなら写真・ジャンプセレクトをビルド
+  if (inFolderMode) {
+    buildPhotoSelect(editArgs ? (editArgs.photoId || '') : '');
+    buildJumpSceneSelect(editArgs ? (editArgs.jumpSceneId || '') : '');
+  }
+
+  document.getElementById('input-label').classList.remove('error');
+
+  // ポップアップモードを決定
+  if (editArgs) {
+    // 編集: ジャンプSceneIdがあればジャンプモード、それ以外は情報モード
+    setPopupMode(editArgs.jumpSceneId ? 'jump' : 'info');
+  } else if (inFolderMode) {
+    // 新規×フォルダモード: タイプ選択画面
+    setPopupMode('type');
+  } else {
+    // 新規×シングルファイル: 情報モード直接
+    setPopupMode('info');
+  }
+
+  // 画面端から 10px 以上余白を確保して配置
+  var pw = 320;
+  var vw = window.innerWidth, vh = window.innerHeight;
+  popup.style.visibility = 'hidden';
+  popup.classList.add('visible');
+  var ph = popup.offsetHeight || 360;
+  var x = Math.min(clientX + 12, vw - pw - 10);
+  var y = Math.min(Math.max(clientY - 20, 70), vh - ph - 10);
+  popup.style.left = x + 'px';
+  popup.style.top  = y + 'px';
+  popup.style.visibility = '';
+}
+
+function closePopup() {
+  document.getElementById('hotspot-popup').classList.remove('visible');
+  document.getElementById('hotspot-popup').style.visibility = '';
+  pendingPitch      = null;
+  pendingYaw        = null;
+  editingHotspot    = null;
+  currentPopupMode  = null;
+  // タイトル・ボタンテキストをデフォルトに戻す
+  document.getElementById('popup-header-title').textContent = 'ホットスポットを追加';
+  document.getElementById('save-label').textContent = '保存する';
+}
+
+// =============================================
+//  ホットスポット保存（GAS呼び出し）
+// =============================================
+function onSaveClick() {
+  var label = document.getElementById('input-label').value.trim();
+  var markerIconRaw = document.getElementById('marker-icon').value;
+  var desc;
+  if (normalizeMarkerIcon(markerIconRaw) === 'quiz') {
+    var q = document.getElementById('quiz-input-question').value.trim();
+    var a = document.getElementById('quiz-input-answer').value.trim();
+    desc = q + '|' + a;
+  } else {
+    desc = document.getElementById('input-desc').value.trim();
+  }
+  var linkUrlInput = document.getElementById('input-link-url').value.trim();
+  var labelInput = document.getElementById('input-label');
+  var markerShape = normalizeMarkerShape(document.getElementById('marker-shape').value);
+  var markerColor = normalizeMarkerColor(document.getElementById('marker-color').value);
+  var markerIcon = normalizeMarkerIcon(document.getElementById('marker-icon').value);
+  var inFolderMode = !!(allImages && allImages.length > 0);
+  // モードに応じて競合するフィールドをクリア（情報モードはjump、ジャンプモードはphoto/desc/linkを無効化）
+  var photoId    = (inFolderMode && currentPopupMode === 'info') ? (document.getElementById('input-photo-id').value   || '') : '';
+  var jumpSceneId = (inFolderMode && currentPopupMode === 'jump') ? (document.getElementById('input-jump-scene').value || '') : '';
+  if (currentPopupMode === 'jump') { desc = ''; linkUrlInput = ''; }
+
+  // バリデーション: ラベル必須
+  if (!label) {
+    labelInput.classList.add('error');
+    labelInput.focus();
+    setTimeout(function () { labelInput.classList.remove('error'); }, 1800);
+    return;
+  }
+
+  if (pendingPitch === null || pendingYaw === null) {
+    showToast('座標データがありません。再度クリックしてください。', 'error');
+    return;
+  }
+
+  var saveData = {
+    fileId:      currentFileId || '',
+    label:       label,
+    description: desc,
+    linkUrl:     normalizeHttpUrl(linkUrlInput),
+    markerShape: markerShape,
+    markerColor: markerColor,
+    markerIcon:  markerIcon,
+    pitch:       pendingPitch,
+    yaw:         pendingYaw,
+    photoId:     photoId,
+    jumpSceneId: jumpSceneId
+  };
+
+  // ボタンをローディング状態に
+  var btn       = document.getElementById('btn-save');
+  var saveLabel = document.getElementById('save-label');
+  btn.disabled  = true;
+  btn.classList.add('loading');
+  saveLabel.textContent = editingHotspot ? '更新中...' : '保存中...';
+
+  if (editingHotspot) {
+    // ── 更新処理 ──────────────────────────────────────
+    var targetArgs = editingHotspot; // closePopup前に参照を保持
+    google.script.run
+      .withSuccessHandler(function (result) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        saveLabel.textContent = '更新する';
+
+        if (result.success) {
+          persistMarkerStylePreference(markerShape, markerColor, markerIcon);
+          updateSpotInViewer(targetArgs, saveData);
+          closePopup();
+          showToast('ホットスポットを更新しました！', 'success');
+        } else {
+          showToast('更新に失敗しました: ' + (result.error || '不明なエラー'), 'error');
+        }
+      })
+      .withFailureHandler(function () {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        saveLabel.textContent = '更新する';
+        showToast('通信エラーが発生しました。再度お試しください。', 'error');
+      })
+      .updateHotspot(saveData, targetArgs.id);
+
+  } else {
+    // ── 新規保存処理 ───────────────────────────────────
+    google.script.run
+      .withSuccessHandler(function (result) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        saveLabel.textContent = '保存する';
+
+        if (result.success) {
+          persistMarkerStylePreference(markerShape, markerColor, markerIcon);
+          addSpotToViewer(saveData, result.id);
+          closePopup();
+          showToast('ホットスポットを保存しました！', 'success');
+        } else {
+          showToast('保存に失敗しました: ' + (result.error || '不明なエラー'), 'error');
+        }
+      })
+      .withFailureHandler(function () {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        saveLabel.textContent = '保存する';
+        showToast('通信エラーが発生しました。再度お試しください。', 'error');
+      })
+      .saveHotspot(saveData);
+  }
+}
+
+/**
+ * 保存成功後、Pannellumにホットスポットをリアルタイムで追加する
+ *
+ * @param {Object} hs     保存データ
+ * @param {string} hsId   ホットスポットのUUID
+ */
+function addSpotToViewer(hs, hsId) {
+  var newId = 'hs_' + Date.now();
+  var args = {
+    _pannellumId: newId,
+    id:           hsId,
+    fileId:       hs.fileId,
+    label:        hs.label,
+    description:  hs.description,
+    linkUrl:      hs.linkUrl,
+    markerShape:  hs.markerShape,
+    markerColor:  hs.markerColor,
+    markerIcon:   hs.markerIcon,
+    pitch:        hs.pitch,
+    yaw:          hs.yaw,
+    photoId:      hs.photoId     || '',
+    jumpSceneId:  hs.jumpSceneId || ''
+  };
+
+  if (is2DMode) {
+    // 2Dモード: current2DHotspots に追加して再描画
+    current2DHotspots.push(args);
+    render2DHotspots(current2DHotspots);
+    return;
+  }
+
+  try {
+    viewer.addHotSpot({
+      id:               newId,
+      pitch:            hs.pitch,
+      yaw:              hs.yaw,
+      type:             'custom',
+      cssClass:         'hs-marker',
+      createTooltipFunc: buildMarkerElement,
+      createTooltipArgs: args,
+      clickHandlerFunc:  onMarkerClick,
+      clickHandlerArgs:  args
+    });
+  } catch (e) {
+    // addHotSpot が失敗しても保存自体は成功しているので無視
+  }
+}
+
+/**
+ * 編集後、Pannellum上のホットスポットをリアルタイムで更新する
+ *
+ * @param {Object} oldArgs  既存ホットスポットのargs（_pannellumId・id含む）
+ * @param {Object} newData  更新後の内容
+ */
+function updateSpotInViewer(oldArgs, newData) {
+  // oldArgs を直接書き換えて参照を維持する
+  oldArgs.label       = newData.label;
+  oldArgs.description = newData.description;
+  oldArgs.linkUrl     = newData.linkUrl;
+  oldArgs.markerShape = newData.markerShape;
+  oldArgs.markerColor = newData.markerColor;
+  oldArgs.markerIcon  = newData.markerIcon;
+  oldArgs.photoId     = newData.photoId     || '';
+  oldArgs.jumpSceneId = newData.jumpSceneId || '';
+
+  if (is2DMode) {
+    // 2Dモード: oldArgs はすでに current2DHotspots 内の参照なので再描画するだけ
+    render2DHotspots(current2DHotspots);
+    return;
+  }
+
+  var pid = oldArgs._pannellumId;
+  try { viewer.removeHotSpot(pid); } catch (e) { /* ignore */ }
+  try {
+    viewer.addHotSpot({
+      id:               pid,
+      pitch:            oldArgs.pitch,
+      yaw:              oldArgs.yaw,
+      type:             'custom',
+      cssClass:         'hs-marker',
+      createTooltipFunc: buildMarkerElement,
+      createTooltipArgs: oldArgs,
+      clickHandlerFunc:  onMarkerClick,
+      clickHandlerArgs:  oldArgs
+    });
+  } catch (e) { /* ignore */ }
+}
+
+// =============================================
+//  トースト通知
+// =============================================
+function showToast(message, type) {
+  var toast = document.getElementById('toast');
+  var icon  = document.getElementById('toast-icon');
+  var msg   = document.getElementById('toast-msg');
+
+  toast.className = (type === 'success') ? 'success' : 'error';
+  msg.textContent = message;
+
+  if (type === 'success') {
+    icon.innerHTML = '<polyline points="20 6 9 17 4 12"/>';
+  } else {
+    icon.innerHTML =
+      '<circle cx="12" cy="12" r="10"/>' +
+      '<line x1="15" y1="9" x2="9" y2="15"/>' +
+      '<line x1="9" y1="9" x2="15" y2="15"/>';
+  }
+
+  requestAnimationFrame(function () { toast.classList.add('show'); });
+
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 3200);
+}
+
+// =============================================
+//  ローディングエラー表示
+// =============================================
+function showLoadError(message) {
+  var loading = document.getElementById('loading');
+  loading.innerHTML =
+    '<p style="color:#ef4444;font-size:14px;text-align:center;padding:0 20px">' +
+    escapeHtml(message) + '<br><br>' +
+    '<button onclick="location.reload()" ' +
+    'style="background:#fbbf24;border:none;border-radius:8px;padding:8px 20px;' +
+    'font-size:13px;font-weight:600;color:#78350f;cursor:pointer">' +
+    '再読み込み</button></p>';
+}
+
+// =============================================
+//  写真セレクト / ジャンプ先セレクト構築
+// =============================================
+
+/**
+ * 写真セレクトに allImages の一覧をセットする
+ * @param {string} currentPhotoId  現在選択中のファイルID（編集時）
+ */
+function buildPhotoSelect(currentPhotoId) {
+  var sel = document.getElementById('input-photo-id');
+  sel.innerHTML = '';
+  var noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '（なし）';
+  sel.appendChild(noneOpt);
+
+  if (!allImages) return;
+  allImages.forEach(function (img) {
+    if (img.type === 'folder') return; // フォルダは除外
+    var opt = document.createElement('option');
+    opt.value = img.id;
+    opt.textContent = img.name;
+    if (img.id === currentPhotoId) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+/**
+ * ジャンプ先セレクトに allImages の一覧をセットする（現在のシーンは除外）
+ * @param {string} currentJumpSceneId  現在選択中のシーンID（編集時）
+ */
+function buildJumpSceneSelect(currentJumpSceneId) {
+  var sel = document.getElementById('input-jump-scene');
+  sel.innerHTML = '';
+  var noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '（なし）';
+  sel.appendChild(noneOpt);
+
+  if (!allImages) return;
+  allImages.forEach(function (img) {
+    if (img.type === 'folder') return; // フォルダは除外
+    if (img.id === currentFileId) return; // 自分自身は除外
+    var opt = document.createElement('option');
+    opt.value = img.id;
+    opt.textContent = img.name;
+    if (img.id === currentJumpSceneId) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+// =============================================
+//  XSS対策: HTMLエスケープ
+// =============================================
+function normalizeHttpUrl(value) {
+  var url = String(value || '').trim();
+  if (!url) return '';
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#039;');
+}
+
+// =============================================
+//  2D平面マップ表示・非表示
+// =============================================
+
+/**
+ * 2D平面マップ表示モードに切り替える
+ * @param {string} imageUrl  表示する画像のURL
+ */
+function show2DView(imageUrl) {
+  document.getElementById('panorama').style.display = 'none';
+  var container = document.getElementById('flat-map-container');
+  container.style.display = 'flex';
+  var inner = document.getElementById('flat-map-inner');
+  inner.innerHTML = '';
+
+  var img = document.createElement('img');
+  img.id = 'flat-map-img';
+  img.src = imageUrl;
+  img.alt = '';
+  img.style.cursor = isEditMode ? 'crosshair' : 'default';
+  img.addEventListener('click', onFlatMapClick);
+  inner.appendChild(img);
+}
+
+/**
+ * 2D表示を非表示にしてPannellumコンテナを復元する
+ */
+function hide2DView() {
+  var container = document.getElementById('flat-map-container');
+  container.style.display = 'none';
+  document.getElementById('flat-map-inner').innerHTML = '';
+  document.getElementById('panorama').style.display = '';
+  current2DHotspots = [];
+}
+
+/**
+ * 2D画像クリック: 編集モード時にクリック位置のX%/Y%を取得してポップアップを開く
+ */
+function onFlatMapClick(evt) {
+  if (!isEditMode) return;
+  var img = evt.currentTarget;
+  var rect = img.getBoundingClientRect();
+  var xPct = ((evt.clientX - rect.left) / rect.width)  * 100;
+  var yPct = ((evt.clientY - rect.top)  / rect.height) * 100;
+  pendingYaw   = parseFloat(xPct.toFixed(4)); // X% → Yaw 列に保存
+  pendingPitch = parseFloat(yPct.toFixed(4)); // Y% → Pitch 列に保存
+  openPopup(evt.clientX, evt.clientY);
+}
+
+/**
+ * 2Dモード用ホットスポットを画像上にオーバーレイ描画する
+ * @param {Array} hotspots  ホットスポット配列（pitch=Y%, yaw=X%）
+ */
+function render2DHotspots(hotspots) {
+  current2DHotspots = hotspots;
+  var inner = document.getElementById('flat-map-inner');
+  if (!inner) return;
+
+  // 既存オーバーレイを削除
+  var old = inner.querySelectorAll('.flat-hs-marker');
+  for (var i = 0; i < old.length; i++) {
+    old[i].parentNode.removeChild(old[i]);
+  }
+
+  hotspots.forEach(function (hs) {
+    var el = document.createElement('div');
+    el.className = 'flat-hs-marker hs-marker marker-shape-' + (hs.markerShape || 'circle') +
+                   ' marker-color-' + (hs.markerColor || 'blue');
+    el.style.left = hs.yaw + '%';
+    el.style.top  = hs.pitch + '%';
+
+    var core = document.createElement('span');
+    core.className = 'hs-marker-core marker-icon-' + (hs.markerIcon || 'info');
+    el.appendChild(core);
+
+    // ホバーツールチップ
+    if (hs.jumpSceneId) {
+      // ジャンプ先がある場合: ジャンプ先シーン名を表示
+      el.addEventListener('mouseenter', function () {
+        if (isEditMode) return;
+        showJumpTooltip(el, hs.jumpSceneId);
+      });
+      el.addEventListener('mouseleave', function () {
+        hideJumpTooltip();
+      });
+    } else if (hs.label) {
+      // 通常ホットスポット: ラベルを表示
+      el.addEventListener('mouseenter', function () {
+        if (isEditMode) return;
+        showLabelTooltip(el, hs.label);
+      });
+      el.addEventListener('mouseleave', function () {
+        hideJumpTooltip();
+      });
+    }
+
+    el.addEventListener('click', function (e) {
+      e.stopPropagation();
+      onMarkerClick(e, hs);
+    });
+
+    if (isEditMode) {
+      el.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openHotspotContextMenu(e, hs);
+      });
+    }
+
+    inner.appendChild(el);
+  });
+}
+
+// =============================================
+//  アップロードモーダル
+// =============================================
+
+/**
+ * 現在表示中のフォルダID を返す。
+ * サブフォルダ内ならそのID、ルートならルートフォルダID。
+ * @returns {string|null}
+ */
+function getCurrentFolderId() {
+  if (folderStack.length > 0) {
+    return folderStack[folderStack.length - 1].id;
+  }
+  return rootFolderId;
+}
+
+/**
+ * 現在のフォルダを Google Drive で別タブ開く。
+ */
+function openCurrentFolderInDrive() {
+  var folderId = getCurrentFolderId();
+  if (!folderId) {
+    showToast('フォルダIDが取得できません。', 'error');
+    return;
+  }
+  window.open('https://drive.google.com/drive/folders/' + folderId, '_blank');
+}
+
+function openUploadModal() {
+  if (!allImages) return; // フォルダモードのみ対応
+  document.getElementById('upload-modal').style.display = 'flex';
+  document.getElementById('upload-status').textContent = '';
+  document.getElementById('upload-file-input').value = '';
+  // ラジオボタンを初期値に戻す
+  var radios = document.querySelectorAll('input[name="upload-type"]');
+  if (radios.length) radios[0].checked = true;
+}
+
+function closeUploadModal() {
+  document.getElementById('upload-modal').style.display = 'none';
+  document.getElementById('upload-confirm-btn').disabled = false;
+}
+
+function sanitizeFileName(fileName) {
+  var name = String(fileName || 'image').trim();
+  if (!name) return 'image.jpg';
+  return name;
+}
+
+function readFileAsDataUrl(file, onSuccess, onError) {
+  var reader = new FileReader();
+  reader.onload = function () {
+    onSuccess(String(reader.result || ''));
+  };
+  reader.onerror = function () {
+    onError('ファイルの読み込みに失敗');
+  };
+  reader.readAsDataURL(file);
+}
+
+function convertDataUrlToJpeg(dataUrl, quality, onSuccess, onError) {
+  var img = new Image();
+  img.onload = function () {
+    try {
+      var canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      var ctx = canvas.getContext('2d');
+      if (!ctx) {
+        onError('画像変換コンテキストの取得に失敗');
+        return;
+      }
+      ctx.drawImage(img, 0, 0);
+      var jpegDataUrl = canvas.toDataURL('image/jpeg', quality || 0.92);
+      onSuccess(jpegDataUrl);
+    } catch (e) {
+      onError(e && e.message ? e.message : 'JPEG変換に失敗');
+    }
+  };
+  img.onerror = function () {
+    onError('画像のデコードに失敗');
+  };
+  img.src = dataUrl;
+}
+
+function onUploadConfirm() {
+  var fileInput = document.getElementById('upload-file-input');
+  if (!fileInput.files || !fileInput.files.length) {
+    document.getElementById('upload-status').textContent = 'ファイルを選択してください。';
+    return;
+  }
+  var files = Array.prototype.slice.call(fileInput.files);
+  var selectedType = document.querySelector('input[name="upload-type"]:checked');
+  var is2D = selectedType && selectedType.value === '2d';
+
+  var statusEl = document.getElementById('upload-status');
+  var confirmBtn = document.getElementById('upload-confirm-btn');
+  statusEl.textContent = files.length + ' 件のファイルを読み込んでいます...';
+  confirmBtn.disabled = true;
+
+  var uploadedFiles = [];
+  var errors = [];
+  var index = 0;
+
+  function uploadNext() {
+    if (index >= files.length) {
+      confirmBtn.disabled = false;
+      if (uploadedFiles.length) {
+        uploadedFiles.forEach(function (f) { allImages.push(f); });
+        allImages.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
+        buildSceneSidebar(allImages);
+        syncActiveSceneItem(currentFileId);
+        var msg = uploadedFiles.length + ' 件アップロード完了';
+        if (errors.length) msg += '（' + errors.length + ' 件失敗）';
+        showToast(msg, uploadedFiles.length ? 'success' : 'error');
+        closeUploadModal();
+      } else {
+        statusEl.textContent = 'エラー: すべてのアップロードに失敗しました。' + (errors[0] || '');
+      }
+      return;
+    }
+
+    var file = files[index];
+    var currentIndex = index + 1;
+    statusEl.textContent = currentIndex + '/' + files.length + ' アップロード中...';
+
+    readFileAsDataUrl(file, function (dataUrl) {
+      // Canvas変換をスキップして、方位情報入りのオリジナルデータをそのまま送る
+      var uploadName = sanitizeFileName(file.name);
+      google.script.run
+        .withSuccessHandler(function (result) {
+          if (result.success) {
+            uploadedFiles.push(result.file);
+          } else {
+            errors.push(file.name + ': ' + (result.error || '不明なエラー'));
+          }
+          index++;
+          uploadNext();
+        })
+        .withFailureHandler(function (err) {
+          errors.push(file.name + ': ' + (err && err.message ? err.message : '通信エラー'));
+          index++;
+          uploadNext();
+        })
+        .uploadImageToDrive({
+          base64:          dataUrl,
+          fileName:        uploadName,
+          mimeType:        file.type || 'image/jpeg',
+          is2D:            !!is2D,
+          targetFolderId:  getCurrentFolderId() || ''
+        });
+    }, function (message) {
+      errors.push(file.name + ': ' + (message || 'ファイルの読み込みに失敗'));
+      index++;
+      uploadNext();
+    });
+  }
+
+  uploadNext();
+}
+
+// =============================================
+//  埋め込みコード生成モーダル
+// =============================================
+
+/**
+ * 埋め込みコード生成モーダルを開き、iframe コードを生成して表示する。
+ */
+function openEmbedModal() {
+  var base = appBaseUrl || '';
+  document.getElementById('embed-code-internal').value =
+    '<iframe src="' + base + '?mode=internal" width="100%" height="600px" frameborder="0" allowfullscreen allow="fullscreen *"></iframe>';
+  document.getElementById('embed-code-public').value =
+    '<iframe src="' + base + '?mode=public" width="100%" height="600px" frameborder="0" allowfullscreen allow="fullscreen *"></iframe>';
+  document.getElementById('embed-modal-backdrop').classList.add('visible');
+  document.getElementById('embed-modal').classList.add('visible');
+}
+
+/**
+ * 埋め込みコード生成モーダルを閉じる。
+ */
+function closeEmbedModal() {
+  document.getElementById('embed-modal-backdrop').classList.remove('visible');
+  document.getElementById('embed-modal').classList.remove('visible');
+}
+
+/**
+ * 指定タイプの iframe コードをクリップボードにコピーする。
+ *
+ * @param {'internal'|'public'} type
+ */
+function copyEmbedCode(type) {
+  var textarea = document.getElementById('embed-code-' + type);
+  if (!textarea) return;
+  var text = textarea.value;
+  if (!text) return;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () {
+      showToast('コードをコピーしました。', 'success');
+    }).catch(function () {
+      fallbackCopy_(textarea);
+    });
+  } else {
+    fallbackCopy_(textarea);
+  }
+}
+
+// =============================================
+//  一括入力用スプシ連携ボタンイベント
+// =============================================
+
+/**
+ * 現在表示中のシーンを再読み込みする（ホットスポット更新反映用）。
+ */
+function reloadCurrentScene() {
+  if (!currentFileId || !allImages) return;
+  var currentImg = null;
+  for (var i = 0; i < allImages.length; i++) {
+    if (allImages[i].id === currentFileId) { currentImg = allImages[i]; break; }
+  }
+  if (currentImg) loadScene(currentImg);
+}
+
+function onBulkInputDropdownClick(evt) {
+  var btn = evt.target.closest('.bulk-input-item');
+  if (!btn || btn.disabled) return;
+  var action = btn.getAttribute('data-action');
+  if (!action) return;
+
+  closeBulkInputDropdown();
+  var origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '処理中...';
+
+  if (action === 'update-dropdowns') {
+    google.script.run
+      .withSuccessHandler(function (result) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        if (result && result.success) {
+          showToast('入力リストを最新化しました。', 'success');
+        } else {
+          showToast('更新に失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
+        }
+      })
+      .withFailureHandler(function (err) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        showToast('通信エラーが発生しました: ' + (err.message || '不明なエラー'), 'error');
+      })
+      .updateStudentSheetDropdowns();
+  } else if (action === 'import-student-data') {
+    google.script.run
+      .withSuccessHandler(function (result) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        if (result && result.success) {
+          var msg = result.count > 0
+            ? result.count + '件のデータを取り込みました。'
+            : '取り込み対象のデータがありませんでした。';
+          showToast(msg, 'success');
+          if (result.count > 0) reloadCurrentScene();
+        } else {
+          showToast('取り込みに失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
+        }
+      })
+      .withFailureHandler(function (err) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        showToast('通信エラーが発生しました: ' + (err.message || '不明なエラー'), 'error');
+      })
+      .importDataFromStudentSheet();
+  }
+}
+
+/**
+ * Clipboard API が使えない場合のフォールバックコピー。
+ *
+ * @param {HTMLTextAreaElement} textarea
+ */
+function fallbackCopy_(textarea) {
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    showToast('コードをコピーしました。', 'success');
+  } catch (e) {
+    showToast('コピーに失敗しました。手動でコピーしてください。', 'error');
+  }
+  window.getSelection().removeAllRanges();
+}
+</script>
