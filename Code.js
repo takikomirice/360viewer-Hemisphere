@@ -5,6 +5,11 @@
 
 /** 設定シート名 */
 const CONFIG_SHEET_NAME = 'config';
+const IMAGE_DRIVE_URL_CONFIG_KEY = 'IMAGE_DRIVE_URL';
+const WEB_APP_URL_CONFIG_KEY = 'WEB_APP_URL';
+const WEB_APP_URL_CONFIG_DESCRIPTION = 'デプロイ済みWebアプリの /exec URL。編集URL・共有URL・QR生成に使います。';
+const EDIT_KEY_CONFIG_KEY = 'EDIT_KEY';
+const EDIT_KEY_CONFIG_DESCRIPTION = '編集URL用の共有キー。編集URLを知っている人は共同編集できます。';
 
 /** ホットスポット保存シート名 */
 const INFO_SHEET_NAME = 'info';
@@ -28,6 +33,12 @@ const STUDENT_SHEET_NAME = 'シート1';
 /** LockService のタイムアウト（ミリ秒） */
 const LOCK_TIMEOUT_MS = 15000;
 
+/** 編集画面だけが保持する一時トークンの有効期間（6時間） */
+const EDIT_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+const EDIT_TOKEN_CACHE_PREFIX = 'EDIT_TOKEN_';
+const FOLDER_LIST_CACHE_TTL_SECONDS = 300;
+const FOLDER_LIST_CACHE_PREFIX = 'FOLDER_LIST_';
+
 
 // ============================================================
 //  排他制御・キャッシュユーティリティ
@@ -44,6 +55,383 @@ function acquireLock_() {
     throw new Error('他のユーザーが編集中です。しばらく待ってから再度お試しください。');
   }
   return lock;
+}
+
+/**
+ * 編集トークンの CacheService キーを返す。
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+function getEditTokenCacheKey_(token) {
+  return EDIT_TOKEN_CACHE_PREFIX + token;
+}
+
+/**
+ * 編集系APIが通常編集画面から呼ばれていることを確認する。
+ * 個人認証ではなく、公開・埋め込みビューからの編集API呼び出しを防ぐための検証。
+ *
+ * @param {{ __editToken?: string }|null|undefined} payload
+ */
+function assertEditToken_(payload) {
+  const token = payload && typeof payload === 'object'
+    ? String(payload.__editToken || '')
+    : '';
+  if (!token) {
+    throw new Error('編集権限が確認できません。通常の編集画面を開き直してください。');
+  }
+
+  const cached = CacheService.getScriptCache().get(getEditTokenCacheKey_(token));
+  if (cached !== '1') {
+    throw new Error('編集権限が確認できません。通常の編集画面を開き直してください。');
+  }
+}
+
+/**
+ * 編集URLに使う共有キーを生成する。
+ *
+ * @returns {string}
+ */
+function generateEditKey_() {
+  let uuid = '';
+  try {
+    uuid = String(Utilities.getUuid() || '');
+  } catch (e) {
+    uuid = '';
+  }
+
+  const normalized = uuid.replace(/[^A-Za-z0-9]/g, '');
+  if (normalized) return 'ed_' + normalized;
+
+  return 'ed_' + String(new Date().getTime()) + String(Math.floor(Math.random() * 1000000000));
+}
+
+/**
+ * config シートに初期ヘッダーと基本行を作る。
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ */
+function initializeConfigSheet_(sheet) {
+  sheet.getRange(1, 1, 1, 3)
+    .setValues([['設定項目', '値', '説明']])
+    .setFontWeight('bold')
+    .setBackground('#E8F0FE');
+
+  if (findConfigRow_(sheet, IMAGE_DRIVE_URL_CONFIG_KEY) === 0) {
+    sheet.appendRow([
+      IMAGE_DRIVE_URL_CONFIG_KEY,
+      '',
+      '360度画像のGoogleドライブURL（単一ファイルまたはフォルダ）。' +
+      '共有設定を「リンクを知っている全員が閲覧可」にしてください。'
+    ]);
+  }
+
+  if (findConfigRow_(sheet, WEB_APP_URL_CONFIG_KEY) === 0) {
+    sheet.appendRow([WEB_APP_URL_CONFIG_KEY, '', WEB_APP_URL_CONFIG_DESCRIPTION]);
+  }
+
+  sheet.setColumnWidth(1, 200);
+  sheet.setColumnWidth(2, 420);
+  sheet.setColumnWidth(3, 420);
+  sheet.setFrozenRows(1);
+}
+
+/**
+ * config シートを取得し、なければ作成する。
+ *
+ * @returns {GoogleAppsScript.Spreadsheet.Sheet}
+ */
+function getOrCreateConfigSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(CONFIG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG_SHEET_NAME);
+    initializeConfigSheet_(sheet);
+  }
+  return sheet;
+}
+
+/**
+ * config シート内のキー行を返す。見つからない場合は 0。
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {string} key
+ * @returns {number}
+ */
+function findConfigRow_(sheet, key) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const keys = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < keys.length; i++) {
+    if (String(keys[i][0]).trim() === key) {
+      return i + 2;
+    }
+  }
+  return 0;
+}
+
+/**
+ * config シートの値を設定する。
+ *
+ * @param {string} key
+ * @param {string} value
+ * @param {string} description
+ */
+function setConfigValue_(key, value, description) {
+  const sheet = getOrCreateConfigSheet_();
+  const row = findConfigRow_(sheet, key);
+  if (row) {
+    sheet.getRange(row, 2).setValue(value);
+    if (description) sheet.getRange(row, 3).setValue(description);
+    return;
+  }
+  sheet.appendRow([key, value, description || '']);
+}
+
+/**
+ * config シートに WEB_APP_URL 行を用意する。既存値は上書きしない。
+ */
+function ensureWebAppUrlConfig_() {
+  const sheet = getOrCreateConfigSheet_();
+  const row = findConfigRow_(sheet, WEB_APP_URL_CONFIG_KEY);
+  if (!row) {
+    sheet.appendRow([WEB_APP_URL_CONFIG_KEY, '', WEB_APP_URL_CONFIG_DESCRIPTION]);
+    return { created: true };
+  }
+
+  const rowValues = sheet.getRange(row, 1, 1, 3).getValues()[0];
+  if (!String(rowValues[2] || '').trim()) {
+    sheet.getRange(row, 3).setValue(WEB_APP_URL_CONFIG_DESCRIPTION);
+  }
+  return { created: false };
+}
+
+/**
+ * WebアプリURLとして使う値を正規化する。
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function normalizeWebAppUrl_(value) {
+  let url = String(value || '').trim();
+  if (!url) return '';
+
+  const hashIndex = url.indexOf('#');
+  if (hashIndex !== -1) url = url.slice(0, hashIndex);
+  const queryIndex = url.indexOf('?');
+  if (queryIndex !== -1) url = url.slice(0, queryIndex);
+  url = url.trim();
+
+  if (url.length > 1 && url.charAt(url.length - 1) === '/') {
+    url = url.slice(0, -1);
+  }
+
+  url = url.replace(
+    /^https:\/\/script\.google\.com\/a\/([^/]+)\/macros\/s\/([^/]+)\/(exec|dev)$/i,
+    'https://script.google.com/a/macros/$1/s/$2/$3'
+  );
+
+  return url;
+}
+
+/**
+ * ScriptApp が返すWebアプリURLを取得する。取得不可の場合は空文字。
+ *
+ * @returns {string}
+ */
+function getScriptWebAppUrl_() {
+  try {
+    return normalizeWebAppUrl_(ScriptApp.getService().getUrl() || '');
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * WebアプリURLと取得元を返す。
+ *
+ * @returns {{ url: string, source: string }}
+ */
+function getConfiguredWebAppUrlDetails_() {
+  try {
+    const config = getAppConfig_();
+    const configuredUrl = normalizeWebAppUrl_(config[WEB_APP_URL_CONFIG_KEY] || '');
+    if (configuredUrl) return { url: configuredUrl, source: 'config' };
+  } catch (e) {
+    // fallback below
+  }
+
+  const fallbackUrl = getScriptWebAppUrl_();
+  return { url: fallbackUrl, source: fallbackUrl ? 'script' : '' };
+}
+
+/**
+ * 編集URL・共有URL生成で使うWebアプリURLを返す。
+ * 優先順位: config シートの WEB_APP_URL → ScriptApp.getService().getUrl() → 空文字。
+ *
+ * @returns {string}
+ */
+function getConfiguredWebAppUrl_() {
+  return getConfiguredWebAppUrlDetails_().url;
+}
+
+/**
+ * フォルダ一覧キャッシュのキーを返す。
+ *
+ * @param {string} folderId
+ * @returns {string}
+ */
+function getFolderListCacheKey_(folderId) {
+  return FOLDER_LIST_CACHE_PREFIX + String(folderId || '');
+}
+
+/**
+ * CacheService からフォルダ一覧を取得する。
+ *
+ * @param {string} folderId
+ * @returns {{ images: Array }|null}
+ */
+function getCachedFolderList_(folderId) {
+  if (!folderId) return null;
+  try {
+    const cached = CacheService.getScriptCache().get(getFolderListCacheKey_(folderId));
+    if (!cached) return null;
+    const parsed = JSON.parse(cached);
+    return parsed && Array.isArray(parsed.images) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * CacheService にフォルダ一覧を保存する。失敗しても呼び出し元の処理は続ける。
+ *
+ * @param {string} folderId
+ * @param {{ images: Array }} result
+ */
+function setCachedFolderList_(folderId, result) {
+  if (!folderId || !result || !Array.isArray(result.images)) return;
+  try {
+    CacheService.getScriptCache().put(
+      getFolderListCacheKey_(folderId),
+      JSON.stringify(result),
+      FOLDER_LIST_CACHE_TTL_SECONDS
+    );
+  } catch (e) {
+    // CacheService のサイズ制限などで保存できなくても通常処理は継続する。
+  }
+}
+
+/**
+ * フォルダ一覧キャッシュを削除する。失敗しても編集処理は止めない。
+ *
+ * @param {string} folderId
+ */
+function invalidateFolderListCache_(folderId) {
+  if (!folderId) return;
+  try {
+    CacheService.getScriptCache().remove(getFolderListCacheKey_(folderId));
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * Drive ファイルが属するフォルダの一覧キャッシュを削除する。
+ *
+ * @param {GoogleAppsScript.Drive.File} file
+ */
+function invalidateContainingFolderListCache_(file) {
+  if (!file) return;
+  try {
+    const parents = file.getParents();
+    while (parents.hasNext()) {
+      invalidateFolderListCache_(parents.next().getId());
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * config シートに EDIT_KEY 行を用意し、空の場合は自動生成する。
+ *
+ * @returns {{ key: string, created: boolean, generated: boolean }}
+ */
+function ensureEditKeyConfig_() {
+  const sheet = getOrCreateConfigSheet_();
+  const row = findConfigRow_(sheet, EDIT_KEY_CONFIG_KEY);
+  if (!row) {
+    const newKey = generateEditKey_();
+    sheet.appendRow([EDIT_KEY_CONFIG_KEY, newKey, EDIT_KEY_CONFIG_DESCRIPTION]);
+    return { key: newKey, created: true, generated: true };
+  }
+
+  const rowValues = sheet.getRange(row, 1, 1, 3).getValues()[0];
+  const currentKey = String(rowValues[1] || '').trim();
+  if (currentKey) {
+    if (!String(rowValues[2] || '').trim()) {
+      sheet.getRange(row, 3).setValue(EDIT_KEY_CONFIG_DESCRIPTION);
+    }
+    return { key: currentKey, created: false, generated: false };
+  }
+
+  const generatedKey = generateEditKey_();
+  sheet.getRange(row, 2).setValue(generatedKey);
+  if (!String(rowValues[2] || '').trim()) {
+    sheet.getRange(row, 3).setValue(EDIT_KEY_CONFIG_DESCRIPTION);
+  }
+  return { key: generatedKey, created: false, generated: true };
+}
+
+/**
+ * ScriptProperties の EDIT_KEY を返す。未設定や取得不可の場合は空文字。
+ *
+ * @returns {string}
+ */
+function getScriptEditKey_() {
+  try {
+    return String(PropertiesService.getScriptProperties().getProperty(EDIT_KEY_CONFIG_KEY) || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * 編集URL用の共有キーを返す。
+ * 優先順位: ScriptProperties の EDIT_KEY → config シートの EDIT_KEY → 空文字。
+ *
+ * @returns {string}
+ */
+function getConfiguredEditKey_() {
+  const scriptKey = getScriptEditKey_();
+  if (scriptKey) return scriptKey;
+
+  try {
+    const config = getAppConfig_();
+    return String(config[EDIT_KEY_CONFIG_KEY] || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * HTMLダイアログに埋め込む文字列をエスケープする。
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeHtmlForDialog_(value) {
+  return String(value || '').replace(/[&<>"']/g, function(ch) {
+    return {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[ch];
+  });
 }
 
 /**
@@ -104,8 +492,11 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('初期設定')
     .addItem('初期設定シートを生成', 'setupSheets')
+    .addItem('WebアプリURLを設定', 'setWebAppUrl')
+    .addItem('編集URLを表示', 'showEditUrl')
+    .addItem('編集キーを再生成', 'regenerateEditKey')
     .addSeparator()
-    .addItem('一括入力用スプシを新規作成・紐づけ', 'createStudentSheet')
+    .addItem('一括入力用スプシを新規作成・紐づけ', 'createStudentSheetFromMenu')
     .addItem('一括入力用スプシの入力規則を更新', 'updateStudentSheetDropdownsFromMenu')
     .addItem('紐づき中のスプシIDを確認', 'showLinkedStudentSheetId')
     .addToUi();
@@ -118,7 +509,7 @@ function onOpen() {
 
 /**
  * 「config」シートと「info」シートを生成し、ヘッダーと初期値を設定する。
- * 既存シートは変更しない。
+ * 既存シートの値は保持し、EDIT_KEY がなければ追加・生成する。
  */
 function setupSheets() {
   const ss   = SpreadsheetApp.getActiveSpreadsheet();
@@ -129,29 +520,23 @@ function setupSheets() {
   let configSheet = ss.getSheetByName(CONFIG_SHEET_NAME);
   if (!configSheet) {
     configSheet = ss.insertSheet(CONFIG_SHEET_NAME);
-
-    // ヘッダー行
-    configSheet.getRange(1, 1, 1, 3)
-      .setValues([['設定項目', '値', '説明']])
-      .setFontWeight('bold')
-      .setBackground('#E8F0FE');
-
-    // データ行
-    configSheet.getRange(2, 1, 1, 3).setValues([[
-      'IMAGE_DRIVE_URL',
-      '',
-      '360度画像のGoogleドライブURL（単一ファイルまたはフォルダ）。' +
-      '共有設定を「リンクを知っている全員が閲覧可」にしてください。'
-    ]]);
-
-    configSheet.setColumnWidth(1, 200);
-    configSheet.setColumnWidth(2, 420);
-    configSheet.setColumnWidth(3, 420);
-    configSheet.setFrozenRows(1);
+    initializeConfigSheet_(configSheet);
 
     msgs.push('✅ 「config」シートを作成しました。');
   } else {
-    msgs.push('⚠️ 「config」シートは既に存在します（変更しませんでした）。');
+    msgs.push('⚠️ 「config」シートは既に存在します（既存設定は保持します）。');
+  }
+  const editKeyResult = ensureEditKeyConfig_();
+  const webAppUrlResult = ensureWebAppUrlConfig_();
+  if (editKeyResult.generated) {
+    msgs.push('✅ config シートに EDIT_KEY を自動生成しました。');
+  } else {
+    msgs.push('ℹ️ config シートの EDIT_KEY は既存値を使います。');
+  }
+  if (webAppUrlResult.created) {
+    msgs.push('✅ config シートに WEB_APP_URL 行を追加しました。');
+  } else {
+    msgs.push('ℹ️ config シートの WEB_APP_URL は既存値を使います。');
   }
 
   // ---- info シート ----
@@ -176,6 +561,118 @@ function setupSheets() {
   );
 }
 
+/**
+ * スプレッドシートメニューから編集URLを表示する。
+ */
+function showEditUrl() {
+  const ui = SpreadsheetApp.getUi();
+  ensureWebAppUrlConfig_();
+  const editKeyResult = ensureEditKeyConfig_();
+  const editKey = getConfiguredEditKey_() || editKeyResult.key;
+  const webAppUrl = getConfiguredWebAppUrlDetails_();
+  const execUrl = getConfiguredWebAppUrl_();
+
+  if (!execUrl) {
+    ui.alert(
+      '編集URL',
+      'WebアプリURLを取得できませんでした。先にWebアプリとしてデプロイしてください。\n' +
+      'デプロイ後にもう一度「編集URLを表示」を実行してください。',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  const separator = execUrl.indexOf('?') === -1 ? '?' : '&';
+  const editUrl = execUrl + separator + 'mode=edit&editKey=' + encodeURIComponent(editKey);
+  const fallbackNote = webAppUrl.source === 'script'
+    ? '<p style="font-size:12px;color:#71717A;">WEB_APP_URL が未設定のため、Apps Script が返したURLを使用しています。<br>' +
+      'URLが正しくない場合は、configシートの WEB_APP_URL にデプロイ済みWebアプリURLを貼り付けてください。</p>'
+    : '';
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:16px;line-height:1.6;">' +
+      '<p style="margin:0 0 8px;font-weight:bold;">編集URL:</p>' +
+      '<textarea readonly style="box-sizing:border-box;width:100%;height:92px;font-size:13px;">' +
+        escapeHtmlForDialog_(editUrl) +
+      '</textarea>' +
+      '<p>この編集URLは configシートの EDIT_KEY と WEB_APP_URL から生成しています。</p>' +
+      '<p>このURLをClassroomなどで共同編集者に共有してください。</p>' +
+      '<p>EDIT_KEYを変更しない限り、同じ編集URLを継続して使えます。</p>' +
+      '<p>URLが実際のデプロイURLと異なる場合は、configシートの WEB_APP_URL を確認してください。</p>' +
+      '<p>開きっぱなしで編集できなくなった場合は、このURLを再読み込みしてください。</p>' +
+      fallbackNote +
+    '</div>'
+  ).setWidth(620).setHeight(300);
+
+  ui.showModalDialog(html, '編集URLを表示');
+}
+
+/**
+ * スプレッドシートメニューから WEB_APP_URL を設定する。
+ */
+function setWebAppUrl() {
+  const ui = SpreadsheetApp.getUi();
+  ensureWebAppUrlConfig_();
+
+  const response = ui.prompt(
+    'WebアプリURLを設定',
+    'デプロイ済みWebアプリの /exec URL を貼り付けてください。\n' +
+    '例:\n' +
+    'https://script.google.com/a/macros/e.osakamanabi.jp/s/xxxxx/exec',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const url = normalizeWebAppUrl_(response.getResponseText());
+  if (!url) {
+    ui.alert('WebアプリURL', 'URLが入力されていません。', ui.ButtonSet.OK);
+    return;
+  }
+
+  setConfigValue_(WEB_APP_URL_CONFIG_KEY, url, WEB_APP_URL_CONFIG_DESCRIPTION);
+  ui.alert(
+    'WebアプリURL',
+    'WEB_APP_URL を保存しました。「編集URLを表示」から編集URLを確認してください。',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * config シートの EDIT_KEY を再生成する。
+ */
+function regenerateEditKey() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    '編集キーを再生成',
+    '編集キーを再生成すると、これまで共有した編集URLは使えなくなります。続行しますか？',
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) return;
+
+  const newKey = generateEditKey_();
+  setConfigValue_(EDIT_KEY_CONFIG_KEY, newKey, EDIT_KEY_CONFIG_DESCRIPTION);
+
+  let updatedScriptProperty = false;
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const currentScriptKey = String(scriptProperties.getProperty(EDIT_KEY_CONFIG_KEY) || '').trim();
+    if (currentScriptKey) {
+      scriptProperties.setProperty(EDIT_KEY_CONFIG_KEY, newKey);
+      updatedScriptProperty = true;
+    }
+  } catch (e) {
+    updatedScriptProperty = false;
+  }
+
+  ui.alert(
+    '編集キーを再生成しました',
+    'config シートの EDIT_KEY を新しい値に変更しました。\n' +
+    (updatedScriptProperty ? '既存のスクリプト プロパティ EDIT_KEY も同じ値に更新しました。\n' : '') +
+    '新しい編集URLは「編集URLを表示」から確認してください。',
+    ui.ButtonSet.OK
+  );
+}
+
 
 // ============================================================
 //  Web アプリ エントリーポイント
@@ -186,7 +683,21 @@ function setupSheets() {
  * Googleサイトへの埋め込みを許可するため ALLOWALL を設定する。
  */
 function doGet(e) {
-  return HtmlService.createTemplateFromFile('index')
+  const params = (e && e.parameter) || {};
+  const mode = String(params.mode || '');
+  const requestedEditKey = String(params.editKey || '');
+  const template = HtmlService.createTemplateFromFile('index');
+
+  template.editToken = '';
+  const configuredEditKey = getConfiguredEditKey_();
+
+  if (mode === 'edit' && configuredEditKey && requestedEditKey === configuredEditKey) {
+    const editToken = Utilities.getUuid();
+    CacheService.getScriptCache().put(getEditTokenCacheKey_(editToken), '1', EDIT_TOKEN_TTL_SECONDS);
+    template.editToken = editToken;
+  }
+
+  return template
     .evaluate()
     .setTitle('360°Viewer - Hemisphere')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -241,12 +752,11 @@ function getAppConfig_() {
  * IMAGE_DRIVE_URL がフォルダURLの場合は直下の画像一覧を images 配列で返す。
  * 単一ファイルURLの場合は imageUrl（後方互換）で返す。
  *
- * @param {string} [mode] 'public' の場合は Base64 Data URI を返す。それ以外は lh3 直リンクを返す。
- * @returns {{ imageUrl?: string, images?: Array<{id:string,name:string}>, error?: string }}
+ * @param {string} [mode] 表示モード。画像配信方式はクライアント側の delivery で制御する。
+ * @returns {{ imageUrl?: string, fileId?: string, imageName?: string, images?: Array<{id:string,name:string}>, error?: string }}
  */
 function getConfig(mode) {
-  var execUrl = '';
-  try { execUrl = ScriptApp.getService().getUrl(); } catch (e) {}
+  var execUrl = getConfiguredWebAppUrl_();
 
   const appConfig     = getAppConfig_();
   const imageDriveUrl = appConfig['IMAGE_DRIVE_URL'] || '';
@@ -269,10 +779,12 @@ function getConfig(mode) {
 
   try {
     const file = DriveApp.getFileById(fileId);
-    if (mode === 'public') {
-      return { imageUrl: fileToDataUri_(file), execUrl: execUrl };
-    }
-    return { imageUrl: 'https://lh3.googleusercontent.com/d/' + fileId + '=s0', execUrl: execUrl };
+    return {
+      imageUrl: 'https://lh3.googleusercontent.com/d/' + fileId + '=s0',
+      fileId: fileId,
+      imageName: file.getName(),
+      execUrl: execUrl
+    };
   } catch (e) {
     console.error('画像取得エラー:', e.message);
     return { error: '画像の取得に失敗しました。ファイルIDまたは権限を確認してください。', execUrl: execUrl };
@@ -287,6 +799,9 @@ function getConfig(mode) {
  */
 function getConfigFromFolder_(folderId) {
   try {
+    const cached = getCachedFolderList_(folderId);
+    if (cached) return cached;
+
     const folder = DriveApp.getFolderById(folderId);
     const items  = [];
     const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -322,7 +837,9 @@ function getConfigFromFolder_(folderId) {
 
     // フォルダ → 画像の順に結合
     const merged = items.concat(imageItems);
-    return { images: merged };
+    const result = { images: merged };
+    setCachedFolderList_(folderId, result);
+    return result;
 
   } catch (e) {
     console.error('フォルダ取得エラー:', e.message);
@@ -425,14 +942,18 @@ function getHotspotPhotoDataUri(photoId) {
  * @param {string} newName 新しいファイル名
  * @returns {{ success: boolean, name?: string, error?: string }}
  */
-function renameImageFile(fileId, newName) {
+function renameImageFile(payload, newName) {
+  assertEditToken_(payload);
   try {
+    const fileId = payload && typeof payload === 'object' ? payload.fileId : payload;
+    newName = payload && typeof payload === 'object' ? payload.newName : newName;
     const trimmedName = String(newName || '').trim();
     if (!fileId) return { success: false, error: 'ファイルIDが指定されていません。' };
     if (!trimmedName) return { success: false, error: '新しい名前が空です。' };
 
     const file = DriveApp.getFileById(fileId);
     file.setName(trimmedName);
+    invalidateContainingFolderListCache_(file);
 
     return { success: true, name: file.getName() };
   } catch (e) {
@@ -508,13 +1029,16 @@ function getImageFileProperties(fileId) {
  * @param {string} fileId Google Drive ファイルID
  * @returns {{ success: boolean, deletedHotspots?: number, error?: string }}
  */
-function deleteImageFile(fileId) {
+function deleteImageFile(payload) {
+  assertEditToken_(payload);
   const lock = acquireLock_();
   try {
+    const fileId = payload && typeof payload === 'object' ? payload.fileId : payload;
     const targetId = String(fileId || '').trim();
     if (!targetId) return { success: false, error: 'ファイルIDが指定されていません。' };
 
     const file = DriveApp.getFileById(targetId);
+    invalidateContainingFolderListCache_(file);
     file.setTrashed(true);
 
     let deletedHotspots = 0;
@@ -548,7 +1072,8 @@ function deleteImageFile(fileId) {
 /**
  * スプレッドシートに保存されている指定画像のホットスポットを返す。
  * シートが存在しない場合は空配列を返す。
- * northOffset は初回アクセス時にXMPから取得し、config シートにキャッシュする。
+ * 公開ビューからも呼ばれるため、シート更新やDrive変更は行わない。
+ * northOffset は既存キャッシュを読むか、JPEGから一時的に抽出して返す。
  *
  * @param {string} fileId 取得対象の画像ファイルID
  * @returns {{ hotspots: Array, northOffset: number|null }}
@@ -568,7 +1093,6 @@ function loadHotspots(fileId) {
       } catch (metaErr) {
         console.warn('loadHotspots: northOffset 取得スキップ:', metaErr.message);
       }
-      setCachedNorthOffset_(fileId, northOffset);
     }
   }
 
@@ -576,8 +1100,6 @@ function loadHotspots(fileId) {
     const ss    = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName(INFO_SHEET_NAME);
     if (!sheet) return { hotspots: [], northOffset: northOffset };
-
-    migrateSheetIfNeeded_(sheet);
 
     const lastRow = sheet.getLastRow();
     if (lastRow <= 1) return { hotspots: [], northOffset: northOffset };
@@ -621,6 +1143,7 @@ function loadHotspots(fileId) {
  * @returns {{ success:boolean, id?:string, error?:string }}
  */
 function saveHotspot(data) {
+  assertEditToken_(data);
   const lock = acquireLock_();
   try {
     if (!data || !data.label || data.label.trim() === '') {
@@ -680,6 +1203,7 @@ function saveHotspot(data) {
  * @returns {{ success: boolean, error?: string }}
  */
 function deleteHotspot(payload) {
+  assertEditToken_(payload);
   const lock = acquireLock_();
   try {
     let hotspotId = '';
@@ -724,6 +1248,7 @@ function deleteHotspot(payload) {
  * @returns {{ success: boolean, error?: string }}
  */
 function updateHotspot(data, hotspotId) {
+  assertEditToken_(data);
   const lock = acquireLock_();
   try {
     if (!data || !data.label || data.label.trim() === '') {
@@ -962,6 +1487,7 @@ function extractHeadingFromBlob_(blob) {
  * @returns {{ success: boolean, file?: { id: string, name: string }, error?: string }}
  */
 function uploadImageToDrive(payload, fileName, mimeType, is2D) {
+  assertEditToken_(payload);
   try {
     const req = normalizeUploadPayload_(payload, fileName, mimeType, is2D);
     const config = getAppConfig_();
@@ -995,6 +1521,8 @@ function uploadImageToDrive(payload, fileName, mimeType, is2D) {
     } catch (sharingErr) {
       console.warn('setSharing スキップ（権限制限の可能性）:', sharingErr.message);
     }
+    invalidateFolderListCache_(folderId);
+    invalidateFolderListCache_(uploadFolderId);
 
     return { success: true, file: { id: file.getId(), name: file.getName() } };
   } catch (e) {
@@ -1071,12 +1599,26 @@ function getStudentSheetId_() {
   return PropertiesService.getScriptProperties().getProperty(STUDENT_SHEET_ID_KEY) || '';
 }
 
+function createStudentSheetFromMenu() {
+  return createStudentSheet_();
+}
+
 /**
  * 一括入力用スプレッドシートを新規作成し、IDを PropertiesService に保存する。
  * 複数回実行した場合は最後に作成したスプシが紐づく。
- * メニューから呼び出される。
+ *
+ * @param {{ __editToken?: string }} payload
  */
-function createStudentSheet() {
+function createStudentSheet(payload) {
+  assertEditToken_(payload);
+  return createStudentSheet_();
+}
+
+/**
+ * 一括入力用スプレッドシート作成の内部実装。
+ * メニュー操作と編集画面APIから共用する。
+ */
+function createStudentSheet_() {
   const ui = SpreadsheetApp.getUi();
   try {
     const ss = SpreadsheetApp.create('一括入力用スプシ');
@@ -1113,7 +1655,7 @@ function createStudentSheet() {
     // 作成直後に入力規則を自動適用（IMAGE_DRIVE_URL 未設定の場合はスキップ）
     let dropdownMsg = '';
     try {
-      const ddResult = updateStudentSheetDropdowns();
+      const ddResult = updateStudentSheetDropdowns_();
       if (ddResult.success) {
         dropdownMsg = '\n✅ 入力規則（プルダウン）を自動設定しました。';
       } else {
@@ -1143,7 +1685,7 @@ function createStudentSheet() {
 function updateStudentSheetDropdownsFromMenu() {
   const ui = SpreadsheetApp.getUi();
   try {
-    const result = updateStudentSheetDropdowns();
+    const result = updateStudentSheetDropdowns_();
     if (result.success) {
       ui.alert('完了', '入力規則（プルダウン）を更新しました。', ui.ButtonSet.OK);
     } else {
@@ -1183,9 +1725,20 @@ function showLinkedStudentSheetId() {
  *一括入力用スプレッドシートの B列・F列・G列に、
  * config シートの画像名一覧を使ったプルダウン入力規則をセットする。
  *
+ * @param {{ __editToken?: string }} payload
  * @returns {{ success: boolean, error?: string }}
  */
-function updateStudentSheetDropdowns() {
+function updateStudentSheetDropdowns(payload) {
+  assertEditToken_(payload);
+  return updateStudentSheetDropdowns_();
+}
+
+/**
+ * 一括入力用スプレッドシートの入力規則更新の内部実装。
+ *
+ * @returns {{ success: boolean, error?: string }}
+ */
+function updateStudentSheetDropdowns_() {
   try {
     // 1. config から画像フォルダIDを取得
     const appConfig  = getAppConfig_();
@@ -1242,9 +1795,31 @@ function updateStudentSheetDropdowns() {
  * 一括入力用スプレッドシートの未処理行（H列が「済」でない行）を読み込み、
  * info シートに一括追記する。追記後、対象行の H列を「済」に更新する。
  *
+ * @param {{ __editToken?: string }} payload
  * @returns {{ success: boolean, count: number, error?: string }}
  */
-function importDataFromStudentSheet() {
+function bulkImportStudentSheet(payload) {
+  assertEditToken_(payload);
+  return importDataFromStudentSheet_();
+}
+
+/**
+ * 旧UI呼び出し名との互換用。編集トークンは必須。
+ *
+ * @param {{ __editToken?: string }} payload
+ * @returns {{ success: boolean, count: number, error?: string }}
+ */
+function importDataFromStudentSheet(payload) {
+  assertEditToken_(payload);
+  return importDataFromStudentSheet_();
+}
+
+/**
+ * 一括入力用スプレッドシート取り込みの内部実装。
+ *
+ * @returns {{ success: boolean, count: number, error?: string }}
+ */
+function importDataFromStudentSheet_() {
   const lock = acquireLock_();
   try {
     // 1. config から画像名→IDのマッピング辞書を作成

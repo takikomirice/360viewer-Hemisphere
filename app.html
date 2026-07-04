@@ -5,8 +5,14 @@
 var viewer          = null;   // Pannellumビューアインスタンス
 var isEditMode      = false;  // 現在編集モードかどうか
 var appMode         = '';     // URLパラメータ: 'public' | 'internal' | ''
+var editToken       = String(window.__EDIT_TOKEN__ || '');
+var canEdit         = !!editToken;
+var deliveryMode    = 'direct'; // 画像配信方式: 'direct' | 'auto' | 'base64'
+var initialSceneId  = '';     // URLパラメータ scene の初期表示シーンID
+var initialYaw      = null;   // URLパラメータ yaw の初期視点
+var initialPitch    = null;   // URLパラメータ pitch の初期視点
 var isGyroActive    = false;  // ジャイロ（DeviceOrientation）ON/OFF状態
-var appBaseUrl      = '';     // WebアプリのベースURL（埋め込みコード生成用）
+var appBaseUrl      = '';     // WebアプリのベースURL（共有URL生成用）
 var pendingPitch    = null;   // クリック地点のPitch（保存待ち）
 // 編集モード: ドラッグとクリックの判別用（ドラッグ後のclickでホットスポットを開かない）
 var EDIT_MODE_DRAG_THRESHOLD_PX = 5;
@@ -35,6 +41,7 @@ var suppressNextPanoramaClick = false; // メニュー操作直後のクリッ�
 var isMovingHotspot = false;      // ホットスポット移動モード中かどうか
 var movingHotspotTarget = null;   // 移動対象のホットスポットargs
 var photoCache           = {};    // 写真データURIのキャッシュ {photoId: dataUri}
+var hotspotCacheByFileId = {};
 var activeJumpTooltip    = null;  // 表示中のジャンプツールチップ要素
 var DEFAULT_MARKER_SHAPE = 'circle';
 var DEFAULT_MARKER_COLOR = 'blue';
@@ -66,6 +73,624 @@ var lastMarkerColor = DEFAULT_MARKER_COLOR;
 var lastMarkerIcon = DEFAULT_MARKER_ICON;
 var is2DMode = false;          // 現在2D平面マップモードかどうか
 var current2DHotspots = [];    // 2Dモード時の現在のホットスポット一覧
+var IMAGE_LOAD_TIMEOUT_MS = 30000;
+var DIRECT_FALLBACK_TIMEOUT_MS = 8000;
+var MOBILE_PUBLIC_HINT_STORAGE_KEY = 'mobilePublicGyroHintShown';
+
+function withEditToken(payload) {
+  var next = {};
+  if (payload && typeof payload === 'object') {
+    Object.keys(payload).forEach(function (key) {
+      next[key] = payload[key];
+    });
+  }
+  next.__editToken = editToken;
+  return next;
+}
+
+function normalizeDeliveryMode(value) {
+  value = String(value || '').trim().toLowerCase();
+  return (value === 'auto' || value === 'base64' || value === 'direct') ? value : 'direct';
+}
+
+function isPublicViewingMode() {
+  return appMode === 'public' || appMode === 'internal' || !canEdit;
+}
+
+function isSmallViewport() {
+  if (window.matchMedia) {
+    return window.matchMedia('(max-width: 700px)').matches;
+  }
+  return window.innerWidth <= 700;
+}
+
+function updateViewingModeClasses() {
+  var publicView = isPublicViewingMode();
+  var mobileView = isSmallViewport();
+  var topbarHiddenView = appMode === 'public' || appMode === 'internal' || (publicView && mobileView);
+  document.body.classList.toggle('public-view', publicView);
+  document.body.classList.toggle('mobile-view', mobileView);
+  document.body.classList.toggle('mobile-public-view', publicView && mobileView);
+  document.body.classList.toggle('topbar-hidden-view', topbarHiddenView);
+  if (!(publicView && mobileView)) {
+    setMobileSceneSheetExpanded(false);
+  }
+}
+
+function updateAccessNotice() {
+  var viewOnlyNotice = document.getElementById('view-only-notice');
+  var editKeyWarning = document.getElementById('edit-key-warning');
+  var showViewOnly = !appMode && !canEdit && appMode !== 'public' && appMode !== 'internal';
+  var showEditWarning = appMode === 'edit' && !canEdit && appMode !== 'public' && appMode !== 'internal';
+
+  if (viewOnlyNotice) viewOnlyNotice.classList.toggle('visible', showViewOnly);
+  if (editKeyWarning) editKeyWarning.classList.toggle('visible', showEditWarning);
+}
+
+function maybeShowMobilePublicHint() {
+  if (!isPublicViewingMode() || !isSmallViewport()) return;
+  try {
+    if (window.localStorage && localStorage.getItem(MOBILE_PUBLIC_HINT_STORAGE_KEY) === '1') return;
+    showToast('ドラッグで見回せます。ジャイロONで傾き操作もできます。', 'success');
+    if (window.localStorage) localStorage.setItem(MOBILE_PUBLIC_HINT_STORAGE_KEY, '1');
+  } catch (e) {
+    showToast('ドラッグで見回せます。ジャイロONで傾き操作もできます。', 'success');
+  }
+}
+
+function normalizeShareQualityMode(value) {
+  value = String(value || '').trim().toLowerCase();
+  return (value === 'high' || value === 'fast') ? value : 'fast';
+}
+
+function parseNumberParam(value) {
+  if (value === null || typeof value === 'undefined') return null;
+  if (String(value).trim() === '') return null;
+  var num = Number(value);
+  return isFinite(num) ? num : null;
+}
+
+function formatShareNumber(value) {
+  var num = parseNumberParam(value);
+  if (num === null) return '';
+  return String(Math.round(num * 100) / 100);
+}
+
+function buildPublicShareUrl(options) {
+  options = options || {};
+  var baseUrl = String(options.baseUrl || '').split('#')[0].split('?')[0];
+  var params = [
+    'mode=public',
+    'delivery=' + encodeURIComponent(normalizeDeliveryMode(options.delivery))
+  ];
+
+  if (options.includeQuality === true) {
+    params.push('quality=' + encodeURIComponent(normalizeShareQualityMode(options.quality)));
+  }
+
+  var sceneId = String(options.sceneId || '').trim();
+  if (sceneId) {
+    params.push('scene=' + encodeURIComponent(sceneId));
+  }
+
+  var yaw = parseNumberParam(options.yaw);
+  if (yaw !== null) {
+    params.push('yaw=' + encodeURIComponent(formatShareNumber(yaw)));
+  }
+
+  var pitch = parseNumberParam(options.pitch);
+  if (pitch !== null) {
+    params.push('pitch=' + encodeURIComponent(formatShareNumber(pitch)));
+  }
+
+  return baseUrl + '?' + params.join('&');
+}
+
+function buildIframeCode(url) {
+  var src = String(url || '').replace(/"/g, '&quot;');
+  return '<iframe src="' + src + '" width="100%" height="600px" frameborder="0" allowfullscreen allow="fullscreen *"></iframe>';
+}
+
+// QR Code Model 2 / error correction level M, byte mode only.
+// External QR image APIs are intentionally not used; the public URL stays in the browser.
+var QR_RS_BLOCK_TABLE_M = [
+  null,
+  [{ count: 1, data: 16, ec: 10 }],
+  [{ count: 1, data: 28, ec: 16 }],
+  [{ count: 1, data: 44, ec: 26 }],
+  [{ count: 2, data: 32, ec: 18 }],
+  [{ count: 2, data: 43, ec: 24 }],
+  [{ count: 4, data: 27, ec: 16 }],
+  [{ count: 4, data: 31, ec: 18 }],
+  [{ count: 2, data: 38, ec: 22 }, { count: 2, data: 39, ec: 22 }],
+  [{ count: 3, data: 36, ec: 22 }, { count: 2, data: 37, ec: 22 }],
+  [{ count: 4, data: 43, ec: 26 }, { count: 1, data: 44, ec: 26 }],
+  [{ count: 1, data: 50, ec: 30 }, { count: 4, data: 51, ec: 30 }]
+];
+
+var QR_ALIGNMENT_POSITIONS = [
+  [],
+  [],
+  [6, 18],
+  [6, 22],
+  [6, 26],
+  [6, 30],
+  [6, 34],
+  [6, 22, 38],
+  [6, 24, 42],
+  [6, 26, 46],
+  [6, 28, 50],
+  [6, 30, 54]
+];
+
+var QR_GF_EXP = null;
+var QR_GF_LOG = null;
+var QR_RS_GENERATOR_CACHE = {};
+
+function qrFilledArray(length, value) {
+  var arr = [];
+  for (var i = 0; i < length; i++) arr.push(value);
+  return arr;
+}
+
+function qrEncodeUtf8(text) {
+  text = String(text || '');
+  if (window.TextEncoder) {
+    return Array.prototype.slice.call(new TextEncoder().encode(text));
+  }
+  var encoded = unescape(encodeURIComponent(text));
+  var bytes = [];
+  for (var i = 0; i < encoded.length; i++) {
+    bytes.push(encoded.charCodeAt(i));
+  }
+  return bytes;
+}
+
+function qrGetBlocks(version) {
+  var groups = QR_RS_BLOCK_TABLE_M[version];
+  var blocks = [];
+  for (var i = 0; i < groups.length; i++) {
+    for (var j = 0; j < groups[i].count; j++) {
+      blocks.push({ dataCount: groups[i].data, ecCount: groups[i].ec });
+    }
+  }
+  return blocks;
+}
+
+function qrGetDataCodewordCount(version) {
+  var blocks = qrGetBlocks(version);
+  var total = 0;
+  for (var i = 0; i < blocks.length; i++) total += blocks[i].dataCount;
+  return total;
+}
+
+function qrChooseVersion(bytes) {
+  for (var version = 1; version < QR_RS_BLOCK_TABLE_M.length; version++) {
+    var charCountBits = version < 10 ? 8 : 16;
+    if (bytes.length >= (1 << charCountBits)) continue;
+    if (4 + charCountBits + bytes.length * 8 <= qrGetDataCodewordCount(version) * 8) {
+      return version;
+    }
+  }
+  throw new Error('QRコードにするURLが長すぎます。');
+}
+
+function QrBitBuffer() {
+  this.bits = [];
+}
+
+QrBitBuffer.prototype.appendBits = function (value, length) {
+  for (var i = length - 1; i >= 0; i--) {
+    this.bits.push(((value >>> i) & 1) !== 0);
+  }
+};
+
+function qrMakeDataCodewords(bytes, version) {
+  var dataCodewordCount = qrGetDataCodewordCount(version);
+  var capacityBits = dataCodewordCount * 8;
+  var buffer = new QrBitBuffer();
+  buffer.appendBits(4, 4); // byte mode
+  buffer.appendBits(bytes.length, version < 10 ? 8 : 16);
+  for (var i = 0; i < bytes.length; i++) buffer.appendBits(bytes[i], 8);
+
+  var terminatorBits = Math.min(4, capacityBits - buffer.bits.length);
+  buffer.appendBits(0, terminatorBits);
+  while (buffer.bits.length % 8 !== 0) buffer.bits.push(false);
+
+  var codewords = [];
+  for (var j = 0; j < buffer.bits.length; j += 8) {
+    var value = 0;
+    for (var k = 0; k < 8; k++) value = (value << 1) | (buffer.bits[j + k] ? 1 : 0);
+    codewords.push(value);
+  }
+
+  var pad = 0xEC;
+  while (codewords.length < dataCodewordCount) {
+    codewords.push(pad);
+    pad = pad === 0xEC ? 0x11 : 0xEC;
+  }
+  return codewords;
+}
+
+function qrInitGaloisField() {
+  if (QR_GF_EXP && QR_GF_LOG) return;
+  QR_GF_EXP = [];
+  QR_GF_LOG = [];
+  var x = 1;
+  for (var i = 0; i < 255; i++) {
+    QR_GF_EXP[i] = x;
+    QR_GF_LOG[x] = i;
+    x <<= 1;
+    if (x & 0x100) x ^= 0x11D;
+  }
+  for (var j = 255; j < 512; j++) QR_GF_EXP[j] = QR_GF_EXP[j - 255];
+}
+
+function qrGfMultiply(a, b) {
+  if (a === 0 || b === 0) return 0;
+  qrInitGaloisField();
+  return QR_GF_EXP[QR_GF_LOG[a] + QR_GF_LOG[b]];
+}
+
+function qrMultiplyPolynomials(a, b) {
+  var result = qrFilledArray(a.length + b.length - 1, 0);
+  for (var i = 0; i < a.length; i++) {
+    for (var j = 0; j < b.length; j++) {
+      result[i + j] ^= qrGfMultiply(a[i], b[j]);
+    }
+  }
+  return result;
+}
+
+function qrGetGeneratorPolynomial(degree) {
+  if (QR_RS_GENERATOR_CACHE[degree]) return QR_RS_GENERATOR_CACHE[degree];
+  qrInitGaloisField();
+  var poly = [1];
+  for (var i = 0; i < degree; i++) {
+    poly = qrMultiplyPolynomials(poly, [1, QR_GF_EXP[i]]);
+  }
+  QR_RS_GENERATOR_CACHE[degree] = poly;
+  return poly;
+}
+
+function qrComputeErrorCorrection(data, degree) {
+  var generator = qrGetGeneratorPolynomial(degree);
+  var result = qrFilledArray(degree, 0);
+  for (var i = 0; i < data.length; i++) {
+    var factor = data[i] ^ result[0];
+    result.shift();
+    result.push(0);
+    for (var j = 0; j < degree; j++) {
+      result[j] ^= qrGfMultiply(generator[j + 1], factor);
+    }
+  }
+  return result;
+}
+
+function qrInterleaveCodewords(dataCodewords, version) {
+  var specs = qrGetBlocks(version);
+  var blocks = [];
+  var offset = 0;
+  var maxDataLength = 0;
+  var maxEcLength = 0;
+  for (var i = 0; i < specs.length; i++) {
+    var data = dataCodewords.slice(offset, offset + specs[i].dataCount);
+    offset += specs[i].dataCount;
+    var ec = qrComputeErrorCorrection(data, specs[i].ecCount);
+    blocks.push({ data: data, ec: ec });
+    maxDataLength = Math.max(maxDataLength, data.length);
+    maxEcLength = Math.max(maxEcLength, ec.length);
+  }
+
+  var result = [];
+  for (var dataIndex = 0; dataIndex < maxDataLength; dataIndex++) {
+    for (var b = 0; b < blocks.length; b++) {
+      if (dataIndex < blocks[b].data.length) result.push(blocks[b].data[dataIndex]);
+    }
+  }
+  for (var ecIndex = 0; ecIndex < maxEcLength; ecIndex++) {
+    for (var c = 0; c < blocks.length; c++) {
+      if (ecIndex < blocks[c].ec.length) result.push(blocks[c].ec[ecIndex]);
+    }
+  }
+  return result;
+}
+
+function qrCreateEmptyMatrix(size) {
+  var modules = [];
+  var isFunction = [];
+  for (var y = 0; y < size; y++) {
+    modules[y] = [];
+    isFunction[y] = [];
+    for (var x = 0; x < size; x++) {
+      modules[y][x] = false;
+      isFunction[y][x] = false;
+    }
+  }
+  return { modules: modules, isFunction: isFunction };
+}
+
+function qrSetFunctionModule(modules, isFunction, x, y, isDark) {
+  var size = modules.length;
+  if (x < 0 || y < 0 || x >= size || y >= size) return;
+  modules[y][x] = !!isDark;
+  isFunction[y][x] = true;
+}
+
+function qrDrawFinderPattern(modules, isFunction, x, y) {
+  for (var dy = -1; dy <= 7; dy++) {
+    for (var dx = -1; dx <= 7; dx++) {
+      var xx = x + dx;
+      var yy = y + dy;
+      var dark = dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6 &&
+        (dx === 0 || dx === 6 || dy === 0 || dy === 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4));
+      qrSetFunctionModule(modules, isFunction, xx, yy, dark);
+    }
+  }
+}
+
+function qrDrawAlignmentPattern(modules, isFunction, x, y) {
+  for (var dy = -2; dy <= 2; dy++) {
+    for (var dx = -2; dx <= 2; dx++) {
+      qrSetFunctionModule(modules, isFunction, x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }
+  }
+}
+
+function qrDrawFormatBits(modules, isFunction, mask) {
+  var size = modules.length;
+  var data = mask; // Error correction level M uses format bits 00.
+  var rem = data;
+  for (var i = 0; i < 10; i++) rem = (rem << 1) ^ (((rem >>> 9) & 1) ? 0x537 : 0);
+  var bits = ((data << 10) | rem) ^ 0x5412;
+
+  function getBit(index) {
+    return ((bits >>> index) & 1) !== 0;
+  }
+
+  for (var a = 0; a <= 5; a++) qrSetFunctionModule(modules, isFunction, 8, a, getBit(a));
+  qrSetFunctionModule(modules, isFunction, 8, 7, getBit(6));
+  qrSetFunctionModule(modules, isFunction, 8, 8, getBit(7));
+  qrSetFunctionModule(modules, isFunction, 7, 8, getBit(8));
+  for (var b = 9; b < 15; b++) qrSetFunctionModule(modules, isFunction, 14 - b, 8, getBit(b));
+
+  for (var c = 0; c < 8; c++) qrSetFunctionModule(modules, isFunction, size - 1 - c, 8, getBit(c));
+  for (var d = 8; d < 15; d++) qrSetFunctionModule(modules, isFunction, 8, size - 15 + d, getBit(d));
+  qrSetFunctionModule(modules, isFunction, 8, size - 8, true);
+}
+
+function qrDrawVersionBits(modules, isFunction, version) {
+  if (version < 7) return;
+  var size = modules.length;
+  var rem = version;
+  for (var i = 0; i < 12; i++) rem = (rem << 1) ^ (((rem >>> 11) & 1) ? 0x1F25 : 0);
+  var bits = (version << 12) | rem;
+  for (var j = 0; j < 18; j++) {
+    var bit = ((bits >>> j) & 1) !== 0;
+    var x = size - 11 + (j % 3);
+    var y = Math.floor(j / 3);
+    qrSetFunctionModule(modules, isFunction, x, y, bit);
+    qrSetFunctionModule(modules, isFunction, y, x, bit);
+  }
+}
+
+function qrDrawFunctionPatterns(modules, isFunction, version) {
+  var size = modules.length;
+  qrDrawFinderPattern(modules, isFunction, 0, 0);
+  qrDrawFinderPattern(modules, isFunction, size - 7, 0);
+  qrDrawFinderPattern(modules, isFunction, 0, size - 7);
+
+  for (var i = 8; i < size - 8; i++) {
+    qrSetFunctionModule(modules, isFunction, i, 6, i % 2 === 0);
+    qrSetFunctionModule(modules, isFunction, 6, i, i % 2 === 0);
+  }
+
+  var positions = QR_ALIGNMENT_POSITIONS[version];
+  for (var yIndex = 0; yIndex < positions.length; yIndex++) {
+    for (var xIndex = 0; xIndex < positions.length; xIndex++) {
+      var x = positions[xIndex];
+      var y = positions[yIndex];
+      var overlapsFinder = (x === 6 && y === 6) || (x === 6 && y === size - 7) || (x === size - 7 && y === 6);
+      if (!overlapsFinder) qrDrawAlignmentPattern(modules, isFunction, x, y);
+    }
+  }
+
+  qrDrawFormatBits(modules, isFunction, 0);
+  qrDrawVersionBits(modules, isFunction, version);
+}
+
+function qrDrawCodewords(modules, isFunction, codewords) {
+  var size = modules.length;
+  var bits = [];
+  for (var i = 0; i < codewords.length; i++) {
+    for (var j = 7; j >= 0; j--) bits.push(((codewords[i] >>> j) & 1) !== 0);
+  }
+
+  var bitIndex = 0;
+  var upward = true;
+  for (var right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right--;
+    for (var vert = 0; vert < size; vert++) {
+      var y = upward ? size - 1 - vert : vert;
+      for (var dx = 0; dx < 2; dx++) {
+        var x = right - dx;
+        if (!isFunction[y][x]) {
+          modules[y][x] = bitIndex < bits.length ? bits[bitIndex] : false;
+          bitIndex++;
+        }
+      }
+    }
+    upward = !upward;
+  }
+}
+
+function qrCloneMatrix(matrix) {
+  var copy = [];
+  for (var y = 0; y < matrix.length; y++) copy[y] = matrix[y].slice();
+  return copy;
+}
+
+function qrMaskBit(mask, x, y) {
+  if (mask === 0) return (x + y) % 2 === 0;
+  if (mask === 1) return y % 2 === 0;
+  if (mask === 2) return x % 3 === 0;
+  if (mask === 3) return (x + y) % 3 === 0;
+  if (mask === 4) return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0;
+  if (mask === 5) return ((x * y) % 2 + (x * y) % 3) === 0;
+  if (mask === 6) return (((x * y) % 2 + (x * y) % 3) % 2) === 0;
+  return (((x + y) % 2 + (x * y) % 3) % 2) === 0;
+}
+
+function qrApplyMask(modules, isFunction, mask) {
+  var size = modules.length;
+  for (var y = 0; y < size; y++) {
+    for (var x = 0; x < size; x++) {
+      if (!isFunction[y][x] && qrMaskBit(mask, x, y)) modules[y][x] = !modules[y][x];
+    }
+  }
+}
+
+function qrPenaltyForLine(getBit, size) {
+  var score = 0;
+  var runColor = getBit(0);
+  var runLength = 1;
+  for (var i = 1; i <= size; i++) {
+    if (i < size && getBit(i) === runColor) {
+      runLength++;
+    } else {
+      if (runLength >= 5) score += 3 + runLength - 5;
+      if (i < size) {
+        runColor = getBit(i);
+        runLength = 1;
+      }
+    }
+  }
+
+  var patternA = [true, false, true, true, true, false, true, false, false, false, false];
+  var patternB = [false, false, false, false, true, false, true, true, true, false, true];
+  for (var start = 0; start <= size - 11; start++) {
+    var matchA = true;
+    var matchB = true;
+    for (var j = 0; j < 11; j++) {
+      if (getBit(start + j) !== patternA[j]) matchA = false;
+      if (getBit(start + j) !== patternB[j]) matchB = false;
+    }
+    if (matchA || matchB) score += 40;
+  }
+  return score;
+}
+
+function qrPenaltyScore(modules) {
+  var size = modules.length;
+  var score = 0;
+  var dark = 0;
+
+  for (var y = 0; y < size; y++) {
+    score += qrPenaltyForLine(function (x) { return modules[y][x]; }, size);
+  }
+  for (var x = 0; x < size; x++) {
+    score += qrPenaltyForLine(function (y) { return modules[y][x]; }, size);
+  }
+
+  for (var yy = 0; yy < size - 1; yy++) {
+    for (var xx = 0; xx < size - 1; xx++) {
+      var color = modules[yy][xx];
+      if (color === modules[yy][xx + 1] && color === modules[yy + 1][xx] && color === modules[yy + 1][xx + 1]) {
+        score += 3;
+      }
+    }
+  }
+
+  for (var row = 0; row < size; row++) {
+    for (var col = 0; col < size; col++) {
+      if (modules[row][col]) dark++;
+    }
+  }
+  var total = size * size;
+  score += Math.floor(Math.abs(dark * 20 - total * 10) / total) * 10;
+  return score;
+}
+
+function createQrMatrix(text) {
+  var bytes = qrEncodeUtf8(text);
+  var version = qrChooseVersion(bytes);
+  var size = 21 + (version - 1) * 4;
+  var dataCodewords = qrMakeDataCodewords(bytes, version);
+  var allCodewords = qrInterleaveCodewords(dataCodewords, version);
+  var base = qrCreateEmptyMatrix(size);
+  qrDrawFunctionPatterns(base.modules, base.isFunction, version);
+  qrDrawCodewords(base.modules, base.isFunction, allCodewords);
+
+  var bestModules = null;
+  var bestScore = Infinity;
+  for (var mask = 0; mask < 8; mask++) {
+    var candidate = qrCloneMatrix(base.modules);
+    qrApplyMask(candidate, base.isFunction, mask);
+    qrDrawFormatBits(candidate, base.isFunction, mask);
+    var score = qrPenaltyScore(candidate);
+    if (score < bestScore) {
+      bestScore = score;
+      bestModules = candidate;
+    }
+  }
+  return { modules: bestModules, size: size, version: version };
+}
+
+function renderShareQrCode(url) {
+  var container = document.getElementById('share-qr-code');
+  if (!container) return false;
+  container.innerHTML = '';
+
+  try {
+    var qr = createQrMatrix(String(url || ''));
+    var quietZone = 4;
+    var viewSize = qr.size + quietZone * 2;
+    var svgNs = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(svgNs, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + viewSize + ' ' + viewSize);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'public共有URLのQRコード');
+    svg.setAttribute('shape-rendering', 'crispEdges');
+
+    var background = document.createElementNS(svgNs, 'rect');
+    background.setAttribute('width', String(viewSize));
+    background.setAttribute('height', String(viewSize));
+    background.setAttribute('fill', '#FFFFFF');
+    svg.appendChild(background);
+
+    var segments = [];
+    for (var y = 0; y < qr.size; y++) {
+      for (var x = 0; x < qr.size; x++) {
+        if (qr.modules[y][x]) {
+          segments.push('M' + (x + quietZone) + ' ' + (y + quietZone) + 'h1v1h-1z');
+        }
+      }
+    }
+    var path = document.createElementNS(svgNs, 'path');
+    path.setAttribute('d', segments.join(' '));
+    path.setAttribute('fill', '#000000');
+    svg.appendChild(path);
+    container.appendChild(svg);
+    return true;
+  } catch (e) {
+    container.textContent = e && e.message ? e.message : 'QRコードを生成できませんでした。';
+    return false;
+  }
+}
+
+function updateShareQrPanel(url, format) {
+  var panel = document.getElementById('share-qr-panel');
+  if (!panel) return;
+  var isQr = format === 'qr';
+  panel.hidden = !isQr;
+  if (!isQr) {
+    var qrCode = document.getElementById('share-qr-code');
+    if (qrCode) qrCode.innerHTML = '';
+    return;
+  }
+
+  renderShareQrCode(url);
+}
 
 // =============================================
 //  初期化: ページ読み込み後にGASからデータ取得
@@ -104,6 +729,7 @@ window.addEventListener('load', function () {
   if (bulkInputTrigger) bulkInputTrigger.addEventListener('click', function (evt) { evt.stopPropagation(); toggleBulkInputDropdown(); });
   document.getElementById('bulk-input-dropdown').addEventListener('click', onBulkInputDropdownClick);
   window.addEventListener('resize', closeSceneContextMenu);
+  window.addEventListener('resize', updateViewingModeClasses);
 
   // ---- クイズモーダル: フリップ / クローズ ----
   (function () {
@@ -139,11 +765,23 @@ window.addEventListener('load', function () {
     appMode = (loc.parameter && loc.parameter.mode) || '';
     var qParam = (loc.parameter && loc.parameter.quality) || '';
     if (qParam === 'high' || qParam === 'fast') imageQualityMode = qParam;
+    var dParam = (loc.parameter && loc.parameter.delivery) || '';
+    deliveryMode = normalizeDeliveryMode(dParam);
+    initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
+    initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
+    initialPitch = parseNumberParam(loc.parameter && loc.parameter.pitch);
     updateQualityToggleBtn();
+    updateViewingModeClasses();
+    updateAccessNotice();
 
     if (appMode === 'internal' || appMode === 'public') {
       var topbar = document.getElementById('topbar');
       if (topbar) topbar.style.display = 'none';
+    }
+
+    if (!canEdit) {
+      var modeToggleBtn = document.getElementById('mode-toggle');
+      if (modeToggleBtn) modeToggleBtn.style.display = 'none';
       var uploadBtn = document.getElementById('upload-btn');
       if (uploadBtn) uploadBtn.style.display = 'none';
       var openFolderBtnEl = document.getElementById('open-folder-btn');
@@ -151,6 +789,7 @@ window.addEventListener('load', function () {
       var bulkInputGroupEl = document.getElementById('bulk-input-group');
       if (bulkInputGroupEl) bulkInputGroupEl.style.setProperty('display', 'none', 'important');
     }
+    maybeShowMobilePublicHint();
 
     google.script.run
       .withSuccessHandler(onConfigLoaded)
@@ -164,6 +803,139 @@ window.addEventListener('load', function () {
 /**
  * 設定取得後: フォルダモードと単一画像モードを振り分ける
  */
+function loadSingleImageScene(config) {
+  currentFileId = null;
+  var directImageUrl = config.imageUrl;
+  var singleAutoFallbackTimer = null;
+  var singleFallbackStarted = false;
+  var singleDirectImageLoaded = false;
+  if (config.fileId) {
+    directImageUrl = getDirectImageUrl({ id: config.fileId, imageUrl: config.imageUrl });
+  }
+
+  function showSingleImageDeliveryError(message) {
+    clearSingleImageAutoFallbackTimer();
+    showLoadError(message);
+  }
+
+  function clearSingleImageAutoFallbackTimer() {
+    if (singleAutoFallbackTimer) {
+      clearTimeout(singleAutoFallbackTimer);
+      singleAutoFallbackTimer = null;
+    }
+  }
+
+  function startSingleImageBase64Fallback(message) {
+    if (singleFallbackStarted) return;
+    singleFallbackStarted = true;
+    clearSingleImageAutoFallbackTimer();
+    if (!config.fileId) {
+      showSingleImageDeliveryError(message || '直リンクで画像を読み込めず、Base64 fallback用のファイルIDも見つかりませんでした。');
+      return;
+    }
+    showSceneLoading();
+    fallbackToBase64(config.fileId, function (base64Url) {
+      if (singleDirectImageLoaded) return;
+      loadSingleImageWithHotspots(base64Url, function () {
+        showSingleImageDeliveryError('直リンクとBase64 fallbackの両方で画像を読み込めませんでした。Driveの共有設定を確認してください。');
+      });
+    }, function () {
+      showSingleImageDeliveryError('直リンクで画像を読み込めず、Base64 fallbackも取得できませんでした。Driveの共有設定を確認してください。');
+    });
+  }
+
+  function startSingleImageAutoFallbackTimer() {
+    clearSingleImageAutoFallbackTimer();
+    singleAutoFallbackTimer = setTimeout(function () {
+      startSingleImageBase64Fallback('直リンクの読み込みに時間がかかっているため、Base64 fallbackを試します。');
+    }, DIRECT_FALLBACK_TIMEOUT_MS);
+  }
+
+  function startSingleImageViewer(imageUrl, spots, north, onDisplayError) {
+    var isFallbackImage = singleFallbackStarted && imageUrl !== directImageUrl;
+    var isAutoDirectImage = deliveryMode === 'auto' && imageUrl === directImageUrl && !singleFallbackStarted;
+    if (viewer) {
+      clearInterval(loadPollInterval);
+      try { viewer.destroy(); } catch (e) { /* ignore */ }
+      viewer = null;
+    }
+    hide2DView();
+    if (isAutoDirectImage) startSingleImageAutoFallbackTimer();
+    initViewer(imageUrl, spots || [], north || null, initialYaw, initialPitch, onDisplayError, function () {
+      if (isAutoDirectImage) singleDirectImageLoaded = true;
+      if (singleFallbackStarted && !isFallbackImage) return;
+      clearSingleImageAutoFallbackTimer();
+    });
+  }
+
+  function loadSingleImageWithHotspots(imageUrl, onDisplayError) {
+    loadHotspotsCached('', function (res) {
+      if (singleFallbackStarted && imageUrl === directImageUrl) return;
+      var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
+      startSingleImageViewer(imageUrl, res.hotspots || [], north, onDisplayError);
+    }, function () {
+      if (singleFallbackStarted && imageUrl === directImageUrl) return;
+      startSingleImageViewer(imageUrl, [], null, onDisplayError);
+    });
+  }
+
+  if (deliveryMode === 'base64') {
+    if (!config.fileId) {
+      showSingleImageDeliveryError('Base64画像を取得するためのファイルIDが見つかりませんでした。');
+      return;
+    }
+    loadBase64ImageForScene(config.fileId, function (base64Url) {
+      loadSingleImageWithHotspots(base64Url, function () {
+        showSingleImageDeliveryError('Base64画像の読み込みに失敗しました。画像ファイルまたは権限を確認してください。');
+      });
+    }, function (message) {
+      showSingleImageDeliveryError(message || 'Base64画像を取得できませんでした。画像ファイルまたは権限を確認してください。');
+    });
+    return;
+  }
+
+  if (deliveryMode === 'auto') {
+    loadSingleImageWithHotspots(directImageUrl, function () {
+      startSingleImageBase64Fallback('直リンクで画像を読み込めず、Base64 fallback用のファイルIDも見つかりませんでした。');
+    });
+    return;
+  }
+
+  loadSingleImageWithHotspots(directImageUrl, function () {
+    showSingleImageDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+  });
+}
+
+function getRootSceneImageById(images, sceneId) {
+  if (!Array.isArray(images) || !sceneId) return null;
+  for (var i = 0; i < images.length; i++) {
+    if (images[i].type === 'folder') continue;
+    if (String(images[i].id) === String(sceneId)) return images[i];
+  }
+  return null;
+}
+
+function setMobileSceneSheetExpanded(expanded) {
+  var sidebar = document.getElementById('scene-sidebar');
+  if (!sidebar) return;
+  expanded = !!expanded && isPublicViewingMode() && isSmallViewport();
+  sidebar.classList.toggle('mobile-expanded', expanded);
+  document.body.classList.toggle('mobile-scene-sheet-expanded', expanded);
+
+  var toggle = document.getElementById('mobile-scene-sheet-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    if (!expanded) toggle.textContent = currentFileId ? 'シーンを選ぶ' : 'シーン';
+  }
+}
+
+function toggleMobileSceneSheet() {
+  if (!isPublicViewingMode() || !isSmallViewport()) return;
+  var sidebar = document.getElementById('scene-sidebar');
+  if (!sidebar) return;
+  setMobileSceneSheetExpanded(!sidebar.classList.contains('mobile-expanded'));
+}
+
 function onConfigLoaded(config) {
   if (config.error) {
     showLoadError(config.error);
@@ -202,21 +974,19 @@ function onConfigLoaded(config) {
     } else {
       var homeBtnEl = document.getElementById('btn-home');
       if (homeBtnEl) homeBtnEl.classList.add('visible');
-      loadScene(homeImg);
+      var requestedImg = getRootSceneImageById(allImages, initialSceneId);
+      var startImg = requestedImg || homeImg;
+      var initialViewYaw = initialYaw;
+      var initialViewPitch = initialPitch;
+      if (initialSceneId && !requestedImg) {
+        initialViewYaw = null;
+        initialViewPitch = null;
+      }
+      loadScene(startImg, initialViewYaw, initialViewPitch);
     }
   } else if (config.imageUrl) {
     // 単一画像モード（後方互換）
-    currentFileId = null;
-    google.script.run
-      .withSuccessHandler(function (res) {
-        var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
-        var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
-        initViewer(config.imageUrl, spots, north);
-      })
-      .withFailureHandler(function () {
-        initViewer(config.imageUrl, [], null);
-      })
-      .loadHotspots('');
+    loadSingleImageScene(config);
   } else {
     showLoadError('画像の設定が見つかりませんでした。');
   }
@@ -279,6 +1049,7 @@ function buildSceneSidebar(images) {
         if (isSwitching) return;
         previousSceneId = null; // サイドバーからの移動は振り返り演出なし
         loadScene(img);
+        setMobileSceneSheetExpanded(false);
       });
       item.addEventListener('contextmenu', function (evt) {
         openSceneContextMenu(evt, img);
@@ -290,6 +1061,9 @@ function buildSceneSidebar(images) {
   sidebar.classList.remove('hidden');
   panorama.classList.add('with-sidebar');
   document.getElementById('flat-map-container').classList.add('with-sidebar');
+  if (isPublicViewingMode() && isSmallViewport()) {
+    setMobileSceneSheetExpanded(false);
+  }
 }
 
 /**
@@ -337,6 +1111,10 @@ function syncActiveSceneItem(activeId) {
   items.forEach(function (el) {
     el.classList.toggle('active', !!activeId && el.dataset.id === activeId);
   });
+  var toggle = document.getElementById('mobile-scene-sheet-toggle');
+  if (toggle && isPublicViewingMode() && isSmallViewport()) {
+    toggle.textContent = 'シーンを選ぶ';
+  }
 }
 
 function setSceneRefreshButtonState(isLoading) {
@@ -418,7 +1196,7 @@ function getSceneImageById(fileId) {
 }
 
 function openSceneContextMenu(evt, img) {
-  if (appMode === 'internal' || appMode === 'public') return;
+  if (!canEdit) return;
   if (!img || !img.id) return;
   evt.preventDefault();
   evt.stopPropagation();
@@ -444,6 +1222,10 @@ function closeSceneContextMenu() {
 }
 
 function onSceneContextMenuClick(evt) {
+  if (!canEdit) {
+    closeSceneContextMenu();
+    return;
+  }
   var action = evt.target && evt.target.dataset ? evt.target.dataset.action : '';
   if (!action) return;
 
@@ -470,6 +1252,7 @@ function closeBulkInputDropdown() {
 }
 
 function toggleBulkInputDropdown() {
+  if (!canEdit) return;
   var group = document.getElementById('bulk-input-group');
   var trigger = document.getElementById('bulk-input-trigger');
   if (!group || !trigger) return;
@@ -506,6 +1289,7 @@ function onGlobalKeyDown(evt) {
 //  ホットスポット右クリックメニュー（編集モード）
 // =============================================
 function openHotspotContextMenu(evt, args) {
+  if (!canEdit || !isEditMode) return;
   closeHotspotContextMenu();
   hotspotContextTarget = args;
 
@@ -529,6 +1313,10 @@ function closeHotspotContextMenu() {
 }
 
 function onHotspotEditClick() {
+  if (!canEdit) {
+    closeHotspotContextMenu();
+    return;
+  }
   suppressNextPanoramaClick = true;
   setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
   var target = hotspotContextTarget;
@@ -542,6 +1330,10 @@ function onHotspotEditClick() {
 }
 
 function onHotspotDeleteClick() {
+  if (!canEdit) {
+    closeHotspotContextMenu();
+    return;
+  }
   suppressNextPanoramaClick = true;
   setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
   var target = hotspotContextTarget;
@@ -551,6 +1343,7 @@ function onHotspotDeleteClick() {
   google.script.run
     .withSuccessHandler(function (result) {
       if (result.success) {
+        clearHotspotCache(currentFileId || '');
         if (is2DMode) {
           // 2Dモード: current2DHotspots から削除して再描画
           current2DHotspots = current2DHotspots.filter(function (hs) { return hs !== target; });
@@ -566,13 +1359,17 @@ function onHotspotDeleteClick() {
     .withFailureHandler(function () {
       showToast('通信エラーが発生しました。再度お試しください。', 'error');
     })
-    .deleteHotspot({
+    .deleteHotspot(withEditToken({
       id: target.id,
       fileId: currentFileId || ''
-    });
+    }));
 }
 
 function onHotspotMoveClick() {
+  if (!canEdit) {
+    closeHotspotContextMenu();
+    return;
+  }
   suppressNextPanoramaClick = true;
   setTimeout(function () { suppressNextPanoramaClick = false; }, 120);
   var target = hotspotContextTarget;
@@ -585,6 +1382,7 @@ function onHotspotMoveClick() {
 }
 
 function requestSceneRename(img) {
+  if (!canEdit) return;
   var currentName = String(img.name || '');
   var nextName = window.prompt('新しい写真名を入力してください。', currentName);
   if (nextName === null) return;
@@ -608,10 +1406,14 @@ function requestSceneRename(img) {
     .withFailureHandler(function () {
       showToast('通信エラーが発生しました。再度お試しください。', 'error');
     })
-    .renameImageFile(img.id, nextName);
+    .renameImageFile(withEditToken({
+      fileId: img.id,
+      newName: nextName
+    }));
 }
 
 function requestSceneDelete(img) {
+  if (!canEdit) return;
   var sceneName = String((img && img.name) || '');
   var ok = window.confirm(
     '「' + sceneName + '」を削除しますか？\n' +
@@ -634,7 +1436,9 @@ function requestSceneDelete(img) {
     .withFailureHandler(function () {
       showToast('通信エラーが発生しました。再度お試しください。', 'error');
     })
-    .deleteImageFile(img.id);
+    .deleteImageFile(withEditToken({
+      fileId: img.id
+    }));
 }
 
 function applySceneDeleteLocally(fileId) {
@@ -773,6 +1577,7 @@ function formatDateTime(value) {
  */
 function goHome() {
   if (!homeImageId) return;
+  stopGyroIfActive('home');
   var homeImg = getSceneImageById(homeImageId);
   if (homeImg) {
     previousSceneId = null; // ホームへの移動は振り返り演出なし
@@ -786,6 +1591,81 @@ function goHome() {
  */
 function getQualitySuffix() {
   return imageQualityMode === 'high' ? '=s0' : '=w4096';
+}
+
+function getDirectImageUrl(imgData) {
+  if (imgData && imgData.imageUrl) {
+    return String(imgData.imageUrl).replace(/=(s0|w\d+)$/, getQualitySuffix());
+  }
+  return 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
+}
+
+function fallbackToBase64(fileId, onSuccess, onFailure) {
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.success && res.imageUrl) {
+        onSuccess(res.imageUrl);
+      } else {
+        onFailure((res && res.error) || 'Base64画像を取得できませんでした。');
+      }
+    })
+    .withFailureHandler(function () {
+      onFailure('Base64画像の取得中に通信エラーが発生しました。');
+    })
+    .getImageDataUri(fileId, 'public');
+}
+
+function loadBase64ImageForScene(fileId, onSuccess, onFailure) {
+  fallbackToBase64(fileId, onSuccess, onFailure);
+}
+
+function getHotspotCacheKey(fileId) {
+  return String(fileId || '');
+}
+
+function cloneHotspotResult(result) {
+  try {
+    return JSON.parse(JSON.stringify(result || { hotspots: [], northOffset: null }));
+  } catch (e) {
+    return { hotspots: [], northOffset: null };
+  }
+}
+
+function normalizeHotspotResult(res) {
+  return {
+    hotspots: (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []),
+    northOffset: (res && typeof res.northOffset === 'number') ? res.northOffset : null
+  };
+}
+
+function clearHotspotCache(fileId) {
+  if (typeof fileId === 'undefined') {
+    hotspotCacheByFileId = {};
+    return;
+  }
+  delete hotspotCacheByFileId[getHotspotCacheKey(fileId)];
+}
+
+function loadHotspotsCached(fileId, onSuccess, onFailure) {
+  var cacheKey = getHotspotCacheKey(fileId);
+  var useCache = isPublicViewingMode() && !isEditMode;
+  if (useCache && hotspotCacheByFileId[cacheKey]) {
+    setTimeout(function () {
+      onSuccess(cloneHotspotResult(hotspotCacheByFileId[cacheKey]));
+    }, 0);
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      var normalized = normalizeHotspotResult(res);
+      if (useCache) hotspotCacheByFileId[cacheKey] = cloneHotspotResult(normalized);
+      onSuccess(cloneHotspotResult(normalized));
+    })
+    .withFailureHandler(function () {
+      if (typeof onFailure === 'function') onFailure();
+    })
+    .loadHotspots(fileId || '');
 }
 
 /**
@@ -809,8 +1689,11 @@ function preloadJumpScenes(hotspots) {
  * viewer を破棄して再生成し、その画像専用のホットスポットを取得する。
  *
  * @param {{ id:string, name:string, imageUrl:string }} imgData
+ * @param {number=} preferredYaw
+ * @param {number=} preferredPitch
  */
-function loadScene(imgData) {
+function loadScene(imgData, preferredYaw, preferredPitch) {
+  stopGyroIfActive('load-scene');
   isSwitching   = true;
   currentFileId = imgData.id;
 
@@ -857,87 +1740,174 @@ function loadScene(imgData) {
     }
   }, 30000);
 
+  var directImageUrl = getDirectImageUrl(imgData);
+  var autoFallbackTimer = null;
+  var fallbackStarted = false;
+  var directImageLoaded = false;
+
+  function clearSceneTransitionOverlay() {
+    var ov = document.getElementById('scene-transition-overlay');
+    if (ov) ov.classList.remove('active');
+  }
+
+  function clearAutoFallbackTimer() {
+    if (autoFallbackTimer) {
+      clearTimeout(autoFallbackTimer);
+      autoFallbackTimer = null;
+    }
+  }
+
+  function finishSceneDisplay() {
+    clearAutoFallbackTimer();
+    isSwitching = false;
+  }
+
+  function showDeliveryError(message) {
+    clearTimeout(sceneLoadTimer);
+    clearAutoFallbackTimer();
+    isSwitching = false;
+    clearSceneTransitionOverlay();
+    showLoadError(message);
+  }
+
+  function startAutoFallbackTimer(onFallback) {
+    clearAutoFallbackTimer();
+    autoFallbackTimer = setTimeout(function () {
+      if (fallbackStarted || currentFileId !== imgData.id) return;
+      onFallback();
+    }, DIRECT_FALLBACK_TIMEOUT_MS);
+  }
+
+  function startBase64Fallback() {
+    if (fallbackStarted || currentFileId !== imgData.id) return;
+    fallbackStarted = true;
+    clearAutoFallbackTimer();
+    showSceneLoading();
+    fallbackToBase64(imgData.id, function (base64Url) {
+      if (directImageLoaded || currentFileId !== imgData.id) return;
+      loadHotspotsForImage(base64Url, function () {
+        showDeliveryError('直リンクとBase64 fallbackの両方で画像を読み込めませんでした。Driveの共有設定を確認してください。');
+      });
+    }, function () {
+      showDeliveryError('直リンクで画像を読み込めず、Base64 fallbackも取得できませんでした。Driveの共有設定を確認してください。');
+    });
+  }
+
   /**
    * 取得した imageUrl・hotspots・northOffset でビューアを起動するヘルパー
    * @param {string} imageUrl
    * @param {Array}  spots
    * @param {number|null} northOffset
    */
-  function startViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
+  function startViewer(imageUrl, spots, northOffset, initialYaw, initialPitch, onDisplayError) {
     clearTimeout(sceneLoadTimer);
+    spots = spots || [];
+    var isAutoDirectImage = deliveryMode === 'auto' && imageUrl === directImageUrl && !fallbackStarted;
+    if (viewer) {
+      clearInterval(loadPollInterval);
+      try { viewer.destroy(); } catch (e) { /* ignore */ }
+      viewer = null;
+    }
+
+    function handleDisplayError() {
+      if (typeof onDisplayError === 'function') {
+        onDisplayError();
+      } else {
+        showDeliveryError('画像の読み込みに失敗しました。Driveの共有設定またはURLを確認してください。');
+      }
+    }
+
+    function handleDisplayLoaded() {
+      if (isAutoDirectImage) directImageLoaded = true;
+      finishSceneDisplay();
+    }
+
     if (sceneIs2D) {
-      show2DView(imageUrl);
-      render2DHotspots(spots || []);
-      document.getElementById('loading').classList.add('hidden');
-      document.getElementById('fullscreen-btn').classList.add('visible');
-      document.getElementById('quality-toggle-btn').classList.add('visible');
-      document.getElementById('gyro-toggle-btn').classList.add('visible');
-      var ov = document.getElementById('scene-transition-overlay');
-      if (ov) ov.classList.remove('active');
+      if (isAutoDirectImage) startAutoFallbackTimer(startBase64Fallback);
+      show2DView(imageUrl, handleDisplayError, function () {
+        render2DHotspots(spots);
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('fullscreen-btn').classList.add('visible');
+        document.getElementById('quality-toggle-btn').classList.add('visible');
+        document.getElementById('gyro-toggle-btn').classList.add('visible');
+        clearSceneTransitionOverlay();
+        handleDisplayLoaded();
+      });
     } else {
       hide2DView();
-      initViewer(imageUrl, spots || [], northOffset || null, initialYaw, initialPitch);
+      if (isAutoDirectImage) startAutoFallbackTimer(startBase64Fallback);
+      initViewer(
+        imageUrl,
+        spots,
+        northOffset || null,
+        initialYaw,
+        initialPitch,
+        handleDisplayError,
+        handleDisplayLoaded
+      );
     }
-    isSwitching = false;
+  }
+
+  function getInitialView(spots) {
+    var initialYaw = null;
+    var initialPitch = null;
+    if (typeof preferredYaw === 'number' && isFinite(preferredYaw)) {
+      initialYaw = preferredYaw;
+    }
+    if (typeof preferredPitch === 'number' && isFinite(preferredPitch)) {
+      initialPitch = preferredPitch;
+    }
+    if (initialYaw == null && previousSceneId) {
+      for (var _i = 0; _i < spots.length; _i++) {
+        if (spots[_i].jumpSceneId === previousSceneId) {
+          initialYaw = spots[_i].yaw + 180;
+          if (initialYaw > 180) initialYaw -= 360;
+          break;
+        }
+      }
+    }
+    return { yaw: initialYaw, pitch: initialPitch };
   }
 
   /** loadHotspots の戻り値 { hotspots, northOffset } を分解して startViewer を呼ぶ */
-  function onHotspotsLoaded(imageUrl) {
-    return function (res) {
-      var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
+  function loadHotspotsForImage(imageUrl, onDisplayError) {
+    loadHotspotsCached(imgData.id, function (res) {
+      if (fallbackStarted && imageUrl === directImageUrl) return;
+      var spots = res.hotspots || [];
       var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
-
-      // 振り返り視点: 前シーンに向かうホットスポットの真反対を初期視点とする
-      var initialYaw = null;
-      if (previousSceneId) {
-        for (var _i = 0; _i < spots.length; _i++) {
-          if (spots[_i].jumpSceneId === previousSceneId) {
-            initialYaw = spots[_i].yaw + 180;
-            if (initialYaw > 180) initialYaw -= 360;
-            break;
-          }
-        }
-      }
+      var initialView = getInitialView(spots);
 
 // ジャンプ先シーンを非同期でプリロード（次のシーン移動を高速化）
       setTimeout(function () { preloadJumpScenes(spots); }, 0);
 
-      // ★追加: 画面が完全に暗転するまで 350ms 待ってから次のシーンを展開する
-      setTimeout(function() {
-        startViewer(imageUrl, spots, north, initialYaw);
-      }, 350);
-    };
+      startViewer(imageUrl, spots, north, initialView.yaw, initialView.pitch, onDisplayError);
+    }, function () {
+      if (fallbackStarted && imageUrl === directImageUrl) return;
+      startViewer(imageUrl, [], null, preferredYaw, preferredPitch, onDisplayError);
+    });
   }
 
-  if (appMode === 'public') {
-    // public モード: GAS 経由で Base64 URL を取得してから loadHotspots を呼ぶ
-    var fallbackUrl = 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
-    google.script.run
-      .withSuccessHandler(function (res) {
-        var imageUrl = (res && res.success) ? res.imageUrl : fallbackUrl;
-        google.script.run
-          .withSuccessHandler(onHotspotsLoaded(imageUrl))
-          .withFailureHandler(function () { startViewer(imageUrl, [], null); })
-          .loadHotspots(imgData.id);
-      })
-      .withFailureHandler(function () {
-        google.script.run
-          .withSuccessHandler(onHotspotsLoaded(fallbackUrl))
-          .withFailureHandler(function () { startViewer(fallbackUrl, [], null); })
-          .loadHotspots(imgData.id);
-      })
-      .getImageDataUri(imgData.id, 'public');
-  } else {
-    // internal / 未指定: lh3 直リンクを直接組み立て
-    var sceneImageUrl = imgData.imageUrl
-      ? imgData.imageUrl
-      : 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
-
-    google.script.run
-      .withSuccessHandler(onHotspotsLoaded(sceneImageUrl))
-      .withFailureHandler(function () { startViewer(sceneImageUrl, [], null); })
-      .loadHotspots(imgData.id);
+  if (deliveryMode === 'base64') {
+    loadBase64ImageForScene(imgData.id, function (base64Url) {
+      loadHotspotsForImage(base64Url, function () {
+        showDeliveryError('Base64画像の読み込みに失敗しました。画像ファイルまたは権限を確認してください。');
+      });
+    }, function (message) {
+      showDeliveryError(message || 'Base64画像を取得できませんでした。画像ファイルまたは権限を確認してください。');
+    });
+    return;
   }
+
+  if (deliveryMode === 'auto') {
+    loadHotspotsForImage(directImageUrl, function () {
+      startBase64Fallback();
+    });
+    return;
+  }
+
+  loadHotspotsForImage(directImageUrl, function () {
+    showDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+  });
 }
 
 /**
@@ -971,12 +1941,7 @@ function showSceneEmptyState(message) {
   document.getElementById('fullscreen-btn').classList.remove('visible');
   document.getElementById('quality-toggle-btn').classList.remove('visible');
   document.getElementById('gyro-toggle-btn').classList.remove('visible');
-  // シーン切り替え時にジャイロを停止・状態リセット
-  if (isGyroActive) {
-    if (viewer) { try { viewer.stopOrientation(); } catch (e) { /* ignore */ } }
-    isGyroActive = false;
-    updateGyroBtn();
-  }
+  stopGyroIfActive('empty-state');
 }
 
 /**
@@ -985,7 +1950,7 @@ function showSceneEmptyState(message) {
  * @param {string} imageUrl  パノラマ画像URL
  * @param {Array}  spots     ホットスポット配列
  */
-function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
+function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch, onLoadError, onLoaded) {
   // Pannellum用にホットスポット設定を変換
   var pannellumSpots = spots.map(function (hs, i) {
     var pid = 'hs_' + i;
@@ -1035,6 +2000,7 @@ function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
     if (loadHandled) return;
     loadHandled = true;
     clearInterval(loadPollInterval);
+    clearTimeout(loadErrorTimer);
     document.getElementById('loading').classList.add('hidden');
     document.getElementById('fullscreen-btn').classList.add('visible');
     document.getElementById('quality-toggle-btn').classList.add('visible');
@@ -1042,9 +2008,26 @@ function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
     // 暗転オーバーレイを解除（フェードイン）
     var ov = document.getElementById('scene-transition-overlay');
     if (ov) ov.classList.remove('active');
+    if (typeof onLoaded === 'function') onLoaded();
+  }
+
+  function onPanoramaFailed() {
+    if (loadHandled) return;
+    loadHandled = true;
+    clearInterval(loadPollInterval);
+    clearTimeout(loadErrorTimer);
+    var ov = document.getElementById('scene-transition-overlay');
+    if (ov) ov.classList.remove('active');
+    if (typeof onLoadError === 'function') {
+      onLoadError();
+    } else {
+      showLoadError('パノラマ画像の読み込みに失敗しました。');
+    }
   }
 
   viewer.on('load', onPanoramaLoaded);
+
+  var loadErrorTimer = setTimeout(onPanoramaFailed, IMAGE_LOAD_TIMEOUT_MS);
 
   // フォールバック: isLoaded()を0.5秒ごとにポーリング（最大60秒）
   // loadイベントが発火しない場合でも確実にローディングを解除する
@@ -1055,12 +2038,7 @@ function initViewer(imageUrl, spots, northOffset, initialYaw, initialPitch) {
 
   // エラー発生時
   viewer.on('error', function () {
-    if (loadHandled) return;
-    loadHandled = true;
-    clearInterval(loadPollInterval);
-    var ov = document.getElementById('scene-transition-overlay');
-    if (ov) ov.classList.remove('active');
-    showLoadError('パノラマ画像の読み込みに失敗しました。');
+    onPanoramaFailed();
   });
 }
 
@@ -1091,6 +2069,7 @@ function updateQualityToggleBtn() {
  */
 function toggleQuality() {
   if (!currentFileId || isSwitching) return;
+  stopGyroIfActive('quality');
 
   // 現在の視点を退避
   var savedPitch = (viewer && typeof viewer.getPitch === 'function') ? viewer.getPitch() : null;
@@ -1107,66 +2086,9 @@ function toggleQuality() {
   var imgData = getSceneImageById(currentFileId);
   if (!imgData) return;
 
-  // imgData の imageUrl に埋め込まれている =s0 / =w4096 を新しいサフィックスで置き換える
   var newImgData = Object.assign({}, imgData);
-  if (newImgData.imageUrl) {
-    newImgData.imageUrl = newImgData.imageUrl.replace(/=(s0|w\d+)$/, getQualitySuffix());
-  }
-
-  // isSwitching を管理しながら再ロード（previousSceneId は保持しない）
-  var prevPreviousSceneId = previousSceneId;
   previousSceneId = null; // 画質切り替え時は振り返り視点ではなく退避した視点を使う
-
-  // startViewer が initialPitch/initialYaw を受け取れるよう loadScene を直接呼ばず
-  // ホットスポットを再取得しつつ退避した視点で再起動する
-  isSwitching = true;
-  showSceneLoading();
-  syncActiveSceneItem(imgData.id);
-  if (viewer) {
-    clearInterval(loadPollInterval);
-    try { viewer.destroy(); } catch (e) { /* ignore */ }
-    viewer = null;
-  }
-
-  var sceneLoadTimer = setTimeout(function () {
-    if (isSwitching) {
-      isSwitching = false;
-      showLoadError('画像の読み込みがタイムアウトしました。再度お試しください。');
-    }
-  }, 30000);
-
-  function onQualityHotspotsLoaded(imageUrl) {
-    return function (res) {
-      clearTimeout(sceneLoadTimer);
-      var spots = (res && res.hotspots) ? res.hotspots : (Array.isArray(res) ? res : []);
-      var north = (res && typeof res.northOffset === 'number') ? res.northOffset : null;
-      previousSceneId = prevPreviousSceneId;
-      hide2DView();
-      initViewer(imageUrl, spots, north, savedYaw, savedPitch);
-      document.getElementById('fullscreen-btn').classList.add('visible');
-      document.getElementById('quality-toggle-btn').classList.add('visible');
-      document.getElementById('gyro-toggle-btn').classList.add('visible');
-      isSwitching = false;
-    };
-  }
-
-  var baseUrl = newImgData.imageUrl
-    ? newImgData.imageUrl
-    : 'https://lh3.googleusercontent.com/d/' + imgData.id + getQualitySuffix();
-
-  google.script.run
-    .withSuccessHandler(onQualityHotspotsLoaded(baseUrl))
-    .withFailureHandler(function () {
-      clearTimeout(sceneLoadTimer);
-      previousSceneId = prevPreviousSceneId;
-      hide2DView();
-      initViewer(baseUrl, [], null, savedYaw, savedPitch);
-      document.getElementById('fullscreen-btn').classList.add('visible');
-      document.getElementById('quality-toggle-btn').classList.add('visible');
-      document.getElementById('gyro-toggle-btn').classList.add('visible');
-      isSwitching = false;
-    })
-    .loadHotspots(imgData.id);
+  loadScene(newImgData, savedYaw, savedPitch);
 }
 
 // =============================================
@@ -1181,6 +2103,16 @@ function updateGyroBtn() {
   if (!btn) return;
   btn.classList.toggle('gyro-active', isGyroActive);
   btn.title = isGyroActive ? 'ジャイロOFF' : 'ジャイロON';
+  btn.setAttribute('aria-pressed', isGyroActive ? 'true' : 'false');
+}
+
+function stopGyroIfActive(reason) {
+  if (!isGyroActive) return;
+  if (viewer) {
+    try { viewer.stopOrientation(); } catch (e) { /* ignore */ }
+  }
+  isGyroActive = false;
+  updateGyroBtn();
 }
 
 /**
@@ -1191,11 +2123,7 @@ function updateGyroBtn() {
 function toggleGyro() {
   if (isGyroActive) {
     // ---- OFF ----
-    if (viewer) {
-      try { viewer.stopOrientation(); } catch (e) { /* ignore */ }
-    }
-    isGyroActive = false;
-    updateGyroBtn();
+    stopGyroIfActive('toggle');
     return;
   }
 
@@ -1277,6 +2205,7 @@ function toggleSidebar() {
 var isCssFullscreen = false;
 
 function toggleFullscreen() {
+  stopGyroIfActive('fullscreen');
   // すでにCSS全画面状態（古いフォールバック）なら解除
   if (isCssFullscreen) {
     exitCssFullscreen_();
@@ -1566,7 +2495,7 @@ function buildMarkerElement(container, args) {
 
   // 編集モード: 右クリックでコンテキストメニューを表示
   container.addEventListener('contextmenu', function (evt) {
-    if (!isEditMode) return;
+    if (!canEdit || !isEditMode) return;
     evt.preventDefault();
     evt.stopPropagation();
     openHotspotContextMenu(evt, args);
@@ -1605,6 +2534,7 @@ function onMarkerClick(evt, args) {
     hideJumpTooltip();
     var target = getSceneImageById(args.jumpSceneId);
     if (target) {
+      stopGyroIfActive('jump');
       previousSceneId = currentFileId; // 振り返り視点用: 移動前のシーンIDを記憶
       loadScene(target);
     } else {
@@ -1647,13 +2577,17 @@ function onMarkerClick(evt, args) {
   var popup = document.createElement('div');
   popup.id = 'active-info-popup';
   popup.className = 'info-popup';
+  var useMobileInfoSheet = isPublicViewingMode() && isSmallViewport();
+  if (useMobileInfoSheet) popup.classList.add('mobile-info-sheet');
 
   // 画面端からはみ出ないよう位置を補正
-  var x = Math.min(evt.clientX + 12, window.innerWidth  - 310);
-  var y = Math.max(evt.clientY - 110, 68);
-  y = Math.min(y, window.innerHeight - 180);
-  popup.style.left = x + 'px';
-  popup.style.top  = y + 'px';
+  if (!useMobileInfoSheet) {
+    var x = Math.min(evt.clientX + 12, window.innerWidth  - 310);
+    var y = Math.max(evt.clientY - 110, 68);
+    y = Math.min(y, window.innerHeight - 180);
+    popup.style.left = x + 'px';
+    popup.style.top  = y + 'px';
+  }
 
   var linkUrl = normalizeHttpUrl(args && args.linkUrl);
   var linkHtml = '';
@@ -1784,6 +2718,15 @@ function hideJumpTooltip() {
 //  モード切り替え
 // =============================================
 function toggleMode() {
+  if (!canEdit) {
+    isEditMode = false;
+    closePopup();
+    closeSceneContextMenu();
+    closeHotspotContextMenu();
+    closeBulkInputDropdown();
+    return;
+  }
+
   isEditMode = !isEditMode;
 
   var topbar     = document.getElementById('topbar');
@@ -1868,12 +2811,19 @@ function shouldIgnorePanoramaPointer(evt) {
   return !!(evt.target && evt.target.closest('#topbar, #edit-banner, #hotspot-popup, #scene-sidebar, #scene-context-menu, #hotspot-context-menu, #scene-properties-backdrop, .hs-marker, .info-popup, #fullscreen-btn, #gyro-toggle-btn'));
 }
 
+function shouldIgnoreGyroStopEvent(evt) {
+  return !!(evt && evt.target && evt.target.closest('#gyro-toggle-btn'));
+}
+
 function setPanningState(isActive) {
   isPanning = isActive;
   document.body.classList.toggle('is-panning', isActive);
 }
 
 function onPanoramaPointerDown(evt) {
+  if (!shouldIgnoreGyroStopEvent(evt)) {
+    stopGyroIfActive('manual-pointer');
+  }
   if (shouldIgnorePanoramaPointer(evt)) return;
   setPanningState(true);
 }
@@ -1887,14 +2837,14 @@ function onPanoramaPointerUp() {
 //  編集モード: ドラッグとクリックの判別（mousedown/move/up）
 // =============================================
 function onPanoramaMouseDown(evt) {
-  if (!isEditMode) return;
+  if (!canEdit || !isEditMode) return;
   if (shouldIgnorePanoramaPointer(evt)) return;
   editModeDragStart   = { x: evt.clientX, y: evt.clientY };
   editModeWasDragging = false;
 }
 
 function onPanoramaMouseMove(evt) {
-  if (!isEditMode || !editModeDragStart) return;
+  if (!canEdit || !isEditMode || !editModeDragStart) return;
   var dx = evt.clientX - editModeDragStart.x;
   var dy = evt.clientY - editModeDragStart.y;
   if (dx * dx + dy * dy > EDIT_MODE_DRAG_THRESHOLD_PX * EDIT_MODE_DRAG_THRESHOLD_PX) {
@@ -1910,7 +2860,10 @@ function onPanoramaMouseUp() {
 //  編集モード: パノラマクリックで座標取得
 // =============================================
 function onPanoramaClick(evt) {
-  if (!isEditMode) return;
+  if (!shouldIgnoreGyroStopEvent(evt)) {
+    stopGyroIfActive('manual-click');
+  }
+  if (!canEdit || !isEditMode) return;
   if (suppressNextPanoramaClick) {
     suppressNextPanoramaClick = false;
     return;
@@ -1968,6 +2921,7 @@ function onPanoramaClick(evt) {
     google.script.run
       .withSuccessHandler(function (result) {
         if (result.success) {
+          clearHotspotCache(saveData.fileId || '');
           target.pitch = newPitch;
           target.yaw   = newYaw;
           updateSpotInViewer(target, target);
@@ -1983,7 +2937,7 @@ function onPanoramaClick(evt) {
         movingHotspotTarget = null;
         showToast('通信エラーが発生しました。再度お試しください。', 'error');
       })
-      .updateHotspot(saveData, target.id);
+      .updateHotspot(withEditToken(saveData), target.id);
 
     return;
   }
@@ -2012,6 +2966,7 @@ function onPanoramaClick(evt) {
  * @param {Object} [editArgs] 編集時: 既存ホットスポットのargs。未指定なら新規追加
  */
 function openPopup(clientX, clientY, editArgs) {
+  if (!canEdit) return;
   var popup = document.getElementById('hotspot-popup');
   var inFolderMode = !!(allImages && allImages.length > 0);
 
@@ -2102,6 +3057,11 @@ function closePopup() {
 //  ホットスポット保存（GAS呼び出し）
 // =============================================
 function onSaveClick() {
+  if (!canEdit) {
+    closePopup();
+    return;
+  }
+
   var label = document.getElementById('input-label').value.trim();
   var markerIconRaw = document.getElementById('marker-icon').value;
   var desc;
@@ -2167,6 +3127,7 @@ function onSaveClick() {
         saveLabel.textContent = '更新する';
 
         if (result.success) {
+          clearHotspotCache(saveData.fileId || '');
           persistMarkerStylePreference(markerShape, markerColor, markerIcon);
           updateSpotInViewer(targetArgs, saveData);
           closePopup();
@@ -2181,7 +3142,7 @@ function onSaveClick() {
         saveLabel.textContent = '更新する';
         showToast('通信エラーが発生しました。再度お試しください。', 'error');
       })
-      .updateHotspot(saveData, targetArgs.id);
+      .updateHotspot(withEditToken(saveData), targetArgs.id);
 
   } else {
     // ── 新規保存処理 ───────────────────────────────────
@@ -2192,6 +3153,7 @@ function onSaveClick() {
         saveLabel.textContent = '保存する';
 
         if (result.success) {
+          clearHotspotCache(saveData.fileId || '');
           persistMarkerStylePreference(markerShape, markerColor, markerIcon);
           addSpotToViewer(saveData, result.id);
           closePopup();
@@ -2206,7 +3168,7 @@ function onSaveClick() {
         saveLabel.textContent = '保存する';
         showToast('通信エラーが発生しました。再度お試しください。', 'error');
       })
-      .saveHotspot(saveData);
+      .saveHotspot(withEditToken(saveData));
   }
 }
 
@@ -2416,7 +3378,7 @@ function escapeHtml(str) {
  * 2D平面マップ表示モードに切り替える
  * @param {string} imageUrl  表示する画像のURL
  */
-function show2DView(imageUrl) {
+function show2DView(imageUrl, onLoadError, onLoaded) {
   document.getElementById('panorama').style.display = 'none';
   var container = document.getElementById('flat-map-container');
   container.style.display = 'flex';
@@ -2425,11 +3387,21 @@ function show2DView(imageUrl) {
 
   var img = document.createElement('img');
   img.id = 'flat-map-img';
-  img.src = imageUrl;
   img.alt = '';
   img.style.cursor = isEditMode ? 'crosshair' : 'default';
+  img.onload = function () {
+    if (typeof onLoaded === 'function') onLoaded();
+  };
+  img.onerror = function () {
+    if (typeof onLoadError === 'function') {
+      onLoadError();
+    } else {
+      showLoadError('2D画像の読み込みに失敗しました。');
+    }
+  };
   img.addEventListener('click', onFlatMapClick);
   inner.appendChild(img);
+  img.src = imageUrl;
 }
 
 /**
@@ -2447,7 +3419,7 @@ function hide2DView() {
  * 2D画像クリック: 編集モード時にクリック位置のX%/Y%を取得してポップアップを開く
  */
 function onFlatMapClick(evt) {
-  if (!isEditMode) return;
+  if (!canEdit || !isEditMode) return;
   var img = evt.currentTarget;
   var rect = img.getBoundingClientRect();
   var xPct = ((evt.clientX - rect.left) / rect.width)  * 100;
@@ -2509,7 +3481,7 @@ function render2DHotspots(hotspots) {
       onMarkerClick(e, hs);
     });
 
-    if (isEditMode) {
+    if (canEdit && isEditMode) {
       el.addEventListener('contextmenu', function (e) {
         e.preventDefault();
         e.stopPropagation();
@@ -2550,6 +3522,7 @@ function openCurrentFolderInDrive() {
 }
 
 function openUploadModal() {
+  if (!canEdit) return;
   if (!allImages) return; // フォルダモードのみ対応
   document.getElementById('upload-modal').style.display = 'flex';
   document.getElementById('upload-status').textContent = '';
@@ -2607,6 +3580,11 @@ function convertDataUrlToJpeg(dataUrl, quality, onSuccess, onError) {
 }
 
 function onUploadConfirm() {
+  if (!canEdit) {
+    closeUploadModal();
+    return;
+  }
+
   var fileInput = document.getElementById('upload-file-input');
   if (!fileInput.files || !fileInput.files.length) {
     document.getElementById('upload-status').textContent = 'ファイルを選択してください。';
@@ -2665,13 +3643,13 @@ function onUploadConfirm() {
           index++;
           uploadNext();
         })
-        .uploadImageToDrive({
+        .uploadImageToDrive(withEditToken({
           base64:          dataUrl,
           fileName:        uploadName,
           mimeType:        file.type || 'image/jpeg',
           is2D:            !!is2D,
           targetFolderId:  getCurrentFolderId() || ''
-        });
+        }));
     }, function (message) {
       errors.push(file.name + ': ' + (message || 'ファイルの読み込みに失敗'));
       index++;
@@ -2683,50 +3661,126 @@ function onUploadConfirm() {
 }
 
 // =============================================
-//  埋め込みコード生成モーダル
+//  共有モーダル
 // =============================================
 
-/**
- * 埋め込みコード生成モーダルを開き、iframe コードを生成して表示する。
- */
-function openEmbedModal() {
-  var base = appBaseUrl || '';
-  document.getElementById('embed-code-internal').value =
-    '<iframe src="' + base + '?mode=internal" width="100%" height="600px" frameborder="0" allowfullscreen allow="fullscreen *"></iframe>';
-  document.getElementById('embed-code-public').value =
-    '<iframe src="' + base + '?mode=public" width="100%" height="600px" frameborder="0" allowfullscreen allow="fullscreen *"></iframe>';
+function getCheckedRadioValue(name, fallback) {
+  var selected = document.querySelector('input[name="' + name + '"]:checked');
+  return selected ? selected.value : fallback;
+}
+
+function setCheckedRadioValue(name, value) {
+  var radios = document.querySelectorAll('input[name="' + name + '"]');
+  for (var i = 0; i < radios.length; i++) {
+    radios[i].checked = radios[i].value === value;
+  }
+}
+
+function getCurrentViewForShare(target) {
+  var sceneId = '';
+  var yaw = null;
+  var pitch = null;
+
+  if ((target === 'scene' || target === 'view') && currentFileId) {
+    sceneId = currentFileId;
+  }
+
+  if (target === 'view' && sceneId && !is2DMode && viewer) {
+    try {
+      if (typeof viewer.getYaw === 'function') yaw = viewer.getYaw();
+      if (typeof viewer.getPitch === 'function') pitch = viewer.getPitch();
+    } catch (e) {
+      yaw = null;
+      pitch = null;
+    }
+  }
+
+  return { sceneId: sceneId, yaw: yaw, pitch: pitch };
+}
+
+function getShareOptionsFromModal() {
+  var target = getCheckedRadioValue('share-target', 'home');
+  var currentView = getCurrentViewForShare(target);
+  var baseUrl = appBaseUrl || (window.location && window.location.href) || '';
+  return {
+    format: getCheckedRadioValue('share-format', 'url'),
+    baseUrl: baseUrl,
+    delivery: getCheckedRadioValue('share-delivery', 'direct'),
+    sceneId: currentView.sceneId,
+    yaw: currentView.yaw,
+    pitch: currentView.pitch
+  };
+}
+
+function updateShareOutput() {
+  var options = getShareOptionsFromModal();
+  var url = buildPublicShareUrl(options);
+  var isIframe = options.format === 'iframe';
+  var isQr = options.format === 'qr';
+  var text = isIframe ? buildIframeCode(url) : url;
+  var output = document.getElementById('share-output');
+  if (output) output.value = text;
+  var outputRow = document.getElementById('share-output-row');
+  if (outputRow) outputRow.hidden = isQr;
+
+  var label = document.getElementById('share-output-label');
+  if (label) label.textContent = isIframe ? 'iframeコード' : (isQr ? 'QRコード用URL' : '共有URL');
+  updateShareQrPanel(url, options.format);
+  return text;
+}
+
+function openShareModal() {
+  stopGyroIfActive('share');
+  setCheckedRadioValue('share-format', 'url');
+  setCheckedRadioValue('share-delivery', 'direct');
+  setCheckedRadioValue('share-target', 'home');
+  updateShareOutput();
   document.getElementById('embed-modal-backdrop').classList.add('visible');
   document.getElementById('embed-modal').classList.add('visible');
 }
 
 /**
- * 埋め込みコード生成モーダルを閉じる。
+ * 旧名称の互換ラッパー。
  */
-function closeEmbedModal() {
+function openEmbedModal() {
+  openShareModal();
+}
+
+function closeShareModal() {
   document.getElementById('embed-modal-backdrop').classList.remove('visible');
   document.getElementById('embed-modal').classList.remove('visible');
 }
 
 /**
- * 指定タイプの iframe コードをクリップボードにコピーする。
- *
- * @param {'internal'|'public'} type
+ * 旧名称の互換ラッパー。
  */
-function copyEmbedCode(type) {
-  var textarea = document.getElementById('embed-code-' + type);
+function closeEmbedModal() {
+  closeShareModal();
+}
+
+function copyShareOutput() {
+  updateShareOutput();
+  var textarea = document.getElementById('share-output');
   if (!textarea) return;
   var text = textarea.value;
   if (!text) return;
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(function () {
-      showToast('コードをコピーしました。', 'success');
+      showToast('コピーしました。', 'success');
     }).catch(function () {
       fallbackCopy_(textarea);
     });
   } else {
     fallbackCopy_(textarea);
   }
+}
+
+/**
+ * 旧名称の互換ラッパー。
+ */
+function copyEmbedCode() {
+  copyShareOutput();
 }
 
 // =============================================
@@ -2746,6 +3800,11 @@ function reloadCurrentScene() {
 }
 
 function onBulkInputDropdownClick(evt) {
+  if (!canEdit) {
+    closeBulkInputDropdown();
+    return;
+  }
+
   var btn = evt.target.closest('.bulk-input-item');
   if (!btn || btn.disabled) return;
   var action = btn.getAttribute('data-action');
@@ -2772,7 +3831,7 @@ function onBulkInputDropdownClick(evt) {
         btn.textContent = origText;
         showToast('通信エラーが発生しました: ' + (err.message || '不明なエラー'), 'error');
       })
-      .updateStudentSheetDropdowns();
+      .updateStudentSheetDropdowns(withEditToken({}));
   } else if (action === 'import-student-data') {
     google.script.run
       .withSuccessHandler(function (result) {
@@ -2783,7 +3842,10 @@ function onBulkInputDropdownClick(evt) {
             ? result.count + '件のデータを取り込みました。'
             : '取り込み対象のデータがありませんでした。';
           showToast(msg, 'success');
-          if (result.count > 0) reloadCurrentScene();
+          if (result.count > 0) {
+            clearHotspotCache(currentFileId || '');
+            reloadCurrentScene();
+          }
         } else {
           showToast('取り込みに失敗しました: ' + ((result && result.error) || '不明なエラー'), 'error');
         }
@@ -2793,7 +3855,7 @@ function onBulkInputDropdownClick(evt) {
         btn.textContent = origText;
         showToast('通信エラーが発生しました: ' + (err.message || '不明なエラー'), 'error');
       })
-      .importDataFromStudentSheet();
+      .bulkImportStudentSheet(withEditToken({}));
   }
 }
 
@@ -2806,7 +3868,7 @@ function fallbackCopy_(textarea) {
   textarea.select();
   try {
     document.execCommand('copy');
-    showToast('コードをコピーしました。', 'success');
+    showToast('コピーしました。', 'success');
   } catch (e) {
     showToast('コピーに失敗しました。手動でコピーしてください。', 'error');
   }

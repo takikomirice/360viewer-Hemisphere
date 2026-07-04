@@ -75,13 +75,13 @@
           </button>
         </div>
       </div>
-      <!-- 埋め込みコード生成ボタン -->
-      <button id="embed-btn" onclick="openEmbedModal()" title="埋め込みコードを表示">
+      <!-- 共有ボタン -->
+      <button id="embed-btn" onclick="openEmbedModal()" title="共有URLまたはiframeコードを表示">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
           <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
         </svg>
-        <span>埋め込みコード</span>
+        <span>共有</span>
       </button>
       <!-- 状態バッジ -->
       <div id="mode-badge">
@@ -99,9 +99,17 @@
       </button>
     </div>
   </div>
+  <div id="view-only-notice" class="access-notice" role="status">
+    <strong>閲覧専用</strong>
+    <span>編集するには「編集URLを表示」から取得したURLで開いてください</span>
+  </div>
+  <div id="edit-key-warning" class="access-warning" role="status" aria-live="polite">
+    編集URLとして開かれていますが、編集キーが確認できません。configシートの EDIT_KEY または URL の editKey を確認してください。
+  </div>
 
   <!-- シーン一覧サイドバー（フォルダモード時のみ表示） -->
   <div id="scene-sidebar" class="hidden">
+    <button id="mobile-scene-sheet-toggle" type="button" aria-expanded="false" onclick="toggleMobileSceneSheet()">シーンを選ぶ</button>
     <div id="scene-sidebar-title">
       <span>シーン一覧</span>
       <div class="scene-sidebar-actions">
@@ -465,11 +473,11 @@
   <button id="quiz-modal-close">×</button>
 </div>
 
-<!-- 埋め込みコード生成モーダル -->
+<!-- 共有モーダル -->
 <div id="embed-modal-backdrop" onclick="closeEmbedModal()"></div>
 <div id="embed-modal" role="dialog" aria-modal="true" aria-labelledby="embed-modal-title">
   <div class="embed-modal-header">
-    <span id="embed-modal-title">埋め込みコード生成</span>
+    <span id="embed-modal-title">共有</span>
     <button class="embed-modal-close" onclick="closeEmbedModal()" title="閉じる" aria-label="閉じる">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -478,29 +486,101 @@
   </div>
   <div class="embed-modal-body">
     <div class="embed-section">
-      <div class="embed-section-label">
-        <span class="embed-badge embed-badge-internal">内部公開用</span>
-        <span class="embed-section-desc">軽い / Googleドライブの閲覧権限が必要</span>
+      <div class="share-option-title">形式</div>
+      <div class="share-segment share-icon-segment">
+        <label class="share-icon-option" title="URLをコピー">
+          <input type="radio" name="share-format" value="url" checked onchange="updateShareOutput()">
+          <span class="share-format-icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
+          <span>URL</span>
+        </label>
+        <label class="share-icon-option" title="iframeコードをコピー">
+          <input type="radio" name="share-format" value="iframe" onchange="updateShareOutput()">
+          <span class="share-format-icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6"/>
+              <polyline points="8 6 2 12 8 18"/>
+            </svg>
+          </span>
+          <span>iframe</span>
+        </label>
+        <label class="share-icon-option" title="public URLのQRコードを表示">
+          <input type="radio" name="share-format" value="qr" onchange="updateShareOutput()">
+          <span class="share-format-icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 3h7v7H3V3zm2 2v3h3V5H5zm9-2h7v7h-7V3zm2 2v3h3V5h-3zM3 14h7v7H3v-7zm2 2v3h3v-3H5zm9-2h2v2h-2v-2zm4 0h3v2h-3v-2zm-4 4h2v3h-2v-3zm4 1h1v-1h2v3h-3v-2zm-1-3h1v2h-1v-2z"/>
+            </svg>
+          </span>
+          <span>QR</span>
+        </label>
       </div>
-      <div class="embed-code-row">
-        <textarea id="embed-code-internal" class="embed-textarea" readonly spellcheck="false"></textarea>
-        <button class="embed-copy-btn" onclick="copyEmbedCode('internal')" title="コピー">
+    </div>
+
+    <div class="embed-section">
+      <div class="share-option-title">画像配信</div>
+      <div class="share-segment share-compact-segment">
+        <label class="share-compact-option" title="Drive直リンクで表示します。最速の通常モードです。">
+          <input type="radio" name="share-delivery" value="direct" checked onchange="updateShareOutput()">
+          <span class="share-choice-main">通常</span>
+          <span class="share-choice-sub">最速</span>
+        </label>
+        <label class="share-compact-option" title="直リンクで失敗したときだけBase64 fallbackを試します。">
+          <input type="radio" name="share-delivery" value="auto" onchange="updateShareOutput()">
+          <span class="share-choice-main">互換</span>
+          <span class="share-choice-sub">失敗時Base64</span>
+        </label>
+        <label class="share-compact-option" title="最初からBase64 Data URIを使う最終手段です。">
+          <input type="radio" name="share-delivery" value="base64" onchange="updateShareOutput()">
+          <span class="share-choice-main">Base64</span>
+          <span class="share-choice-sub">最終手段</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="embed-section">
+      <div class="share-option-title">共有対象</div>
+      <div class="share-segment share-compact-segment">
+        <label class="share-compact-option" title="sceneを含めず、ホームまたは先頭画像から開きます。">
+          <input type="radio" name="share-target" value="home" checked onchange="updateShareOutput()">
+          <span class="share-choice-main">ホーム</span>
+          <span class="share-choice-sub">sceneなし</span>
+        </label>
+        <label class="share-compact-option" title="現在のシーンIDを共有URLに含めます。">
+          <input type="radio" name="share-target" value="scene" onchange="updateShareOutput()">
+          <span class="share-choice-main">シーン</span>
+          <span class="share-choice-sub">scene</span>
+        </label>
+        <label class="share-compact-option" title="現在のシーンと、取得できる場合はyaw/pitchを含めます。">
+          <input type="radio" name="share-target" value="view" onchange="updateShareOutput()">
+          <span class="share-choice-main">視点</span>
+          <span class="share-choice-sub">scene + yaw/pitch</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="embed-section">
+      <div class="embed-section-label">
+        <span id="share-output-label" class="embed-badge embed-badge-public">共有URL</span>
+        <span class="embed-section-desc">常に public 用。editKey は含めません。</span>
+      </div>
+      <div id="share-qr-panel" class="share-qr-panel" hidden>
+        <div id="share-qr-code" class="share-qr-code" aria-label="共有URLのQRコード"></div>
+        <p id="share-qr-note" class="share-qr-note">このQRは public URL です。editKey は含みません。</p>
+        <button class="embed-copy-btn share-qr-copy-btn" onclick="copyShareOutput()" title="URLをコピー">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
           </svg>
-          <span>コピー</span>
+          <span>URLをコピー</span>
         </button>
       </div>
-    </div>
-    <div class="embed-section">
-      <div class="embed-section-label">
-        <span class="embed-badge embed-badge-public">外部公開用</span>
-        <span class="embed-section-desc">重い（Base64）/ 権限フリー</span>
-      </div>
-      <div class="embed-code-row">
-        <textarea id="embed-code-public" class="embed-textarea" readonly spellcheck="false"></textarea>
-        <button class="embed-copy-btn" onclick="copyEmbedCode('public')" title="コピー">
+      <div id="share-output-row" class="embed-code-row">
+        <textarea id="share-output" class="embed-textarea" readonly spellcheck="false"></textarea>
+        <button class="embed-copy-btn" onclick="copyShareOutput()" title="コピー">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -531,6 +611,10 @@
     </div>
   </div>
 </div>
+
+<script>
+window.__EDIT_TOKEN__ = <?!= JSON.stringify(editToken || '') ?>;
+</script>
 
 <?!= include("app") ?>
 </body>
