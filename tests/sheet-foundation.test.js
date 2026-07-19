@@ -3475,6 +3475,109 @@ test('saving a lazy northOffset invalidates the joined cache for the scene paren
   assert.equal(context.getCachedNorthOffset_('north-cache-file').value, 0);
 });
 
+test('scene reorder updates only display order in one batch and invalidates the folder cache', () => {
+  const folderId = 'reorder-root-folder';
+  const first = createDriveFile({ id: 'reorder-first', name: 'First.jpg' });
+  const second = createDriveFile({ id: 'reorder-second', name: 'Second.jpg' });
+  const outside = createDriveFile({ id: 'reorder-outside', name: 'Outside.jpg' });
+  const scenes = createSheet('scenes', [
+    EXPECTED_SCENE_HEADERS,
+    ['reorder-first', 'First.jpg', folderId, '360', true, 1, 10, 'manual', 'drive-a', 'scene-a'],
+    ['reorder-outside', 'Outside.jpg', 'other-folder', '2D', false, 7, '', '', 'drive-x', 'scene-x'],
+    ['reorder-second', 'Second.jpg', folderId, '2D', false, 2, '', 'none', 'drive-b', 'scene-b']
+  ]);
+  const context = loadCode({
+    sheets: { config: createFolderConfigSheet(folderId), scenes },
+    driveFolders: {
+      [folderId]: createDriveFolder({ id: folderId, files: [first, second] }),
+      'other-folder': createDriveFolder({ id: 'other-folder', files: [outside] })
+    },
+    cacheValues: {
+      'EDIT_TOKEN_valid-token': '1',
+      ['FOLDER_LIST_V2_' + folderId]: JSON.stringify({ images: [] })
+    }
+  });
+  const before = scenes.__rows.map((row) => row.slice());
+
+  const result = context.reorderScenes({
+    folderId,
+    orderedFileIds: ['reorder-second', 'reorder-first'],
+    __editToken: 'valid-token'
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(Array.from(result.orderedFileIds), ['reorder-second', 'reorder-first']);
+  assert.equal(scenes.__rows[1][5], 2);
+  assert.equal(scenes.__rows[3][5], 1);
+  assert.deepEqual(scenes.__rows[2], before[2]);
+  for (const rowIndex of [1, 3]) {
+    assert.deepEqual(
+      scenes.__rows[rowIndex].filter((_value, columnIndex) => columnIndex !== 5),
+      before[rowIndex].filter((_value, columnIndex) => columnIndex !== 5)
+    );
+  }
+  const orderWrites = scenes.__setValuesCalls.filter((call) => call.col === 6);
+  assert.equal(orderWrites.length, 1);
+  assert.ok(context.__cacheRemovals.includes('FOLDER_LIST_V2_' + folderId));
+});
+
+test('scene reorder rejects duplicate, missing, extra, and other-folder image ids without writing', () => {
+  const folderId = 'reorder-validation-root';
+  const first = createDriveFile({ id: 'validation-first', name: 'First.jpg' });
+  const second = createDriveFile({ id: 'validation-second', name: 'Second.jpg' });
+  const outside = createDriveFile({ id: 'validation-outside', name: 'Outside.jpg' });
+  const scenes = createSheet('scenes', [
+    EXPECTED_SCENE_HEADERS,
+    ['validation-first', 'First.jpg', folderId, '360', true, 1, '', '', '', ''],
+    ['validation-second', 'Second.jpg', folderId, '360', false, 2, '', '', '', ''],
+    ['validation-outside', 'Outside.jpg', 'validation-other', '360', false, 1, '', '', '', '']
+  ]);
+  const context = loadCode({
+    sheets: { config: createFolderConfigSheet(folderId), scenes },
+    driveFolders: {
+      [folderId]: createDriveFolder({ id: folderId, files: [first, second] }),
+      'validation-other': createDriveFolder({ id: 'validation-other', files: [outside] })
+    },
+    cacheValues: { 'EDIT_TOKEN_valid-token': '1' },
+    rejectNestedLock: true
+  });
+  const before = JSON.stringify(scenes.__rows);
+  const invalidOrders = [
+    ['validation-first', 'validation-first'],
+    ['validation-first'],
+    ['validation-first', 'validation-second', 'unknown-extra'],
+    ['validation-first', 'validation-outside']
+  ];
+
+  invalidOrders.forEach((orderedFileIds) => {
+    const result = context.reorderScenes({ folderId, orderedFileIds, __editToken: 'valid-token' });
+    assert.equal(result.success, false, orderedFileIds.join(','));
+    assert.match(result.error, /一致|重複|対象|画像/);
+    assert.equal(JSON.stringify(scenes.__rows), before);
+    const lock = context.acquireLock_();
+    lock.releaseLock();
+  });
+});
+
+test('scene reorder rejects an invalid edit token before acquiring the mutation lock', () => {
+  const folderId = 'reorder-token-root';
+  const file = createDriveFile({ id: 'reorder-token-file', name: 'Token.jpg' });
+  const scenes = createSheet('scenes', [
+    EXPECTED_SCENE_HEADERS,
+    ['reorder-token-file', 'Token.jpg', folderId, '360', true, 1, '', '', '', '']
+  ]);
+  const context = loadCode({
+    sheets: { config: createFolderConfigSheet(folderId), scenes },
+    driveFolders: { [folderId]: createDriveFolder({ id: folderId, files: [file] }) }
+  });
+
+  assert.throws(
+    () => context.reorderScenes({ folderId, orderedFileIds: ['reorder-token-file'], __editToken: 'invalid' }),
+    /編集権限/
+  );
+  assert.equal(scenes.__setValuesCalls.filter((call) => call.col === 6).length, 0);
+});
+
 test('folder sync has no path to explicit deletion, info mutation, recursion, or Blob parsing', () => {
   const code = fs.readFileSync(codePath, 'utf8');
   const syncBody = getFunctionBody(code, 'syncDriveFolderToScenes_');

@@ -1686,6 +1686,66 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .scene-drag-handle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 26px;
+      margin: -4px 0 -4px -7px;
+      padding: 0;
+      flex: 0 0 22px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: #A1A1AA;
+      cursor: grab;
+    }
+    body.edit-mode-active .scene-drag-handle { display: inline-flex; }
+    .scene-drag-handle:hover { background: #E4E4E7; color: #52525B; }
+    .scene-drag-handle:active { cursor: grabbing; }
+    .scene-drag-handle svg,
+    .scene-item.active .scene-drag-handle svg {
+      width: 14px;
+      height: 16px;
+      fill: currentColor;
+      stroke: none;
+      color: inherit;
+    }
+    .scene-reorder-saving .scene-drag-handle,
+    .scene-drag-handle[aria-disabled="true"] {
+      opacity: 0.4;
+      cursor: wait;
+    }
+    .scene-item.dragging {
+      opacity: 0.55;
+      background: #F4F4F5;
+    }
+    .scene-drop-zone {
+      display: none;
+      position: relative;
+      height: 2px;
+      margin: 0 12px;
+      pointer-events: auto;
+      transition: height 0.1s;
+    }
+    body.edit-mode-active .scene-drop-zone { display: block; }
+    .scene-list-reordering .scene-drop-zone {
+      height: 10px;
+    }
+    .scene-list-reordering .scene-drop-zone::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 4px;
+      height: 2px;
+      border-radius: 2px;
+      background: transparent;
+    }
+    .scene-list-reordering .scene-drop-zone.active::after {
+      background: #2d7baa;
+    }
 
     /* フォルダアイテム */
     .scene-folder-item {
@@ -1704,6 +1764,15 @@
     .scene-folder-item:hover { background: #F4F4F5; }
     .scene-folder-item svg { width: 14px; height: 14px; flex-shrink: 0; color: #f59e0b; }
     .scene-folder-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+    @media (pointer: coarse) {
+      body.edit-mode-active .scene-drag-handle,
+      body.edit-mode-active .scene-drop-zone { display: none; }
+    }
+    @media (max-width: 600px) {
+      body.edit-mode-active .scene-drag-handle,
+      body.edit-mode-active .scene-drop-zone { display: none; }
+    }
 
     /* サイドバー 戻るボタン */
     #sidebar-back-btn {

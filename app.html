@@ -41,6 +41,13 @@ var isSavingSceneSettings = false; // 設定保存の二重送信防止
 var sceneSettingsRequestGeneration = 0; // 古い設定取得応答を破棄する世代番号
 var sceneLoadGeneration = 0; // 同一IDの再読込も含め古い表示応答を破棄する世代番号
 var sceneDisplayReady = false; // 現在のシーン画像が操作可能な状態まで読み込まれたか
+var sceneReorderState = {
+  draggedId: '',
+  originalItems: null,
+  saving: false,
+  requestGeneration: 0,
+  suppressInteractionUntil: 0
+};
 var hotspotMutationGeneration = 0; // 通常保存・更新・削除の要求ID採番
 var pendingHotspotMutationRequests = {}; // 応答待ちの通常CRUD（要求ID → 要求情報）
 var hotspotSaveUiRequestId = 0; // 保存ボタンを占有している要求ID
@@ -1355,6 +1362,187 @@ function sortSceneListItems(images) {
   return Array.isArray(images) ? images.sort(compareSceneListItems) : [];
 }
 
+function getCurrentSceneFolderId() {
+  if (folderStack.length > 0) {
+    return String(folderStack[folderStack.length - 1].id || '');
+  }
+  return String(rootFolderId || '');
+}
+
+function getOrderedSceneImageIds(images) {
+  return (Array.isArray(images) ? images : []).filter(function (item) {
+    return item && item.type !== 'folder';
+  }).map(function (item) {
+    return String(item.id || '');
+  });
+}
+
+function reorderSceneImageItems(images, draggedId, dropIndex) {
+  var source = Array.isArray(images) ? images : [];
+  var folders = source.filter(function (item) { return item && item.type === 'folder'; });
+  var photos = source.filter(function (item) { return item && item.type !== 'folder'; });
+  var sourceIndex = photos.findIndex(function (item) { return String(item.id || '') === String(draggedId || ''); });
+  if (sourceIndex < 0) return source.slice();
+  var targetIndex = Math.max(0, Math.min(Number(dropIndex), photos.length));
+  var moved = photos.splice(sourceIndex, 1)[0];
+  if (sourceIndex < targetIndex) targetIndex -= 1;
+  photos.splice(targetIndex, 0, moved);
+  return folders.concat(photos.map(function (item, index) {
+    var next = Object.assign({}, item);
+    next.displayOrder = index + 1;
+    next.order = index + 1;
+    return next;
+  }));
+}
+
+function shouldSuppressSceneItemInteraction() {
+  return !!sceneReorderState.draggedId || Date.now() < sceneReorderState.suppressInteractionUntil;
+}
+
+function createSceneDropZone(dropIndex) {
+  var zone = document.createElement('div');
+  zone.className = 'scene-drop-zone';
+  zone.dataset.dropIndex = String(dropIndex);
+  zone.setAttribute('aria-hidden', 'true');
+  zone.addEventListener('dragover', function (evt) {
+    if (!sceneReorderState.draggedId || sceneReorderState.saving) return;
+    evt.preventDefault();
+    if (evt.dataTransfer) evt.dataTransfer.dropEffect = 'move';
+    zone.classList.add('active');
+  });
+  zone.addEventListener('dragleave', function () {
+    zone.classList.remove('active');
+  });
+  zone.addEventListener('drop', function (evt) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    zone.classList.remove('active');
+    applySceneDrop(dropIndex);
+  });
+  return zone;
+}
+
+function arrangeSceneItemsInDom(orderedFileIds) {
+  var list = document.getElementById('scene-list');
+  if (!list) return;
+  list.querySelectorAll('.scene-drop-zone').forEach(function (zone) { zone.remove(); });
+  var elementsById = {};
+  list.querySelectorAll('.scene-item').forEach(function (item) {
+    elementsById[String(item.dataset.id || '')] = item;
+  });
+  (orderedFileIds || []).forEach(function (fileId, index) {
+    if (canEdit) list.appendChild(createSceneDropZone(index));
+    if (elementsById[fileId]) list.appendChild(elementsById[fileId]);
+  });
+  if (canEdit && orderedFileIds && orderedFileIds.length > 0) {
+    list.appendChild(createSceneDropZone(orderedFileIds.length));
+  }
+  syncActiveSceneItem(currentFileId);
+}
+
+function setSceneReorderSaving(isSaving) {
+  sceneReorderState.saving = !!isSaving;
+  var list = document.getElementById('scene-list');
+  if (list) list.classList.toggle('scene-reorder-saving', sceneReorderState.saving);
+  document.querySelectorAll('.scene-drag-handle').forEach(function (handle) {
+    var disabled = sceneReorderState.saving || !canEdit || !isEditMode;
+    handle.draggable = !disabled;
+    handle.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  });
+}
+
+function finishSceneReorderDrag() {
+  var list = document.getElementById('scene-list');
+  if (list) {
+    list.classList.remove('scene-list-reordering');
+    list.querySelectorAll('.scene-drop-zone.active').forEach(function (zone) { zone.classList.remove('active'); });
+    list.querySelectorAll('.scene-item.dragging').forEach(function (item) { item.classList.remove('dragging'); });
+  }
+  sceneReorderState.draggedId = '';
+  sceneReorderState.originalItems = null;
+}
+
+function beginSceneReorderDrag(evt, img, item) {
+  evt.stopPropagation();
+  if (!canEdit || !isEditMode || sceneReorderState.saving) {
+    evt.preventDefault();
+    return false;
+  }
+  if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('reorder-scenes')) {
+    evt.preventDefault();
+    return false;
+  }
+  sceneReorderState.draggedId = String(img.id || '');
+  sceneReorderState.originalItems = allImages.slice();
+  sceneReorderState.suppressInteractionUntil = Date.now() + 800;
+  item.classList.add('dragging');
+  document.getElementById('scene-list').classList.add('scene-list-reordering');
+  closeSceneContextMenu();
+  if (evt.dataTransfer) {
+    evt.dataTransfer.effectAllowed = 'move';
+    evt.dataTransfer.setData('text/plain', sceneReorderState.draggedId);
+  }
+  return true;
+}
+
+function saveSceneOrder(previousItems, folderId, orderedFileIds) {
+  var requestGeneration = ++sceneReorderState.requestGeneration;
+  setSceneReorderSaving(true);
+
+  function isCurrentRequest() {
+    return requestGeneration === sceneReorderState.requestGeneration;
+  }
+  function finishSaving() {
+    if (!isCurrentRequest()) return;
+    setSceneReorderSaving(false);
+  }
+  function rollback(message) {
+    if (!isCurrentRequest()) return;
+    allImages = previousItems;
+    arrangeSceneItemsInDom(getOrderedSceneImageIds(allImages));
+    finishSaving();
+    showToast(message, 'error');
+  }
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (!isCurrentRequest()) return;
+      if (!result || result.success !== true) {
+        rollback('シーンの並び順を保存できませんでした: ' + ((result && result.error) || '不明なエラー'));
+        return;
+      }
+      finishSaving();
+      showToast(
+        result.partialSuccess ? (result.warning || '並び順は保存しましたが、キャッシュ更新に失敗しました。') : 'シーンの並び順を保存しました。',
+        result.partialSuccess ? 'error' : 'success'
+      );
+    })
+    .withFailureHandler(function () {
+      rollback('シーンの並び順の保存中に通信エラーが発生しました。元の順序へ戻しました。');
+    })
+    .reorderScenes(withEditToken({
+      folderId: folderId,
+      orderedFileIds: orderedFileIds
+    }));
+}
+
+function applySceneDrop(dropIndex) {
+  if (!sceneReorderState.draggedId || sceneReorderState.saving) return false;
+  var draggedId = sceneReorderState.draggedId;
+  var previousItems = sceneReorderState.originalItems || allImages.slice();
+  var beforeOrder = getOrderedSceneImageIds(allImages);
+  var nextItems = reorderSceneImageItems(allImages, draggedId, dropIndex);
+  var nextOrder = getOrderedSceneImageIds(nextItems);
+  finishSceneReorderDrag();
+  if (beforeOrder.join('\n') === nextOrder.join('\n')) return false;
+
+  allImages = nextItems;
+  arrangeSceneItemsInDom(nextOrder);
+  sceneReorderState.suppressInteractionUntil = Date.now() + 800;
+  saveSceneOrder(previousItems, getCurrentSceneFolderId(), nextOrder);
+  return true;
+}
+
 function onConfigLoaded(config) {
   if (config.error) {
     showLoadError(config.error);
@@ -1449,12 +1637,36 @@ function buildSceneSidebar(images) {
       item.dataset.id = img.id;
       item.tabIndex = 0;
       item.innerHTML =
+        (canEdit
+          ? '<button type="button" class="scene-drag-handle" draggable="true" aria-label="シーンを並び替える" aria-disabled="false" title="ドラッグして並び替え">' +
+            '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg>' +
+            '</button>'
+          : '') +
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
         '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>' +
         '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' +
         '</svg>' +
         '<span class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</span>';
-      item.addEventListener('click', function () {
+      var dragHandle = item.querySelector('.scene-drag-handle');
+      if (dragHandle) {
+        ['click', 'mousedown', 'pointerdown', 'contextmenu'].forEach(function (eventName) {
+          dragHandle.addEventListener(eventName, function (evt) {
+            evt.stopPropagation();
+            if (eventName === 'contextmenu') evt.preventDefault();
+          });
+        });
+        dragHandle.addEventListener('dragstart', function (evt) {
+          beginSceneReorderDrag(evt, img, item);
+        });
+        dragHandle.addEventListener('dragend', function () {
+          finishSceneReorderDrag();
+        });
+      }
+      item.addEventListener('click', function (evt) {
+        if (shouldSuppressSceneItemInteraction()) {
+          evt.preventDefault();
+          return;
+        }
         if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('select-scene')) return;
         if (isSwitching) return;
         previousSceneId = null; // サイドバーからの移動は振り返り演出なし
@@ -1462,6 +1674,10 @@ function buildSceneSidebar(images) {
         setMobileSceneSheetExpanded(false);
       });
       item.addEventListener('contextmenu', function (evt) {
+        if (shouldSuppressSceneItemInteraction()) {
+          evt.preventDefault();
+          return;
+        }
         if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('scene-context-menu')) {
           evt.preventDefault();
           return;
@@ -1471,6 +1687,9 @@ function buildSceneSidebar(images) {
       list.appendChild(item);
     }
   });
+
+  arrangeSceneItemsInDom(getOrderedSceneImageIds(images));
+  setSceneReorderSaving(sceneReorderState.saving);
 
   sidebar.classList.remove('hidden');
   panorama.classList.add('with-sidebar');
@@ -5498,6 +5717,7 @@ function toggleMode(options) {
   isEditMode = !isEditMode;
   document.body.classList.toggle('edit-mode-active', isEditMode);
   if (!isEditMode) {
+    finishSceneReorderDrag();
     cancelHotspotMove('編集モードを終了したため移動をキャンセルしました。', { silent: true });
   }
 
@@ -5587,6 +5807,7 @@ function toggleMode(options) {
       render2DHotspots(current2DHotspots); // コンテキストメニューイベントを取り除いて再描画
     }
   }
+  setSceneReorderSaving(sceneReorderState.saving);
   syncDriveFolderButtons();
   syncSceneActionButtons();
   scheduleAppLayoutMetrics();

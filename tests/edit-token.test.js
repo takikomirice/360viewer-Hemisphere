@@ -903,6 +903,7 @@ test('mutating server functions assert edit token before doing work', () => {
     'getSceneSettings',
     'updateSceneSettings',
     'setHomeScene',
+    'reorderScenes',
     'updateStudentSheetDropdowns',
     'bulkImportStudentSheet'
   ];
@@ -933,6 +934,7 @@ test('client sends __editToken with mutating google.script.run calls', () => {
     'getSceneSettings',
     'updateSceneSettings',
     'setHomeScene',
+    'reorderScenes',
     'updateStudentSheetDropdowns',
     'bulkImportStudentSheet'
   ];

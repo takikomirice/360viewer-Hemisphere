@@ -1755,6 +1755,126 @@ function setHomeScene(payload) {
 }
 
 /**
+ * 現在のDrive直下画像と完全一致する順序をscenesの表示順列へ一括保存する。
+ *
+ * @param {{folderId:string,orderedFileIds:Array<string>,__editToken:string}} payload
+ * @returns {{success:boolean,orderedFileIds?:Array<string>,cacheInvalidated?:boolean,partialSuccess?:boolean,warning?:string,error?:string}}
+ */
+function reorderScenes(payload) {
+  assertEditToken_(payload);
+  const request = payload && typeof payload === 'object' ? payload : {};
+  let lock = null;
+  try {
+    lock = acquireLock_();
+
+    if (typeof request.folderId !== 'string' || !request.folderId.trim()) {
+      throw new Error('並び替え対象のフォルダIDが指定されていません。');
+    }
+    const folderId = request.folderId.trim();
+    if (!Array.isArray(request.orderedFileIds) || request.orderedFileIds.length === 0) {
+      throw new Error('並び替え対象の画像ID一覧が指定されていません。');
+    }
+
+    const orderedFileIds = [];
+    const requestedIdSet = {};
+    request.orderedFileIds.forEach(function(rawFileId) {
+      if (typeof rawFileId !== 'string' || !rawFileId.trim()) {
+        throw new Error('画像ID一覧に空または不正な値が含まれています。');
+      }
+      const fileId = rawFileId.trim();
+      if (requestedIdSet[fileId]) {
+        throw new Error('画像ID一覧に重複があります: ' + fileId);
+      }
+      requestedIdSet[fileId] = true;
+      orderedFileIds.push(fileId);
+    });
+
+    const rootFolderId = extractDriveFolderId_(
+      getAppConfig_()[IMAGE_DRIVE_URL_CONFIG_KEY] || ''
+    ) || '';
+    if (!rootFolderId || !isDriveFolderWithinRoot_(folderId, rootFolderId)) {
+      throw new Error('並び替え対象のフォルダは設定済みルートフォルダの配下ではありません。');
+    }
+
+    const driveListing = listDriveFolderItems_(folderId);
+    const currentFileIds = driveListing.images.map(function(image) {
+      return String(image && image.id || '').trim();
+    });
+    const currentIdSet = {};
+    currentFileIds.forEach(function(fileId) { currentIdSet[fileId] = true; });
+    if (orderedFileIds.length !== currentFileIds.length) {
+      throw new Error('送信された画像一覧が現在のフォルダ直下の画像一覧と一致しません。');
+    }
+    orderedFileIds.forEach(function(fileId) {
+      if (!currentIdSet[fileId]) {
+        throw new Error('並び替え対象外の画像IDが含まれています: ' + fileId);
+      }
+    });
+
+    const scenesSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCENES_SHEET_NAME);
+    if (!scenesSheet) throw new Error('scenesシートが見つかりません。シーン一覧を再読み込みしてください。');
+    const snapshot = readSceneRows_(scenesSheet);
+    if ((snapshot.duplicateFileIds || []).length > 0) {
+      throw new Error(
+        'scenesシートにファイルIDの重複があります。並び替えの前に重複を解消してください: ' +
+        snapshot.duplicateFileIds.join(', ')
+      );
+    }
+
+    const targetRows = orderedFileIds.map(function(fileId) {
+      const scene = snapshot.byFileId[fileId];
+      if (!scene || String(scene.parentFolderId || '') !== folderId) {
+        throw new Error('対象画像のscenes行が現在のフォルダと一致しません: ' + fileId);
+      }
+      return scene.rowNumber;
+    });
+    const firstRow = Math.min.apply(null, targetRows);
+    const lastRow = Math.max.apply(null, targetRows);
+    const displayOrderValues = [];
+    for (let rowNumber = firstRow; rowNumber <= lastRow; rowNumber++) {
+      const sourceRow = snapshot.values[rowNumber - 2] || [];
+      displayOrderValues.push([sourceRow[SCENE_COLUMN_INDEX.displayOrder]]);
+    }
+    orderedFileIds.forEach(function(fileId, index) {
+      const rowNumber = snapshot.byFileId[fileId].rowNumber;
+      displayOrderValues[rowNumber - firstRow][0] = index + 1;
+    });
+    scenesSheet.getRange(
+      firstRow,
+      SCENE_COLUMN_INDEX.displayOrder + 1,
+      displayOrderValues.length,
+      1
+    ).setValues(displayOrderValues);
+
+    const cacheInvalidated = invalidateFolderListCache_(folderId);
+    const warning = cacheInvalidated
+      ? ''
+      : '並び順は保存済みですが、フォルダ一覧キャッシュを無効化できませんでした。';
+    if (!cacheInvalidated) {
+      console.error(
+        '[scene-reorder] folderId=' + folderId + ' stage=cache-invalidate:',
+        'folder list cache invalidation failed'
+      );
+    }
+    return {
+      success: true,
+      orderedFileIds: orderedFileIds,
+      cacheInvalidated: cacheInvalidated,
+      partialSuccess: !cacheInvalidated,
+      warning: warning
+    };
+  } catch (e) {
+    console.error(
+      '[scene-reorder] folderId=' + String(request.folderId || '') + ' stage=update:',
+      e && e.message ? e.message : e
+    );
+    return { success: false, error: e && e.message ? e.message : 'シーンの並び順を保存できませんでした。' };
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
+
+/**
  * 旧ファイル名タグを新規 scenes 行の初回登録時だけ解釈する。
  *
  * @param {*} fileName

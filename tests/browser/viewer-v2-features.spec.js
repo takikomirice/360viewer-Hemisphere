@@ -52,6 +52,85 @@ async function photoReadCallCount(page) {
   return page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoDataUri').length);
 }
 
+test('scene drag handles reorder only photos, preserve selection, and save one complete folder order', async ({ page }) => {
+  await openHarness(page);
+  await expect(page.locator('#scene-list .scene-item')).toHaveCount(2);
+  await expect(page.locator('#scene-list .scene-folder-item')).toHaveCount(1);
+  await expect(page.locator('#scene-list .scene-drag-handle')).toHaveCount(2);
+  await expect(page.locator('#scene-list .scene-folder-item .scene-drag-handle')).toHaveCount(0);
+  await expect(page.locator('#scene-list .scene-item').first()).not.toHaveAttribute('draggable', 'true');
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toBeHidden();
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toHaveAttribute('draggable', 'false');
+
+  await enterEditMode(page);
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toBeVisible();
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toHaveAttribute('draggable', 'true');
+
+  const selectedBefore = await page.evaluate(() => currentFileId);
+  await page.locator('#scene-list .scene-drag-handle').first()
+    .dragTo(page.locator('#scene-list .scene-drop-zone').last());
+
+  await expect.poll(() => page.evaluate(() =>
+    window.__HARNESS_CALLS__.filter((call) => call.method === 'reorderScenes').length
+  )).toBe(1);
+  expect(await page.locator('#scene-list .scene-item').evaluateAll((items) => items.map((item) => item.dataset.id)))
+    .toEqual(['fixture-scene-2d', 'fixture-scene-360']);
+  expect(await page.evaluate(() => currentFileId)).toBe(selectedBefore);
+  await expect(page.locator(`.scene-item[data-id="${selectedBefore}"]`)).toHaveClass(/active/);
+
+  const call = await page.evaluate(() =>
+    window.__HARNESS_CALLS__.filter((entry) => entry.method === 'reorderScenes')[0]
+  );
+  expect(call.args[0]).toMatchObject({
+    folderId: 'fixture-root-folder',
+    orderedFileIds: ['fixture-scene-2d', 'fixture-scene-360']
+  });
+  expect(call.args[0].__editToken).toBeTruthy();
+
+  await page.waitForTimeout(850);
+  await page.locator('#scene-list .scene-item').first().click();
+  await expect.poll(() => page.evaluate(() => currentFileId)).toBe('fixture-scene-2d');
+  await page.locator('#scene-list .scene-item').first().click({ button: 'right' });
+  await expect(page.locator('#scene-context-menu')).toBeVisible();
+
+  await page.locator('#mode-toggle').click();
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toBeHidden();
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toHaveAttribute('draggable', 'false');
+});
+
+test('scene reorder rolls back on save failure and blocks a second drag while saving', async ({ page }) => {
+  await openHarness(page);
+  await enterEditMode(page);
+  await page.evaluate(() => {
+    window.__HARNESS_BEHAVIOR__.reorderScenes = { outcome: 'error', delay: 1500 };
+  });
+  const originalIds = await page.locator('#scene-list .scene-item')
+    .evaluateAll((items) => items.map((item) => item.dataset.id));
+
+  await page.locator('#scene-list .scene-drag-handle').first()
+    .dragTo(page.locator('#scene-list .scene-drop-zone').last());
+  await expect(page.locator('#scene-list .scene-drag-handle').first()).toHaveAttribute('aria-disabled', 'true');
+  expect(await page.locator('#scene-list .scene-item').evaluateAll((items) => items.map((item) => item.dataset.id)))
+    .toEqual(originalIds.slice().reverse());
+
+  await page.locator('#scene-list .scene-drag-handle').first()
+    .dragTo(page.locator('#scene-list .scene-drop-zone').last());
+  expect(await page.evaluate(() =>
+    window.__HARNESS_CALLS__.filter((call) => call.method === 'reorderScenes').length
+  )).toBe(1);
+
+  await expect.poll(() => page.locator('#scene-list .scene-item')
+    .evaluateAll((items) => items.map((item) => item.dataset.id))).toEqual(originalIds);
+  await expect(page.locator('#toast')).toContainText(/保存|並び順|失敗/);
+});
+
+test('read-only scene list keeps normal selection and exposes no reorder handles', async ({ page }) => {
+  await openHarness(page, { mode: 'public' });
+  await expect(page.locator('#scene-list .scene-drag-handle')).toHaveCount(0);
+  await page.locator('#scene-list .scene-item').nth(1).click();
+  await expect.poll(() => page.evaluate(() => currentFileId)).toBe('fixture-scene-2d');
+});
+
 test('fullscreen control is hidden and inert throughout edit mode, then reusable in view mode', async ({ page }) => {
   await openHarness(page);
   const fullscreen = page.locator('#fullscreen-btn');
