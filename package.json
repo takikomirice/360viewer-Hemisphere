@@ -1,0 +1,13 @@
+{
+  "name": "360viewer-hemisphere-ui-tests",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Local browser harness and responsive layout checks for 360Viewer Hemisphere",
+  "scripts": {
+    "preview:ui": "node tests/browser/harness-server.js",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}

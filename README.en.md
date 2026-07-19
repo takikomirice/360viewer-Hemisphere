@@ -48,14 +48,15 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
 2. From the left panel, click **"+ New file"** and create these 5 files: `Code.js`, `index.html`, `styles.html`, `app.html`, `appsscript.json`
 3. Paste the contents of each file in this repository into the matching Apps Script file
    - **Note**: `index.html` loads `styles.html` and `app.html` using `<?!= include("styles") ?>` and `<?!= include("app") ?>`, so all three HTML files are required
-4. (Optional) For bulk input sheet integration: in the spreadsheet menu, run **"Initial Setup"** → **"Create & link bulk input sheet"** — this auto-creates and links the sheet. To link an existing sheet manually, add `STUDENT_SHEET_ID` to the Script Properties in the Apps Script editor.
+4. (Optional) For bulk input sheet integration, run **"設定"** → **"一括入力用スプシを作成"** in the spreadsheet menu. This creates and links the official input sheet.
 
 ---
 
 ### ④ Generate the initial config sheet and set the image URL
 
-1. In the spreadsheet, run **"Initial Setup"** menu → **"Generate initial setup sheet"**
+1. In the spreadsheet, run **"設定"** → **"初期設定・更新"**
 2. In the **"config"** sheet, enter the Google Drive URL you copied in step ① into **cell B2**
+3. The setup also creates or repairs `config`, `info`, and `scenes`, and generates `EDIT_KEY` only when it is missing.
 
 ---
 
@@ -69,6 +70,9 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
      - Internal only: `Anyone in your organization`
      - Public: `Anyone`
 3. Click **"Deploy"** → copy the **Web app URL**
+4. Paste the deployed HTTPS `/exec` URL directly into `WEB_APP_URL` on the `config` sheet.
+
+Run **"設定"** → **"編集用URLを生成・更新"** to generate the edit URL in the config `EDIT_URL` cell. Setup does not generate it, and there is no Apps Script service-URL fallback. Direct edits to `WEB_APP_URL` or `EDIT_KEY` clear a stale `EDIT_URL`; run the menu command again afterward.
 
 ---
 
@@ -98,7 +102,7 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
 - If a hotspot has a "Jump to" target, clicking it jumps to another scene
 - **Buttons (top right of the image)**:
   - **Fullscreen**: Enter fullscreen mode
-  - **Home**: Jump to the home scene (image tagged `[HOME]`; folder mode only)
+  - **Home**: Jump to the scene marked as home in `scenes` (folder mode only)
   - **Quality toggle**: Switch between low-load (fast) ↔ high quality (high)
   - **Gyro** (mobile only): Tilt your device to control the view
 - **Embed code**: Click the "Embed code" button to generate and copy an iframe code for Google Sites or other sites (internal and external versions available)
@@ -110,17 +114,31 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
 2. The screen switches to a yellow-highlighted frame
 3. Click the location where you want to add a hotspot
 4. Fill in the fields and click **"Save"**:
-   - **Label** (required)
+   - **Label** (required for ordinary markers; in jump mode the label field is hidden and disabled, new jumps stay blank, and an existing saved label is preserved)
    - **Description**
    - **Link**: External URL (https://...)
-   - **Marker style**: Shape (circle/square/diamond/star), color, icon (info/photo/Wi-Fi/**quiz**)
+   - **Marker style**: three shapes, twelve colors, and twelve icons (info/photo/link/Wi-Fi/**quiz**/eye/warning/flag/animal/leaf/flower/historic)
    - **Photo** (folder mode only): Attach an image from the same folder to display in the hotspot popup
-   - **Jump to scene** (folder mode only): Navigate to another 360° scene on click
-5. Existing hotspots: click to edit, **right-click** for "Edit" / "Delete" menu
-6. **In folder mode**: right-click an image in the scene list → "Rename" (renames the file in Google Drive), "Show properties", "Delete photo"
+   - **Jump to scene** (folder mode only, required): Navigate to another scene on click. View mode shows the latest destination scene name, falling back to the saved label and then the ID only when the target is missing
+5. Existing hotspots: **right-click** for the "Edit" / "Move" / "Delete" menu
+6. **In folder mode**: right-click an image in the scene list → "Change settings" (saves name, type, and north correction together), "Set as home", "Show properties", or "Delete photo". Renaming preserves the original image extension. Because 360 and 2D coordinates have different meanings, a scene with saved hotspots cannot switch between those types until its hotspots are deleted
 7. **Upload photo**: Use the **"⬆ Upload photo"** button in the scene list to upload a 360° panorama or 2D flat map directly to Google Drive (requires a folder URL in config)
 8. **Refresh scene list**: In folder mode, click the **refresh button (↻)** at the left of the scene list to reload the image list
 9. **Bulk input sheet integration** (folder mode): Use "Update bulk input sheet list" and "Import from bulk input sheet" to register hotspots in bulk (see [details](#bulk-input-sheet-integration))
+
+Supported image extensions (jpg/jpeg/png/gif/webp) are hidden in the scene list, settings dialog, photo and jump selectors, and jump tooltips. The formal Drive name and the `scenes` value keep their extension, and "Show properties" displays that formal name.
+
+A Drive name beginning with `=` is stored in `scenes` as literal display-name text, never as a spreadsheet formula.
+
+Marker value catalogs:
+
+- Shape IDs: circle / square / diamond (legacy `star` values are read as `circle`)
+- Color IDs: blue / cyan / teal / green / lime / yellow / orange / red / pink / purple / gray / white
+- Icon IDs (new selections): info / photo / link / wifi / quiz / eye / warning / flag / animal / leaf / flower / historic
+
+Legacy `star` data falls back only while reading and restoring the editor. Loading does not rewrite the sheet automatically or replace localStorage values. Saving an edited legacy marker may store `circle`. Legacy `video` and `audio` values are hidden from new selections, but existing markers keep their original values and SVGs while viewing, editing, and saving. This does not add media playback. `quiz` remains the only icon with special flip-card behavior.
+
+Starting "Move" dims the original marker and shows a matching preview marker that follows the pointer or touch position. A simple click or short tap commits the move: 360 scenes convert it to yaw/pitch, while 2D scenes convert it to percentages within the displayed image. Panorama drags, points outside a 2D image, Escape, scene changes, and leaving edit mode do not commit. The real marker changes only after the save succeeds. While a hotspot create, update, or delete request is pending, settings for that scene wait; the server also rejects coordinates if the scene type changed after capture. After a move save request is submitted, scene switching and edit/delete/move actions that could conflict wait for the response so the sheet and the visible marker cannot overwrite each other.
 
 ### Quiz Mode (Flip Card)
 
@@ -146,20 +164,33 @@ Great for inquiry-based or fieldwork learning where students interact with "ques
 
 ### 2D Flat Maps
 
-- Images with a filename starting with `[2D]` are displayed as 2D flat maps instead of 360° panoramas
-- When uploading a photo, selecting "2D flat map" automatically adds the `[2D]` prefix
+- The `2D` / `360` type in `scenes` is the authoritative display setting.
+- Only an unregistered Drive image uses `[2D]` in its filename during first sync. Adding or removing the tag later does not change its stored type, and existing tags are not removed.
+- Selecting "2D flat map" during upload writes `2D` directly to `scenes`; it no longer adds a `[2D]` filename prefix.
 - Hotspots (labels, descriptions, links, jump targets, etc.) work the same way in 2D mode
 
-### Home Scene ([HOME] tag)
+### Home Scene
 
-- In folder mode, an image with `[HOME]` in its filename is treated as the "home scene"
-- Example: rename a file to `[HOME] School Entrance.jpg` to always return here via the Home button
-- If no `[HOME]` image exists, the first image in the folder is used as home
+- The home flag in `scenes` is authoritative and is normalized to at most one root-folder image.
+- Only an unregistered image uses `[HOME]` as a first-sync migration candidate. Renaming an already registered file does not change its home flag or remove the tag.
+- Selection priority is an existing valid home, the first newly registered `[HOME]` image, then the first image by scene order.
 
 ### Subfolders in Folder Mode
 
 - If a folder URL is set in config, images in subfolders are also displayed hierarchically
-- Click a folder in the sidebar to view its contents; use "← Back" to return to the parent folder
+- Click a folder to verify it belongs under the configured root by walking only toward its parents, then sync and show only that folder's direct children; use "← Back" to return. Startup never recursively scans every subfolder.
+
+### Drive / scenes Sync, Cache, and Partial Success
+
+- The root is synced on initial display and scene-list refresh, a subfolder when opened, and an upload target after Drive creation. Joined Drive + `scenes` results are cached briefly.
+- Upload, integrated settings changes, explicit delete, automatic registration, home normalization, and lazy northOffset storage invalidate the affected folder cache.
+- A file missing from a Drive listing is never enough to delete its `scenes` row or `info` hotspots. Those rows are removed only after an explicit edit-mode delete successfully trashes the Drive file.
+- If Drive upload succeeds but `scenes` registration fails, the Drive file is retained and the UI reports partial success; a later folder sync can register it.
+- Rename updates Drive before `scenes`. A post-Drive failure is reported and a later sync repairs the display name using the Drive update timestamp.
+- If cleanup after a successful explicit Drive delete fails, the UI reports which downstream data may remain.
+- If only cache invalidation fails after Drive and sheet updates, the completed stages remain successful and the UI reports partial success.
+- When a Drive file moves between folders, sync updates the parent ID on the same `scenes` row and invalidates both the previous and current parent caches without duplicates. Cache-only failures keep the completed sheet update and return a warning with the affected folder IDs in logs.
+- Scene properties require a valid edit token on the server because the API returns Drive URLs and media metadata. Direct calls from normal, public, or internal views are rejected.
 
 ---
 
@@ -170,8 +201,9 @@ This feature lets you enter hotspot data in a spreadsheet and import it all at o
 ### Setup
 
 1. Prepare a bulk input spreadsheet
-   - **Create from menu** (recommended): Run **"Initial Setup"** → **"Create & link bulk input sheet"** to auto-create a sheet in the same folder as the container spreadsheet, save its ID in PropertiesService, and set up headers, column widths, and dropdown validation (if folder is configured)
-   - **Link an existing sheet**: In the Apps Script editor → **Project Settings** → **Script Properties**, add `STUDENT_SHEET_ID` with the spreadsheet ID. Match the sheet name to `STUDENT_SHEET_NAME` in `Code.js` (default: "Sheet1")
+   - **Create from menu**: Run **"設定"** → **"一括入力用スプシを作成"**. A sheet is created beside the container only when no official ID exists; headers, widths, and dropdown validation are prepared automatically when possible.
+   - ScriptProperties `STUDENT_SHEET_ID` is the sole authoritative link. A valid existing ID is verified and reused rather than replaced by another new sheet.
+   - Config `STUDENT_SHEET_URL` is display-only. Editing it never changes the link; create, update, and import repair it from the spreadsheet opened with the official property ID.
 2. Set up the following column structure in the bulk input sheet (row 1 = header):
 
 | Column | Content |
@@ -187,16 +219,16 @@ This feature lets you enter hotspot data in a spreadsheet and import it all at o
 
 ### Operations in Edit Mode
 
-- **Update bulk input sheet list**: Run from the viewer's edit mode sidebar. Sets dropdown validation for columns B, F, and G based on the folder's image names. (Can also be run from the spreadsheet menu: **"Initial Setup"** → **"Update bulk input sheet validation"**)
-- **Import from bulk input sheet**: Reads rows where column H is not "Done", adds them as hotspots to the info sheet, then marks those rows as "Done"
+- **Update bulk input sheet list**: Run from the viewer's edit mode sidebar. Sets dropdown validation for columns B, F, and G based on the folder's image names. (Can also be run from **"設定"** → **"一括入力用スプシを更新"**.)
+- **Import from bulk input sheet**: Imports only rows whose target, photo, and jump names resolve to exactly one configured image, then marks those rows as "Done". Ordinary markers require a label; jump rows preserve a blank label. Missing or duplicate-name references and blank-label ordinary rows remain pending.
 
-### Initial Setup Menu (Bulk Input)
+### Settings Menu (Bulk Input)
 
 | Menu item | Description |
 | --------- | ----------- |
-| Create & link bulk input sheet | Creates a new sheet and links it to the system |
-| Update bulk input sheet validation | Updates dropdowns for columns B, F, and G |
-| Show linked sheet ID | Displays the ID and URL of the currently linked sheet |
+| 一括入力用スプシを作成 | Creates only when the official ID is missing; otherwise verifies the existing sheet |
+| 一括入力用スプシを更新 | Repairs the official URL, blank headers, and dropdowns for columns B, F, and G |
+| 一括入力データを取り込む | Imports pending rows from the official sheet and toasts imported/skipped counts |
 
 > Only available in folder mode with `IMAGE_DRIVE_URL` set to a folder URL.
 > Pitch/Yaw are set to 0 on import — adjust hotspot positions manually in edit mode as needed.
@@ -221,12 +253,35 @@ This feature lets you enter hotspot data in a spreadsheet and import it all at o
 ├── styles.html         ← CSS loaded from index.html
 ├── app.html            ← Frontend JavaScript loaded from index.html
 ├── appsscript.json     ← GAS project settings (timezone Asia/Tokyo, V8, web app config, etc.)
+├── package.json        ← Playwright harness dependencies and commands
+├── playwright.config.js← Responsive browser test configuration
+├── tests/              ← Node.js regression tests and local browser harness
 ├── .clasp.json.example ← Example clasp config (.clasp.json is not committed)
 ├── .claspignore        ← Files excluded from clasp push
 ├── README.md           ← Japanese README
 ├── README.en.md        ← English README
 └── RELEASE_NOTES.md    ← Release notes
 ```
+
+### Local UI Preview (Playwright)
+
+The local harness renders the real `index.html`, `styles.html`, and `app.html` files used by GAS. It replaces only `google.script.run`, Pannellum, and image fixtures; production code never imports the harness.
+
+```powershell
+npm install
+npx playwright install chromium  # Only when no usable Chrome/Chromium is installed
+npm run preview:ui
+```
+
+Open a URL such as `http://127.0.0.1:4173/?mode=public&sceneType=360`. Supported `mode` values are `public`, `internal`, and `edit`; supported `sceneType` values are `360` and `2D`.
+
+Run the responsive coordinate, overflow, and scene-list interaction checks with:
+
+```powershell
+npm run test:browser
+```
+
+To write post-change screenshots and coordinate JSON to `output/playwright/after/`, run `$env:UI_CAPTURE_PHASE='after'; npx playwright test --grep "after screenshots"` in PowerShell. `output/playwright/` is excluded from both Git and clasp.
 
 ### Local Development (clasp)
 
@@ -256,6 +311,41 @@ The first public release is `v1.0.0`. See [RELEASE_NOTES.md](RELEASE_NOTES.md) f
 | B | Value (Google Drive URL: single file or folder; folder supports subfolders and multiple images) |
 | C | Description |
 
+The primary settings appear in this order; other existing settings remain after them:
+
+1. `IMAGE_DRIVE_URL`
+2. `STUDENT_SHEET_URL`
+3. `WEB_APP_URL`
+4. `EDIT_URL`
+5. `EDIT_KEY`
+
+`EDIT_URL` is generated only by the spreadsheet menu command **"編集用URLを生成・更新"**, using the config values `WEB_APP_URL` and `EDIT_KEY`. `WEB_APP_URL` must be entered directly and must be a valid HTTPS `/exec` URL. Setup never changes `EDIT_URL`; direct edits to either source value clear the stale URL, and invalid or blank input leaves `EDIT_URL` empty. No temporary or Apps Script service URL is used.
+
+The config-sheet `EDIT_KEY` is authoritative for URL generation and normal authentication. Setup migrates a legacy `EDIT_KEY` Script Property when the config value is blank. If an existing config key differs, the legacy key remains accepted only while the stored legacy `EDIT_URL` explicitly contains it; running **"編集用URLを生成・更新"** switches authentication to the config key alone. If the config cannot be read, edit authentication fails closed instead of falling back to the legacy key.
+
+Regenerating `EDIT_KEY` immediately invalidates both old edit URLs and temporary edit tokens already issued from the previous key.
+
+### scenes sheet (per-image settings)
+
+| Column | Content |
+| ------ | ------- |
+| A | Drive file ID (primary key) |
+| B | Display name |
+| C | Parent folder ID |
+| D | Type |
+| E | Home flag |
+| F | Display order |
+| G | northOffset |
+| H | northOffset source (`xmp`, `none`, or `manual`) |
+| I | Drive updated timestamp |
+| J | scenes row updated timestamp |
+
+Legacy `NORTH_<Drive file ID>` config rows are migrated when setup is re-run. Numeric values and `NONE` rows are removed only after equivalent scenes values are verified; invalid values, failed migrations, and conflicts with manual values remain in config.
+
+In folder mode, images in the folder currently being viewed are matched to `scenes` by Drive file ID. Only unregistered images are batch-added at the end of that folder's order. Filename tags never overwrite type, home, order, or northOffset on existing rows. A missing Drive listing entry is not treated as deletion, and sync never changes `info`.
+
+Public northOffset extraction is allowed only for an existing `scenes` row whose parent is under the configured root, whose type is explicitly `360`, and whose Drive MIME type is JPEG. Unregistered, root-outside, `2D`, and non-JPEG targets return `null` without reading the Drive Blob/XMP or creating a scene row. Single-image mode allows only the exact file configured in `IMAGE_DRIVE_URL`; `2D` display never consumes a stored northOffset.
+
 ### info sheet (hotspots)
 
 | Column | Content |
@@ -267,15 +357,17 @@ The first public release is `v1.0.0`. See [RELEASE_NOTES.md](RELEASE_NOTES.md) f
 | E | Link URL |
 | F | Pitch (vertical angle) |
 | G | Yaw (horizontal angle) |
-| H | Shape (circle / square / diamond / star) |
-| I | Color (blue / green / orange / purple / white / gray / yellow / red) |
-| J | Icon (info / photo / wifi / quiz) |
+| H | Shape (circle / square / diamond) |
+| I | Color (blue / cyan / teal / green / lime / yellow / orange / red / pink / purple / gray / white) |
+| J | Icon (one of the twelve current values, or legacy-compatible video/audio) |
 | K | Photo ID (Google Drive file ID, optional) |
 | L | Jump-to ID (target scene image ID for scene transitions, optional) |
+| M | Hotspot ID |
 
-The `config` and `info` sheets are created via **"Initial Setup"** menu → **"Generate initial setup sheet"**.
+The `config`, `info`, and `scenes` sheets are created or repaired via **"Initial Setup"** menu → **"Generate initial setup sheet"**.
 The `info` sheet is also auto-created on the first run of `saveHotspot`.
 Sheets using the old schema are automatically migrated on first access.
+Legacy `star` shapes are normalized to `circle` when read, but loading does not rewrite the sheet automatically. Saving an edited legacy marker may persist `circle`.
 
 ---
 
@@ -288,7 +380,7 @@ Sheets using the old schema are automatically migrated on first access.
 | Cannot embed in Google Sites | Check the "Who has access" setting in your deployment |
 | Hotspots not showing | Check that the sheet name is `info` |
 | Photo upload fails | Check that `IMAGE_DRIVE_URL` in config is set to a **folder** URL (not a file URL) |
-| Bulk input sheet not working | Check that the bulk input sheet is linked ("Initial Setup" → "Show linked sheet ID"); check that `IMAGE_DRIVE_URL` is a folder URL; check edit permissions on the bulk input sheet |
+| Bulk input sheet not working | Check that ScriptProperties `STUDENT_SHEET_ID` is valid, `IMAGE_DRIVE_URL` is a folder URL, and the script can edit the official input sheet. The create menu command reuses a valid existing ID. |
 | Gyro not working / not shown | Supported on smartphones and tablets only. Requires HTTPS, browser support for DeviceOrientation, and may require user permission |
 | Home button not shown | Must be in folder mode (folder URL in `IMAGE_DRIVE_URL`); check that at least one image exists |
 

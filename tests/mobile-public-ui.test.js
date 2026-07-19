@@ -71,14 +71,16 @@ test('mobile public hotspot details use bottom sheet class and CSS', () => {
   assert.match(markerBody, /isPublicViewingMode\(\)\s*&&\s*isSmallViewport\(\)/);
   assert.match(markerBody, /mobile-info-sheet/);
   assert.match(styles, /body\.mobile-public-view[\s\S]*\.info-popup\.mobile-info-sheet/);
-  assert.match(styles, /max-height:\s*min\(70vh/);
+  assert.match(styles, /max-height:\s*min\(70dvh/);
 });
 
 test('mobile public viewing removes topbar offset and enlarges viewer controls', () => {
   const styles = readStyles();
 
-  assert.match(styles, /body\.public-view\s+#loading/);
-  assert.match(styles, /body\.public-view\s+#scene-transition-overlay/);
+  assert.match(styles, /body\[data-app-mode="public"\][\s\S]*--app-top-offset:\s*0px/);
+  assert.match(styles, /body\[data-app-mode="internal"\][\s\S]*--app-top-offset:\s*0px/);
+  assert.match(styles, /#loading[\s\S]*top:\s*var\(--app-top-offset\)/);
+  assert.match(styles, /#scene-transition-overlay[\s\S]*top:\s*var\(--app-top-offset\)/);
   assert.match(styles, /body\.mobile-public-view\s+#panorama\.with-sidebar/);
   assert.match(styles, /body\.mobile-public-view\s+#flat-map-container\.with-sidebar/);
   assert.match(styles, /body\.mobile-public-view\s+#fullscreen-btn/);

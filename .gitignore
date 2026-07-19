@@ -2,3 +2,7 @@
 .vscode/
 .claude/
 CLAUDE.md
+node_modules/
+output/playwright/
+playwright-report/
+test-results/

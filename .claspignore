@@ -4,3 +4,7 @@
 !*.gs
 !*.html
 !appsscript.json
+playwright.config.js
+tests/**
+node_modules/**
+output/**

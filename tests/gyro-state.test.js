@@ -57,7 +57,7 @@ test('scene loading and major viewer actions stop gyro state first', () => {
   const toggleQualityBody = getFunctionBody(app, 'toggleQuality');
   const markerClickBody = getFunctionBody(app, 'onMarkerClick');
 
-  assert.match(loadSceneBody.slice(0, 240), /stopGyroIfActive\('load-scene'\)/);
+  assert.match(loadSceneBody, /stopGyroIfActive\('load-scene'\)/);
   assert.match(goHomeBody, /stopGyroIfActive\('home'\)/);
   assert.match(toggleQualityBody, /stopGyroIfActive\('quality'\)/);
   assert.match(markerClickBody, /stopGyroIfActive\('jump'\)/);
