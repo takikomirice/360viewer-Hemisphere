@@ -74,7 +74,13 @@ function createConfigSheet(configValues = {}) {
   };
 }
 
-function loadCode(cacheValues = {}, scriptProperties = {}, configValues = {}, scriptUrl = 'https://script.google.com/macros/s/xxxxx/exec') {
+function loadCode(
+  cacheValues = {},
+  scriptProperties = {},
+  configValues = {},
+  scriptUrl = 'https://script.google.com/macros/s/xxxxx/exec',
+  htmlSources = {}
+) {
   const code = fs.readFileSync(codePath, 'utf8');
   const configSheet = createConfigSheet(configValues);
   const activeSpreadsheet = {
@@ -106,6 +112,7 @@ function loadCode(cacheValues = {}, scriptProperties = {}, configValues = {}, sc
     __dialog: null,
     __scriptUrlCalls: 0,
     __lockEvents: [],
+    __htmlFileReads: [],
     CacheService: {
       getScriptCache() {
         return {
@@ -121,6 +128,17 @@ function loadCode(cacheValues = {}, scriptProperties = {}, configValues = {}, sc
     },
     HtmlService: {
       XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
+      createHtmlOutputFromFile(name) {
+        context.__htmlFileReads.push(name);
+        const content = Object.prototype.hasOwnProperty.call(htmlSources, name)
+          ? htmlSources[name]
+          : fs.readFileSync(path.join(rootDir, `${name}.html`), 'utf8');
+        return {
+          getContent() {
+            return content;
+          }
+        };
+      },
       createHtmlOutput(content) {
         return {
           content,
@@ -890,6 +908,91 @@ test('assertEditToken_ accepts only tokens issued by the current edit key', () =
   );
 });
 
+test('initial app include removes the complete audio vendor region while other includes remain unchanged', () => {
+  const context = loadCode();
+
+  const includedApp = context.include('app');
+  assert.deepEqual(context.__htmlFileReads, ['app']);
+  assert.equal(/AUDIO_VENDOR_/.test(includedApp), false);
+  assert.equal(/globalThis\.Mediabunny\s*=/.test(includedApp), false);
+
+  const includedStyles = context.include('styles');
+  assert.equal(includedStyles, fs.readFileSync(path.join(rootDir, 'styles.html'), 'utf8'));
+  assert.deepEqual(context.__htmlFileReads, ['app', 'styles']);
+});
+
+test('audio vendor boundaries survive HtmlService removing HTML comments', () => {
+  const appAfterHtmlService = fs.readFileSync(appPath, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const context = loadCode(
+    { 'EDIT_TOKEN_valid-token': 'edit-key:class-key' },
+    { EDIT_KEY: 'class-key' },
+    {},
+    'https://script.google.com/macros/s/xxxxx/exec',
+    { app: appAfterHtmlService }
+  );
+
+  const includedApp = context.include('app');
+  assert.equal(/globalThis\.Mediabunny\s*=/.test(includedApp), false);
+
+  const response = context.getAudioVendorBundle({ __editToken: 'valid-token' });
+  assert.equal(response.version, '1.50.8');
+  assert.match(response.source, /globalThis\.Mediabunny\s*=/);
+  assert.match(response.source, /globalThis\.MediabunnyMp3Encoder\s*=/);
+});
+
+test('getAudioVendorBundle authenticates before reading app and returns the exact generated payload', () => {
+  const syncVendor = require('../scripts/sync-audio-vendor');
+  assert.equal(typeof syncVendor.extractAppVendorSource, 'function');
+  const expectedSource = syncVendor.extractAppVendorSource(fs.readFileSync(appPath, 'utf8'));
+  const valid = loadCode(
+    { 'EDIT_TOKEN_valid-token': 'edit-key:class-key' },
+    { EDIT_KEY: 'class-key' }
+  );
+
+  const response = valid.getAudioVendorBundle({ __editToken: 'valid-token' });
+  assert.equal(response.version, '1.50.8');
+  assert.equal(response.source, expectedSource);
+  assert.deepEqual(valid.__htmlFileReads, ['app']);
+
+  const invalid = loadCode({}, { EDIT_KEY: 'class-key' });
+  assert.throws(
+    () => invalid.getAudioVendorBundle({ __editToken: 'invalid-token' }),
+    /編集権限が確認できません/
+  );
+  assert.deepEqual(invalid.__htmlFileReads, [], 'invalid authentication must not read app.html');
+});
+
+test('getAudioVendorBundle rejects duplicate, reordered, or malformed marker regions', () => {
+  const probe = loadCode();
+  assert.equal(typeof probe.getAudioVendorBundle, 'function');
+  const app = fs.readFileSync(appPath, 'utf8');
+  const startMarker = 'AUDIO_VENDOR_BUNDLE_START';
+  const endMarker = 'AUDIO_VENDOR_BUNDLE_END';
+  const malformedSources = [
+    app.replace(startMarker, `${startMarker}\n${startMarker}`),
+    app.replace(
+      new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`),
+      `${endMarker}\n<script>\nbad\n</script>\n${startMarker}`
+    ),
+    app.replace('<script>\n', '<script data-vendor="audio">\n')
+  ];
+
+  malformedSources.forEach((malformedApp) => {
+    const context = loadCode(
+      { 'EDIT_TOKEN_valid-token': 'edit-key:class-key' },
+      { EDIT_KEY: 'class-key' },
+      {},
+      'https://script.google.com/macros/s/xxxxx/exec',
+      { app: malformedApp }
+    );
+    assert.throws(
+      () => context.getAudioVendorBundle({ __editToken: 'valid-token' }),
+      /marker|region|script/i
+    );
+    assert.deepEqual(context.__htmlFileReads, ['app']);
+  });
+});
+
 test('mutating server functions assert edit token before doing work', () => {
   const code = fs.readFileSync(codePath, 'utf8');
   const guardedFunctions = [
@@ -899,7 +1002,7 @@ test('mutating server functions assert edit token before doing work', () => {
     'uploadImageToDrive',
     'deleteImageFile',
     'getImageFileProperties',
-    'getHotspotPhotoFolderUrlForEdit',
+    'getHotspotFolderUrlForEdit',
     'getSceneSettings',
     'updateSceneSettings',
     'setHomeScene',
@@ -930,7 +1033,7 @@ test('client sends __editToken with mutating google.script.run calls', () => {
     'uploadImageToDrive',
     'deleteImageFile',
     'getImageFileProperties',
-    'getHotspotPhotoFolderUrlForEdit',
+    'getHotspotFolderUrlForEdit',
     'getSceneSettings',
     'updateSceneSettings',
     'setHomeScene',

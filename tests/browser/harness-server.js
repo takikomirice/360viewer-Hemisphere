@@ -1,13 +1,21 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { extractAppVendorSource, locateVendorRegion } = require('../../scripts/sync-audio-vendor');
 
 const rootDir = path.resolve(__dirname, '..', '..');
 const host = process.env.UI_HARNESS_HOST || '127.0.0.1';
 const port = Number(process.env.UI_HARNESS_PORT || 4173);
+const audioVendorEndpoint = '/__audio-vendor-bundle';
 
 function readSource(filename) {
   return fs.readFileSync(path.join(rootDir, filename), 'utf8');
+}
+
+function stripAudioVendorBundle(appSource) {
+  const region = locateVendorRegion(appSource);
+  return appSource.slice(0, region.markerStart) +
+    appSource.slice(region.markerEnd + region.endMarker.length);
 }
 
 function normalizeMode(value) {
@@ -50,6 +58,7 @@ function browserHarnessBootstrap(options) {
   window.__HARNESS_VIEWER_LOADS__ = [];
   var savedHotspotCounter = 0;
   var uploadedPhotoCounter = 0;
+  var uploadedAudioCounter = 0;
   window.addEventListener('error', function (event) {
     window.__HARNESS_ERRORS__.push(String(event.message || event.error || 'window error'));
   });
@@ -160,7 +169,7 @@ function browserHarnessBootstrap(options) {
     var submitted = data && typeof data === 'object' ? data : {};
     var hotspot = {};
     Object.keys(submitted).forEach(function (key) {
-      if (key === '__editToken' || key === 'photoUpload') return;
+      if (key === '__editToken' || key === 'photoUpload' || key === 'audioUpload') return;
       hotspot[key] = submitted[key];
     });
     var photoId = String(submitted.photoId || '');
@@ -171,10 +180,17 @@ function browserHarnessBootstrap(options) {
     hotspot.id = String(hotspotId || '');
     if (storageMode === 'single') hotspot.fileId = 'fixture-single-scene';
     hotspot.photoId = photoId;
+    var audioId = String(submitted.audioId || '');
+    if (submitted.audioUpload) {
+      uploadedAudioCounter += 1;
+      audioId = 'fixture-upload-audio-' + uploadedAudioCounter;
+    }
+    hotspot.audioId = audioId;
     return {
       success: true,
       id: hotspot.id,
       photoId: photoId,
+      audioId: audioId,
       hotspot: hotspot
     };
   }
@@ -209,6 +225,14 @@ function browserHarnessBootstrap(options) {
         dataUri: fixtureImage
       };
     }
+    if (method === 'getHotspotAudioData') {
+      return {
+        success: true,
+        dataUri: 'data:audio/mpeg;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAABAAABAA==',
+        mimeType: 'audio/mpeg',
+        sizeBytes: 43
+      };
+    }
     if (method === 'getImageProperties') {
       return {
         success: true,
@@ -226,10 +250,10 @@ function browserHarnessBootstrap(options) {
         scene: fixtureScenes()[0]
       };
     }
-    if (method === 'getHotspotPhotoFolderUrlForEdit') {
+    if (method === 'getHotspotFolderUrlForEdit') {
       return {
         success: true,
-        url: 'https://drive.google.com/drive/folders/fixture-hotspot-photo-folder'
+        url: 'https://drive.google.com/drive/folders/fixture-hotspot-root-folder'
       };
     }
     if (method === 'saveHotspot') {
@@ -284,9 +308,24 @@ function browserHarnessBootstrap(options) {
                 }
                 return;
               }
-              var response = behavior && typeof behavior === 'object' && Object.prototype.hasOwnProperty.call(behavior, 'response')
-                ? behavior.response
-                : responseFor(method, args);
+              var hasConfiguredResponse = behavior && typeof behavior === 'object' &&
+                Object.prototype.hasOwnProperty.call(behavior, 'response');
+              if (method === 'getAudioVendorBundle' && !hasConfiguredResponse) {
+                window.fetch(options.audioVendorEndpoint, { credentials: 'same-origin' })
+                  .then(function (response) {
+                    if (!response.ok) throw new Error('fixture audio vendor request failed');
+                    return response.json();
+                  })
+                  .then(function (response) {
+                    if (typeof successHandler === 'function') successHandler(response);
+                  })
+                  .catch(function (error) {
+                    if (typeof failureHandler === 'function') failureHandler(error);
+                    else window.__HARNESS_ERRORS__.push(String(error && error.message || error));
+                  });
+                return;
+              }
+              var response = hasConfiguredResponse ? behavior.response : responseFor(method, args);
               if (typeof successHandler === 'function') successHandler(response);
             } catch (error) {
               if (typeof failureHandler === 'function') failureHandler(error);
@@ -591,7 +630,8 @@ function renderPage(requestUrl) {
     base64Delay: normalizeDelay(url.searchParams.get('base64Delay')),
     viewerDelay: normalizeDelay(url.searchParams.get('viewerDelay')) || 20,
     imageOutcome: normalizeOutcome(url.searchParams.get('imageOutcome'), ['loaded', 'failed', 'failed-then-loaded', 'timeout'], 'loaded'),
-    viewerOutcome: normalizeOutcome(url.searchParams.get('viewerOutcome'), ['loaded', 'failed', 'failed-then-loaded'], 'loaded')
+    viewerOutcome: normalizeOutcome(url.searchParams.get('viewerOutcome'), ['loaded', 'failed', 'failed-then-loaded'], 'loaded'),
+    audioVendorEndpoint
   };
   const editToken = options.mode === 'edit' ? 'playwright-edit-token' : '';
 
@@ -618,7 +658,7 @@ function renderPage(requestUrl) {
     '.playwright-panorama-surface span { position:relative; text-shadow:0 2px 8px rgba(0,0,0,.45); }',
     '</style>',
     `<script>(${browserHarnessBootstrap.toString()})(${JSON.stringify(options)});</script>`,
-    readSource('app.html'),
+    stripAudioVendorBundle(readSource('app.html')),
     `<script>(${browserHarnessReady.toString()})(${JSON.stringify(options)});</script>`
   ].join('\n');
   html = html.replace('<?!= include("app") ?>', bootstrap);
@@ -635,6 +675,20 @@ function createHarnessServer() {
     if (request.method !== 'GET') {
       response.writeHead(405, { Allow: 'GET' });
       response.end();
+      return;
+    }
+    if (new URL(request.url || '/', `http://${host}:${port}`).pathname === audioVendorEndpoint) {
+      try {
+        const source = extractAppVendorSource(readSource('app.html'));
+        response.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store'
+        });
+        response.end(JSON.stringify({ version: '1.50.8', source }));
+      } catch (error) {
+        response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        response.end(error && error.stack || String(error));
+      }
       return;
     }
     try {
@@ -700,5 +754,6 @@ if (require.main === module) {
 }
 
 module.exports = {
+  renderPage,
   startHarnessServer
 };

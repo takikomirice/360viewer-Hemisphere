@@ -15,10 +15,10 @@ const readmeEn = fs.readFileSync(path.join(rootDir, 'README.en.md'), 'utf8');
 const EXPECTED_SHAPES = ['circle', 'square', 'diamond'];
 const EXPECTED_COLORS = ['blue', 'cyan', 'teal', 'green', 'lime', 'yellow', 'orange', 'red', 'pink', 'purple', 'gray', 'white'];
 const EXPECTED_SELECTABLE_ICONS = [
-  'info', 'photo', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
+  'info', 'photo', 'audio', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
   'animal', 'leaf', 'flower', 'historic'
 ];
-const EXPECTED_LEGACY_ICONS = ['video', 'audio'];
+const EXPECTED_LEGACY_ICONS = ['video'];
 const EXPECTED_SUPPORTED_ICONS = EXPECTED_SELECTABLE_ICONS.concat(EXPECTED_LEGACY_ICONS);
 
 function getFunctionSource(source, functionName) {
@@ -85,7 +85,7 @@ function selectOptgroups(selectId) {
   });
 }
 
-test('server marker catalogs separate the twelve selectable values from two legacy values', () => {
+test('server marker catalogs expose audio among thirteen selectable values and keep only video legacy', () => {
   assert.deepEqual(Array.from(readConst('ALLOWED_MARKER_SHAPES')), EXPECTED_SHAPES);
   assert.deepEqual(Array.from(readConst('ALLOWED_MARKER_COLORS')), EXPECTED_COLORS);
   assert.deepEqual(Array.from(readConst('SELECTABLE_MARKER_ICONS')), EXPECTED_SELECTABLE_ICONS);
@@ -137,20 +137,20 @@ test('client marker catalogs expose the exact Japanese labels and no star entry'
   });
 });
 
-test('new marker selector lists exactly twelve icons in the specified optgroups and order', () => {
+test('new marker selector lists exactly thirteen icons including audio in the specified optgroups and order', () => {
   assert.deepEqual(selectOptionValues('marker-shape'), EXPECTED_SHAPES);
   assert.deepEqual(selectOptionValues('marker-color'), EXPECTED_COLORS);
   assert.deepEqual(selectOptionValues('marker-icon'), EXPECTED_SELECTABLE_ICONS);
   assert.equal(selectOptionValues('marker-icon').includes('video'), false);
-  assert.equal(selectOptionValues('marker-icon').includes('audio'), false);
+  assert.equal(selectOptionValues('marker-icon').includes('audio'), true);
   assert.deepEqual(selectOptgroups('marker-icon'), [
     {
       label: '基本', id: '', hidden: false,
-      values: EXPECTED_SELECTABLE_ICONS.slice(0, 8)
+      values: EXPECTED_SELECTABLE_ICONS.slice(0, 9)
     },
     {
       label: '自然・地域学習', id: '', hidden: false,
-      values: EXPECTED_SELECTABLE_ICONS.slice(8)
+      values: EXPECTED_SELECTABLE_ICONS.slice(9)
     },
     {
       label: '旧アイコン', id: 'marker-icon-legacy-group', hidden: true, values: []
@@ -244,7 +244,7 @@ test('legacy stored icon preference falls back for new markers without rewriting
   assert.deepEqual(writes, []);
 });
 
-test('legacy edit options are injected only for an existing video or audio marker', () => {
+test('legacy edit options are injected only for video while audio remains a normal selectable icon', () => {
   const select = { value: 'info' };
   const legacyGroup = {
     hidden: true,
@@ -296,10 +296,8 @@ test('legacy edit options are injected only for an existing video or audio marke
 
   assert.equal(context.setMarkerIconSelectValue('audio', true), 'audio');
   assert.equal(select.value, 'audio');
-  assert.deepEqual(
-    legacyGroup.children.map((option) => [option.value, option.textContent]),
-    [['audio', '音声（旧アイコン）']]
-  );
+  assert.equal(legacyGroup.hidden, true);
+  assert.equal(legacyGroup.children.length, 0);
 
   assert.match(getFunctionSource(app, 'openPopup'), /setMarkerIconSelectValue\(editArgs\.markerIcon,\s*true\)/);
   assert.match(getFunctionSource(app, 'syncMarkerStyleInputsFromPreference'), /setMarkerIconSelectValue\(lastMarkerIcon,\s*false\)/);
@@ -334,6 +332,10 @@ test('last-icon preference stores current icons but never offers a legacy icon t
   assert.equal(context.lastMarkerIcon, 'historic');
   assert.deepEqual(writes.at(-1), ['hsMarkerIcon', 'historic']);
 
+  context.persistMarkerStylePreference('circle', 'blue', 'audio');
+  assert.equal(context.lastMarkerIcon, 'audio');
+  assert.deepEqual(writes.at(-1), ['hsMarkerIcon', 'audio']);
+
   context.persistMarkerStylePreference('circle', 'blue', 'video');
   assert.equal(context.lastMarkerIcon, 'info');
   assert.deepEqual(writes.at(-1), ['hsMarkerIcon', 'info']);
@@ -362,7 +364,7 @@ function contrastRatio(left, right) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-test('all twelve current and two legacy marker icons use one inline currentColor SVG wrapper', () => {
+test('all thirteen current and one legacy marker icons use one inline currentColor SVG wrapper', () => {
   const definitions = readVarObject('MARKER_ICON_SVGS');
   assert.deepEqual(Object.keys(definitions), EXPECTED_SUPPORTED_ICONS);
   for (const iconId of EXPECTED_SUPPORTED_ICONS) {
@@ -525,6 +527,7 @@ test('move save payload replaces only coordinates and preserves every hotspot fi
     markerColor: 'pink',
     markerIcon: 'flag',
     photoId: 'photo-a',
+    audioId: 'audio-a',
     jumpSceneId: 'scene-b',
     pitch: 1,
     yaw: 2
@@ -544,6 +547,7 @@ test('move save payload replaces only coordinates and preserves every hotspot fi
     pitch: 45,
     yaw: 67,
     photoId: 'photo-a',
+    audioId: 'audio-a',
     jumpSceneId: 'scene-b'
   });
 });
@@ -825,14 +829,15 @@ test('jump tooltips use the latest extensionless scene name then saved label and
   assert.equal(context.getJumpSceneDisplayName('missing', ''), 'missing');
 });
 
-test('Japanese and English documentation list the twelve selectable icons and legacy compatibility', () => {
+test('Japanese and English documentation list thirteen selectable icons and video-only legacy compatibility', () => {
   assert.match(readmeJa, /circle\/square\/diamond（旧 `star` は読込時に `circle`/);
   assert.match(readmeJa, /blue\/cyan\/teal\/green\/lime\/yellow\/orange\/red\/pink\/purple\/gray\/white/);
-  assert.match(readmeJa, /info\/photo\/link\/wifi\/quiz\/eye\/warning\/flag\/animal\/leaf\/flower\/historic/);
-  assert.match(readmeJa, /video.*audio.*旧|旧.*video.*audio/);
+  assert.match(readmeJa, /info\/photo\/audio\/link\/wifi\/quiz\/eye\/warning\/flag\/animal\/leaf\/flower\/historic/);
+  assert.match(readmeJa, /旧 `video`/);
   assert.match(readmeJa, /シートを自動更新しません/);
   assert.match(readmeJa, /仮マーカー[\s\S]*カーソルまたはタッチ位置/);
-  assert.match(readmeJa, /動画・音声の再生機能は追加されません/);
+  assert.match(readmeJa, /`audio` は通常の新規選択肢/);
+  assert.match(readmeJa, /音声添付とは独立/);
   assert.match(readmeJa, /「設定の変更」[^\n]*名前・種別・北方向補正/);
   assert.match(readmeJa, /画像拡張子[^\n]*表示し/);
   assert.doesNotMatch(readmeJa, /「名前を変更」/);
@@ -840,10 +845,12 @@ test('Japanese and English documentation list the twelve selectable icons and le
 
   assert.match(readmeEn, /circle \/ square \/ diamond \(legacy `star` values are read as `circle`/);
   assert.match(readmeEn, /blue \/ cyan \/ teal \/ green \/ lime \/ yellow \/ orange \/ red \/ pink \/ purple \/ gray \/ white/);
-  assert.match(readmeEn, /info \/ photo \/ link \/ wifi \/ quiz \/ eye \/ warning \/ flag \/ animal \/ leaf \/ flower \/ historic/);
-  assert.match(readmeEn, /video.*audio.*legacy|legacy.*video.*audio/i);
+  assert.match(readmeEn, /info \/ photo \/ audio \/ link \/ wifi \/ quiz \/ eye \/ warning \/ flag \/ animal \/ leaf \/ flower \/ historic/);
+  assert.match(readmeEn, /Legacy `video` values are hidden from new selections/);
   assert.match(readmeEn, /does not rewrite the sheet automatically/);
   assert.match(readmeEn, /preview marker[\s\S]*pointer or touch position/);
+  assert.match(readmeEn, /`audio` is available as a normal new selection/);
+  assert.match(readmeEn, /audio attachments remain independent/i);
   assert.match(readmeEn, /Change settings[^\n]*name, type, and north correction/i);
   assert.match(readmeEn, /image extensions[^\n]*hidden/i);
   assert.doesNotMatch(readmeEn, /right-click an image[^\n]*"Rename"/i);

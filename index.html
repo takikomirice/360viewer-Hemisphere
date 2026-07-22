@@ -93,13 +93,13 @@
           </button>
         </div>
       </div>
-      <!-- 単一画像モード用: 編集時だけ表示する写真フォルダ導線 -->
-      <button id="open-hotspot-photo-folder-topbar-btn" class="hotspot-photo-folder-button topbar-photo-folder-button" type="button" onclick="openHotspotPhotoFolderInDrive()" title="ホットスポット写真フォルダをGoogle Driveで開く" aria-label="ホットスポット写真フォルダをGoogle Driveで開く" aria-hidden="true" aria-busy="false" hidden disabled tabindex="-1" style="display:none;">
+      <!-- 単一画像モード用: 編集時だけ表示するHotspot添付フォルダ導線 -->
+      <button id="open-hotspot-folder-topbar-btn" class="hotspot-folder-button topbar-hotspot-folder-button" type="button" onclick="openHotspotFolderInDrive()" title="HotspotフォルダをGoogle Driveで開く" aria-label="HotspotフォルダをGoogle Driveで開く" aria-hidden="true" aria-busy="false" hidden disabled tabindex="-1" style="display:none;">
         <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          <circle cx="9" cy="13" r="1.5"/><path d="m5.5 18 3-3 2 2 2.5-2.5 3.5 3.5"/>
+          <path d="m9 14 2 2 4-4"/>
         </svg>
-        <span>写真フォルダ</span>
+        <span>Hotspotフォルダ</span>
       </button>
       <!-- テーマ切り替え（トップバー表示時） -->
       <button id="toolbar-theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()" title="ダークテーマに切り替える" aria-label="ダークテーマに切り替える" aria-pressed="false">
@@ -184,7 +184,7 @@
     <button id="upload-btn" type="button" onclick="openUploadModal()" title="写真をアップロード" aria-label="写真をアップロード">
       <span aria-hidden="true">⬆</span>
       <span class="scene-action-label-full">写真をアップロード</span>
-      <span class="scene-action-label-compact" aria-hidden="true">写真追加</span>
+      <span class="scene-action-label-compact" aria-hidden="true">追加</span>
     </button>
     <div id="drive-folder-actions" aria-hidden="true" hidden style="display:none;">
       <button id="open-folder-btn" type="button" onclick="openCurrentFolderInDrive()" title="シーン画像フォルダをGoogle Driveで開く" aria-label="シーン画像フォルダをGoogle Driveで開く" aria-hidden="true" hidden disabled tabindex="-1" style="display:none;">
@@ -192,13 +192,13 @@
         <span class="scene-action-label-full">シーンDrive</span>
         <span class="scene-action-label-compact" aria-hidden="true">シーン</span>
       </button>
-      <button id="open-hotspot-photo-folder-btn" class="hotspot-photo-folder-button" type="button" onclick="openHotspotPhotoFolderInDrive()" title="ホットスポット写真フォルダをGoogle Driveで開く" aria-label="ホットスポット写真フォルダをGoogle Driveで開く" aria-hidden="true" aria-busy="false" hidden disabled tabindex="-1" style="display:none;">
+      <button id="open-hotspot-folder-btn" class="hotspot-folder-button" type="button" onclick="openHotspotFolderInDrive()" title="HotspotフォルダをGoogle Driveで開く" aria-label="HotspotフォルダをGoogle Driveで開く" aria-hidden="true" aria-busy="false" hidden disabled tabindex="-1" style="display:none;">
         <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          <circle cx="9" cy="13" r="1.5"/><path d="m5.5 18 3-3 2 2 2.5-2.5 3.5 3.5"/>
+          <path d="m9 14 2 2 4-4"/>
         </svg>
-        <span class="scene-action-label-full">写真フォルダ</span>
-        <span class="scene-action-label-compact" aria-hidden="true">写真</span>
+        <span class="scene-action-label-full">Hotspotフォルダ</span>
+        <span class="scene-action-label-compact" aria-hidden="true">Hotspot</span>
       </button>
     </div>
     <div id="scene-list"></div>
@@ -372,7 +372,7 @@
           </svg>
           <span class="hs-type-btn-text">
             <span class="hs-type-btn-title">情報を表示</span>
-            <span class="hs-type-btn-desc">説明・写真・リンクを表示</span>
+            <span class="hs-type-btn-desc">説明・写真・音声・リンクを表示</span>
           </span>
         </button>
         <button type="button" class="hs-type-btn" onclick="selectHotspotType('quiz')">
@@ -450,6 +450,7 @@
               <optgroup label="基本">
                 <option value="info">情報</option>
                 <option value="photo">写真</option>
+                <option value="audio">音声</option>
                 <option value="link">リンク</option>
                 <option value="wifi">Wi-Fi</option>
                 <option value="quiz">クイズ</option>
@@ -525,6 +526,23 @@
           </div>
           <p id="hotspot-photo-error" class="hotspot-photo-error" role="alert" aria-live="assertive" hidden></p>
         </div>
+        <div class="form-group" id="audio-attachment-group">
+          <span class="form-label">音声（任意・1件まで）</span>
+          <button id="hotspot-audio-open-editor-btn" class="hotspot-audio-open-editor" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">音声を選んで編集</button>
+          <div id="hotspot-audio-attachment-card" class="hotspot-audio-attachment-card" hidden>
+            <audio id="hotspot-audio-preview" class="hotspot-audio-preview" controls preload="none" aria-label="添付する音声の確認再生" hidden></audio>
+            <div class="hotspot-audio-details">
+              <span id="hotspot-audio-file-name" class="hotspot-audio-file-name"></span>
+              <span id="hotspot-audio-file-meta" class="hotspot-audio-file-meta"></span>
+            </div>
+            <div class="hotspot-audio-actions">
+              <button id="hotspot-audio-change-btn" class="hotspot-audio-action" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">変更</button>
+              <button id="hotspot-audio-remove-btn" class="hotspot-audio-action danger" type="button" onclick="toggleHotspotAudioRemoval()">解除</button>
+            </div>
+          </div>
+          <p id="hotspot-audio-status" class="hotspot-audio-status" role="status" aria-live="polite"></p>
+          <p id="hotspot-audio-error" class="hotspot-audio-error" role="alert" aria-live="assertive" hidden></p>
+        </div>
       </div>
 
       <!-- ジャンプモード用フィールド -->
@@ -568,6 +586,129 @@
       </div>
     </div>
   </div>
+
+  <!-- トースト通知 -->
+  <!-- HEMISPHERE_AUDIO_EDITOR_UI_START -->
+<dialog id="hotspot-audio-editor-dialog" class="hemisphere-audio-editor-dialog" aria-labelledby="hotspot-audio-editor-title" aria-describedby="hotspot-audio-editor-description">
+  <header class="hae-modal-header">
+    <div>
+      <h2 id="hotspot-audio-editor-title">ホットスポット音声を編集</h2>
+      <p id="hotspot-audio-editor-description" class="hae-visually-hidden">音声ファイルから0.5秒以上120秒以下の範囲を選び、MP3を生成します。</p>
+    </div>
+    <button type="button" class="hae-icon-button" onclick="closeHotspotAudioEditor()" aria-label="音声編集を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button>
+  </header>
+  <div class="hae-modal-body">
+<svg class="hae-svg-defs" aria-hidden="true" focusable="false">
+      <symbol id="hae-icon-audio" viewBox="0 0 24 24"><path d="M14 4v11.5a3.5 3.5 0 1 1-2-3.16V7l8-2v8.5a3.5 3.5 0 1 1-2-3.16V2z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="hae-icon-folder" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9.75A1.75 1.75 0 0 1 19.25 20h-14A1.75 1.75 0 0 1 3.5 18.25V6.5Z"/><path d="M3.5 9h17"/></symbol>
+      <symbol id="hae-icon-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.8 9.2a2.35 2.35 0 1 1 3.72 1.91c-.98.73-1.52 1.13-1.52 2.39"/><path d="M12 16.7h.01"/></symbol>
+      <symbol id="hae-icon-play" viewBox="0 0 24 24"><path d="m9 6 8 6-8 6V6Z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="hae-icon-stop" viewBox="0 0 24 24"><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="hae-icon-check" viewBox="0 0 24 24"><path d="m6 12 3.5 3.5L18 7"/><circle cx="12" cy="12" r="8.5"/></symbol>
+      <symbol id="hae-icon-attach" viewBox="0 0 24 24"><path d="m9.5 12.5 5.7-5.7a3 3 0 0 1 4.3 4.2l-7.8 7.8a5 5 0 0 1-7.1-7.1l7.5-7.5"/><path d="m7.4 14.6 7.1-7.1"/></symbol>
+      <symbol id="hae-icon-adjust" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><circle cx="9" cy="7" r="1.5" fill="currentColor"/><circle cx="15" cy="12" r="1.5" fill="currentColor"/><circle cx="11" cy="17" r="1.5" fill="currentColor"/></symbol>
+      <symbol id="hae-icon-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+      <symbol id="hae-icon-rewind" viewBox="0 0 24 24"><path d="m11 7-5 5 5 5M18 7l-5 5 5 5"/></symbol>
+      <symbol id="hae-icon-start" viewBox="0 0 24 24"><path d="M7 5v14M17 7l-5 5 5 5"/></symbol>
+      <symbol id="hae-icon-end" viewBox="0 0 24 24"><path d="M17 5v14M7 7l5 5-5 5"/></symbol>
+      <symbol id="hae-icon-span" viewBox="0 0 24 24"><path d="M5 12h14m-3-3 3 3-3 3M8 9l-3 3 3 3"/></symbol>
+      <symbol id="hae-icon-position" viewBox="0 0 24 24"><path d="M12 5v14M8 8l4-3 4 3"/></symbol>
+      <symbol id="hae-icon-total" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="hae-icon-spinner" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 1-7.3 4.7"/></symbol>
+    </svg>
+
+    <main class="hae-app" data-hemisphere-audio-editor>
+      <section class="hae-card" aria-label="音声編集">
+        <section class="hae-empty" data-hae-empty>
+          <div class="hae-empty-toolbar"><button class="hae-icon-button" type="button" data-hae-help-open aria-label="ヘルプを開く"><svg aria-hidden="true"><use href="#hae-icon-help"></use></svg></button></div>
+          <label class="hae-file-card" for="hae-audio-file" aria-describedby="hae-input-limits">
+            <svg aria-hidden="true"><use href="#hae-icon-audio"></use></svg>
+            <span class="hae-file-card-formats">M4A / MP3 / WAV</span>
+            <span id="hae-input-limits" class="hae-file-card-limits">5min / 50MB recommended<br>10min / 200MB max</span>
+          </label>
+          <input id="hae-audio-file" class="hae-visually-hidden" type="file" accept="audio/mp4,audio/mpeg,audio/wav,.m4a,.mp3,.wav">
+        </section>
+
+        <section class="hae-status" data-hae-loading hidden aria-live="polite"><svg class="hae-spinner" aria-hidden="true"><use href="#hae-icon-spinner"></use></svg><span data-hae-loading-file></span></section>
+        <section class="hae-status hae-status-error" data-hae-error hidden aria-live="assertive"><span data-hae-error-message></span><button class="hae-icon-button" type="button" data-hae-error-choose aria-label="別の音声を選ぶ"><svg aria-hidden="true"><use href="#hae-icon-folder"></use></svg></button></section>
+
+        <section class="hae-editor" data-hae-editor hidden aria-label="音声範囲の編集">
+          <header class="hae-file-bar">
+            <div class="hae-file-info"><strong data-hae-file-name></strong><span data-hae-file-meta></span></div>
+            <div class="hae-file-actions"><button class="hae-icon-button" type="button" data-hae-choose-another aria-label="別の音声を選ぶ"><svg aria-hidden="true"><use href="#hae-icon-folder"></use></svg></button><button class="hae-icon-button" type="button" data-hae-help-open aria-label="ヘルプを開く"><svg aria-hidden="true"><use href="#hae-icon-help"></use></svg></button></div>
+          </header>
+          <p class="hae-warning" data-hae-warning hidden></p>
+
+          <div class="hae-editor-layout" data-hae-editor-layout>
+            <section class="hae-wave-panel hae-full-panel" data-hae-full-panel aria-label="音声全体の波形">
+              <canvas class="hae-waveform" data-hae-waveform="full" aria-label="音声全体の概要波形。クリックまたはドラッグして再生位置を移動"></canvas>
+              <div class="hae-playhead hae-full-playhead" data-hae-full-playhead role="slider" tabindex="0" aria-label="再生位置"></div>
+            </section>
+            <section class="hae-full-controls" data-hae-full-controls aria-label="音源全体の操作">
+              <div class="hae-operation-bar" aria-label="音源全体の操作"><button class="hae-icon-button" type="button" data-hae-reset-playhead aria-label="再生位置を音声の先頭へ戻す"><svg aria-hidden="true"><use href="#hae-icon-rewind"></use></svg></button><button class="hae-icon-button hae-icon-button-primary" type="button" data-hae-play="full" aria-label="現在位置から音声を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button></div>
+              <div class="hae-full-time-row"><span aria-label="現在位置"><svg aria-hidden="true"><use href="#hae-icon-position"></use></svg><output data-hae-playhead></output></span><span aria-label="全体時間"><svg aria-hidden="true"><use href="#hae-icon-total"></use></svg><output data-hae-total-time></output></span></div><span class="hae-visually-hidden" data-hae-playback-status aria-live="polite"></span>
+            </section>
+            <section class="hae-detail-panel" data-hae-detail-panel aria-label="切り出し詳細波形">
+              <div class="hae-ruler" aria-hidden="true" data-hae-ruler></div>
+              <div class="hae-detail-waveform" data-hae-range-track>
+                <canvas class="hae-waveform" data-hae-waveform="detail" aria-label="切り出し範囲の詳細波形"></canvas>
+                <div class="hae-playhead hae-detail-playhead" data-hae-detail-playhead aria-hidden="true"></div>
+                <div class="hae-selection" data-hae-selection tabindex="0" role="button" aria-label="選択範囲を移動" aria-describedby="hae-range-instructions"><span class="hae-handle hae-handle-start" data-hae-handle="start" tabindex="0" role="slider" aria-label="開始位置"></span><span class="hae-selection-fill" aria-hidden="true"></span><span class="hae-handle hae-handle-end" data-hae-handle="end" tabindex="0" role="slider" aria-label="終了位置"></span></div>
+              </div>
+              <span id="hae-range-instructions" class="hae-visually-hidden">中央をドラッグして移動、左右のハンドルで範囲を調整します。</span><span id="hae-time-instructions" class="hae-visually-hidden">数字をクリックして直接入力、または左右へドラッグして調整できます。標準は0.1秒、Shiftを押すと1秒単位です。</span>
+            </section>
+            <aside class="hae-range-controls" data-hae-range-controls aria-label="切り出し範囲の操作">
+              <div class="hae-range-primary"><div class="hae-time-row" aria-label="選択時間"><span><svg aria-hidden="true"><use href="#hae-icon-start"></use></svg><input class="hae-time-input" data-hae-start-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="開始時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-end"></use></svg><input class="hae-time-input" data-hae-end-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="終了時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-span"></use></svg><input class="hae-time-input" data-hae-duration type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="選択時間" aria-describedby="hae-time-instructions"></span></div>
+                <div class="hae-operation-bar" aria-label="範囲編集操作"><button class="hae-icon-button" type="button" data-hae-play="selection" aria-label="選択範囲を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button><button class="hae-icon-button hae-icon-button-primary" type="button" data-hae-confirm aria-label="この範囲をMP3にする"><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg></button><button class="hae-icon-button" type="button" data-hae-cancel aria-label="キャンセルして音声を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
+              </div>
+              <section class="hae-loudness-panel" data-hae-loudness-panel aria-label="音量調整">
+                <div class="hae-loudness-top"><label class="hae-auto-switch"><input type="checkbox" data-hae-loudness-enabled aria-label="自動音量調整" checked><span class="hae-auto-track" aria-hidden="true">AUTO</span></label><span class="hae-loudness-status" data-hae-loudness-status aria-live="polite"></span></div>
+                <fieldset class="hae-preset-group" data-hae-loudness-presets><legend class="hae-visually-hidden">自動音量の目標</legend><input class="hae-segment-input" id="hae-preset-small" data-hae-loudness-preset type="radio" name="hae-loudness-preset" value="small" aria-label="小さめ"><label for="hae-preset-small">小</label><input class="hae-segment-input" id="hae-preset-medium" data-hae-loudness-preset type="radio" name="hae-loudness-preset" value="medium" aria-label="標準" checked><label for="hae-preset-medium">標準</label><input class="hae-segment-input" id="hae-preset-large" data-hae-loudness-preset type="radio" name="hae-loudness-preset" value="large" aria-label="大きめ"><label for="hae-preset-large">大</label></fieldset>
+                <div class="hae-manual-gain"><input data-hae-manual-gain type="range" min="-6" max="6" step="0.5" value="0" aria-label="音量の微調整"><output data-hae-manual-gain-value>0.0 dB</output><button class="hae-icon-button hae-manual-reset" type="button" data-hae-manual-reset aria-label="微調整を戻す"><svg aria-hidden="true"><use href="#hae-icon-adjust"></use></svg></button></div>
+              </section>
+              <p class="hae-encode-message" data-hae-encode-message hidden aria-live="polite"></p>
+              <section class="hae-result" data-hae-result hidden aria-label="生成したMP3"><span class="hae-result-name" data-hae-result-name></span><span class="hae-result-meta" data-hae-result-range></span><audio class="hae-result-audio" data-hae-result-audio controls preload="metadata" aria-label="生成したMP3を確認再生"></audio><div class="hae-operation-bar"><button id="hotspot-audio-attach-result" class="hae-icon-button hae-icon-button-primary hae-result-attach" type="button" data-hae-attach onclick="attachHotspotAudioEditorResult()" aria-label="生成したMP3をホットスポットへ添付" title="生成したMP3をホットスポットへ添付" disabled><svg aria-hidden="true"><use href="#hae-icon-attach"></use></svg><span>この音声を添付</span></button><button class="hae-icon-button" type="button" data-hae-adjust aria-label="範囲を調整し直す" title="範囲を調整し直す"><svg aria-hidden="true"><use href="#hae-icon-adjust"></use></svg></button></div></section>
+            </aside>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <dialog class="hae-help-dialog" data-hae-help-dialog aria-labelledby="hae-help-title">
+      <div class="hae-help-heading"><h2 id="hae-help-title">操作方法</h2><button class="hae-icon-button" type="button" data-hae-help-close aria-label="ヘルプを閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
+      <div class="hae-help-content">
+        <section class="hae-help-section" aria-labelledby="hae-help-icons-title">
+          <h3 id="hae-help-icons-title">アイコン</h3>
+          <div class="hae-help-icon-list" data-hae-help-icon-list>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-folder"></use></svg><p><strong>フォルダ</strong><span>別の音声を選ぶ</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-rewind"></use></svg><p><strong>先頭へ戻る</strong><span>再生位置を音声の先頭へ戻す</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg><p><strong>再生／停止</strong><span>音声全体または選択範囲を再生し、再生中は停止する</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-start"></use></svg><p><strong>開始位置</strong><span>切り出しの開始時刻</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-end"></use></svg><p><strong>終了位置</strong><span>切り出しの終了時刻</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-span"></use></svg><p><strong>両矢印</strong><span>切り出す長さ</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg><p><strong>チェック</strong><span>選択範囲をMP3にする</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg><p><strong>×</strong><span>音声を閉じる</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-attach"></use></svg><p><strong>添付</strong><span>生成したMP3をホットスポットへ添付する</span></p></div>
+            <div class="hae-help-icon-item" data-hae-help-icon-item><svg aria-hidden="true"><use href="#hae-icon-adjust"></use></svg><p><strong>調整</strong><span>範囲や設定を調整し直す</span></p></div>
+          </div>
+        </section>
+        <section class="hae-help-section" aria-labelledby="hae-help-waveform-title">
+          <h3 id="hae-help-waveform-title">波形の操作</h3>
+          <div class="hae-help-copy"><p>選択枠の中央をドラッグすると範囲を移動できます。</p><p>左右の端をドラッグすると開始・終了位置を変更できます。</p><p>時刻は直接入力または左右ドラッグでも調整できます。</p></div>
+        </section>
+        <section class="hae-help-section" aria-labelledby="hae-help-loudness-title">
+          <h3 id="hae-help-loudness-title">音量調整</h3>
+          <div class="hae-help-copy"><p>AUTOを有効にすると、音源ごとの音量差を自動で整えます。</p><p>「小・標準・大」で仕上がり音量を選び、スライダーで微調整できます。</p></div>
+        </section>
+        <section class="hae-help-section" aria-labelledby="hae-help-trim-title">
+          <h3 id="hae-help-trim-title">切り出し</h3>
+          <div class="hae-help-copy"><p>0.5秒から120秒まで切り出せます。</p><p>長い音声はMP3の生成に時間がかかる場合があります。</p><p>音声はブラウザ内だけで処理されます。</p></div>
+        </section>
+      </div>
+    </dialog>
+  </div>
+</dialog>
+  <!-- HEMISPHERE_AUDIO_EDITOR_UI_END -->
 
   <!-- トースト通知 -->
   <div id="toast">

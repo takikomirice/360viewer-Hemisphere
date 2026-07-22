@@ -13,10 +13,10 @@ const viewports = [
   { name: 'landscape-800x360', width: 800, height: 360 }
 ];
 const selectableMarkerIcons = [
-  'info', 'photo', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
+  'info', 'photo', 'audio', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
   'animal', 'leaf', 'flower', 'historic'
 ];
-const legacyMarkerIcons = ['video', 'audio'];
+const legacyMarkerIcons = ['video'];
 const supportedMarkerIcons = selectableMarkerIcons.concat(legacyMarkerIcons);
 const hotspotPhotoUploadOption = '__hotspot_photo_upload__';
 const tinyPngFile = {
@@ -250,8 +250,8 @@ async function collectLayout(page) {
       '#sidebar-collapse-btn',
       '#upload-btn',
       '#open-folder-btn',
-      '#open-hotspot-photo-folder-btn',
-      '#open-hotspot-photo-folder-topbar-btn',
+      '#open-hotspot-folder-btn',
+      '#open-hotspot-folder-topbar-btn',
       '#scene-list .scene-item',
       '#fullscreen-btn',
       '#btn-home',
@@ -421,7 +421,7 @@ for (const theme of ['light', 'dark']) {
         { selector: '#mode-toggle' },
         { selector: '#upload-btn' },
         { selector: '#open-folder-btn', inheritedBackground: sidebarBackground },
-        { selector: '#open-hotspot-photo-folder-btn', inheritedBackground: sidebarBackground }
+        { selector: '#open-hotspot-folder-btn', inheritedBackground: sidebarBackground }
       ].map((item) => {
         const style = getComputedStyle(document.querySelector(item.selector));
         return {
@@ -738,27 +738,27 @@ for (const mode of ['public', 'internal']) {
   test(`Drive folder controls stay hidden and inoperable in ${mode} mode`, async ({ page }) => {
     await openHarness(page, viewports[1], { mode, sceneType: '360' });
 
-    for (const selector of ['#open-folder-btn', '#open-hotspot-photo-folder-btn', '#open-hotspot-photo-folder-topbar-btn']) {
+    for (const selector of ['#open-folder-btn', '#open-hotspot-folder-btn', '#open-hotspot-folder-topbar-btn']) {
       await expect(page.locator(selector)).toBeHidden();
       await expect(page.locator(selector)).toBeDisabled();
     }
     const result = await page.evaluate(() => ({
-      opened: openHotspotPhotoFolderInDrive(),
-      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit').length
+      opened: openHotspotFolderInDrive(),
+      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit').length
     }));
     expect(result).toEqual({ opened: false, calls: 0 });
   });
 
-  test(`single-image ${mode} mode hides every Drive control and rejects direct photo-folder calls`, async ({ page }) => {
+  test(`single-image ${mode} mode hides every Drive control and rejects direct Hotspot-folder calls`, async ({ page }) => {
     await openHarness(page, viewports[1], { mode, sceneType: '360', storageMode: 'single' });
 
-    for (const selector of ['#open-folder-btn', '#open-hotspot-photo-folder-btn', '#open-hotspot-photo-folder-topbar-btn']) {
+    for (const selector of ['#open-folder-btn', '#open-hotspot-folder-btn', '#open-hotspot-folder-topbar-btn']) {
       await expect(page.locator(selector)).toBeHidden();
       await expect(page.locator(selector)).toBeDisabled();
     }
     const result = await page.evaluate(() => ({
-      opened: openHotspotPhotoFolderInDrive(),
-      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit').length
+      opened: openHotspotFolderInDrive(),
+      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit').length
     }));
     expect(result).toEqual({ opened: false, calls: 0 });
   });
@@ -767,13 +767,13 @@ for (const mode of ['public', 'internal']) {
 test('edit mode exposes both accessible Drive folder controls only after editing is activated', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await expect(page.locator('#open-folder-btn')).toBeHidden();
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeHidden();
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeHidden();
 
   await activateEditing(page);
 
   const sceneDrive = page.locator('#open-folder-btn');
-  const photoDrive = page.locator('#open-hotspot-photo-folder-btn');
-  const topbarPhotoDrive = page.locator('#open-hotspot-photo-folder-topbar-btn');
+  const photoDrive = page.locator('#open-hotspot-folder-btn');
+  const topbarPhotoDrive = page.locator('#open-hotspot-folder-topbar-btn');
   await expect(sceneDrive).toBeVisible();
   await expect(photoDrive).toBeVisible();
   await expect(topbarPhotoDrive).toBeHidden();
@@ -781,18 +781,18 @@ test('edit mode exposes both accessible Drive folder controls only after editing
   await expect(sceneDrive).toBeEnabled();
   await expect(photoDrive).toBeEnabled();
   await expect(sceneDrive.locator('.scene-action-label-full')).toHaveText('シーンDrive');
-  await expect(photoDrive.locator('.scene-action-label-full')).toHaveText('写真フォルダ');
+  await expect(photoDrive.locator('.scene-action-label-full')).toHaveText('Hotspotフォルダ');
   await expect(sceneDrive).toHaveAttribute('title', 'シーン画像フォルダをGoogle Driveで開く');
   await expect(sceneDrive).toHaveAttribute('aria-label', 'シーン画像フォルダをGoogle Driveで開く');
-  await expect(photoDrive).toHaveAttribute('title', 'ホットスポット写真フォルダをGoogle Driveで開く');
-  await expect(photoDrive).toHaveAttribute('aria-label', 'ホットスポット写真フォルダをGoogle Driveで開く');
+  await expect(photoDrive).toHaveAttribute('title', 'HotspotフォルダをGoogle Driveで開く');
+  await expect(photoDrive).toHaveAttribute('aria-label', 'HotspotフォルダをGoogle Driveで開く');
 });
 
-test('single-image edit mode exposes only the accessible topbar photo-folder control', async ({ page }) => {
+test('single-image edit mode exposes only the accessible topbar Hotspot-folder control', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   const sceneDrive = page.locator('#open-folder-btn');
-  const sidebarPhotoDrive = page.locator('#open-hotspot-photo-folder-btn');
-  const topbarPhotoDrive = page.locator('#open-hotspot-photo-folder-topbar-btn');
+  const sidebarPhotoDrive = page.locator('#open-hotspot-folder-btn');
+  const topbarPhotoDrive = page.locator('#open-hotspot-folder-topbar-btn');
 
   for (const control of [sceneDrive, sidebarPhotoDrive, topbarPhotoDrive]) {
     await expect(control).toBeHidden();
@@ -807,17 +807,17 @@ test('single-image edit mode exposes only the accessible topbar photo-folder con
   await expect(sidebarPhotoDrive).toBeDisabled();
   await expect(topbarPhotoDrive).toBeVisible();
   await expect(topbarPhotoDrive).toBeEnabled();
-  await expect(topbarPhotoDrive).toContainText('写真フォルダ');
-  await expect(topbarPhotoDrive).toHaveAttribute('title', 'ホットスポット写真フォルダをGoogle Driveで開く');
-  await expect(topbarPhotoDrive).toHaveAttribute('aria-label', 'ホットスポット写真フォルダをGoogle Driveで開く');
+  await expect(topbarPhotoDrive).toContainText('Hotspotフォルダ');
+  await expect(topbarPhotoDrive).toHaveAttribute('title', 'HotspotフォルダをGoogle Driveで開く');
+  await expect(topbarPhotoDrive).toHaveAttribute('aria-label', 'HotspotフォルダをGoogle Driveで開く');
 
   await page.locator('#mode-toggle').click();
   await expect(topbarPhotoDrive).toBeHidden();
   await expect(topbarPhotoDrive).toBeDisabled();
 });
 
-test('single-image photo-folder control shares busy state, opens one blank tab, and sends one tokenized API call', async ({ page }) => {
-  const driveUrl = 'https://drive.google.com/drive/folders/fixture-hotspot-photo-folder';
+test('single-image Hotspot-folder control shares busy state, opens one blank tab, and sends one tokenized API call', async ({ page }) => {
+  const driveUrl = 'https://drive.google.com/drive/folders/fixture-hotspot-root-folder';
   await page.context().route('https://drive.google.com/**', (route) => route.fulfill({
     status: 200,
     contentType: 'text/html',
@@ -826,24 +826,24 @@ test('single-image photo-folder control shares busy state, opens one blank tab, 
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   await activateEditing(page);
   await page.evaluate((url) => {
-    window.__PHOTO_FOLDER_OPEN_EVENTS__ = [];
+    window.__HOTSPOT_FOLDER_OPEN_EVENTS__ = [];
     var originalOpen = window.open;
     window.open = function () {
-      window.__PHOTO_FOLDER_OPEN_EVENTS__.push({
+      window.__HOTSPOT_FOLDER_OPEN_EVENTS__.push({
         apiCallsAtOpen: window.__HARNESS_CALLS__.filter(function (call) {
-          return call.method === 'getHotspotPhotoFolderUrlForEdit';
+          return call.method === 'getHotspotFolderUrlForEdit';
         }).length
       });
       return originalOpen.apply(window, arguments);
     };
-    window.__HARNESS_BEHAVIOR__.getHotspotPhotoFolderUrlForEdit = {
+    window.__HARNESS_BEHAVIOR__.getHotspotFolderUrlForEdit = {
       delay: 120,
       response: { success: true, url: url }
     };
   }, driveUrl);
 
-  const topbarPhotoDrive = page.locator('#open-hotspot-photo-folder-topbar-btn');
-  const sidebarPhotoDrive = page.locator('#open-hotspot-photo-folder-btn');
+  const topbarPhotoDrive = page.locator('#open-hotspot-folder-topbar-btn');
+  const sidebarPhotoDrive = page.locator('#open-hotspot-folder-btn');
   const popupPromise = page.waitForEvent('popup');
   await topbarPhotoDrive.click();
   const popup = await popupPromise;
@@ -852,11 +852,11 @@ test('single-image photo-folder control shares busy state, opens one blank tab, 
   await expect(topbarPhotoDrive).toHaveAttribute('aria-busy', 'true');
   await expect(sidebarPhotoDrive).toBeDisabled();
   await expect(sidebarPhotoDrive).toHaveAttribute('aria-busy', 'true');
-  await page.evaluate(() => openHotspotPhotoFolderInDrive());
+  await page.evaluate(() => openHotspotFolderInDrive());
 
   const requestState = await page.evaluate(() => ({
-    calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'),
-    openEvents: window.__PHOTO_FOLDER_OPEN_EVENTS__.slice()
+    calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'),
+    openEvents: window.__HOTSPOT_FOLDER_OPEN_EVENTS__.slice()
   }));
   expect(requestState.calls).toHaveLength(1);
   expect(requestState.calls[0].args).toEqual([{ __editToken: 'playwright-edit-token' }]);
@@ -868,50 +868,50 @@ test('single-image photo-folder control shares busy state, opens one blank tab, 
   await expect(sidebarPhotoDrive).toHaveAttribute('aria-busy', 'false');
 });
 
-test('single-image photo-folder API failure closes the blank tab and restores the shared control state', async ({ page }) => {
+test('single-image Hotspot-folder API failure closes the blank tab and restores the shared control state', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   await activateEditing(page);
   await page.evaluate(() => {
-    window.__HARNESS_BEHAVIOR__.getHotspotPhotoFolderUrlForEdit = {
+    window.__HARNESS_BEHAVIOR__.getHotspotFolderUrlForEdit = {
       delay: 80,
-      response: { success: false, error: '写真フォルダを開けませんでした。' }
+      response: { success: false, error: 'Hotspotフォルダを開けませんでした。' }
     };
   });
 
   const popupPromise = page.waitForEvent('popup');
-  await page.locator('#open-hotspot-photo-folder-topbar-btn').click();
+  await page.locator('#open-hotspot-folder-topbar-btn').click();
   const popup = await popupPromise;
 
   await expect.poll(() => popup.isClosed()).toBe(true);
-  await expect(page.locator('#open-hotspot-photo-folder-topbar-btn')).toBeEnabled();
-  await expect(page.locator('#open-hotspot-photo-folder-topbar-btn')).toHaveAttribute('aria-busy', 'false');
-  await expect(page.locator('#toast-msg')).toContainText('写真フォルダを開けませんでした');
-  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'))).toHaveLength(1);
+  await expect(page.locator('#open-hotspot-folder-topbar-btn')).toBeEnabled();
+  await expect(page.locator('#open-hotspot-folder-topbar-btn')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#toast-msg')).toContainText('Hotspotフォルダを開けませんでした');
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'))).toHaveLength(1);
 });
 
-test('single-image popup blocker skips the photo-folder API', async ({ page }) => {
+test('single-image popup blocker skips the Hotspot-folder API', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   await activateEditing(page);
   await page.evaluate(() => { window.open = function () { return null; }; });
 
-  await page.locator('#open-hotspot-photo-folder-topbar-btn').click();
+  await page.locator('#open-hotspot-folder-topbar-btn').click();
 
   await expect(page.locator('#toast-msg')).toContainText('ポップアップ');
-  await expect(page.locator('#open-hotspot-photo-folder-topbar-btn')).toBeEnabled();
-  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'))).toHaveLength(0);
+  await expect(page.locator('#open-hotspot-folder-topbar-btn')).toBeEnabled();
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'))).toHaveLength(0);
 });
 
-test('single-image hotspot form disables the topbar photo-folder control before tab or API work', async ({ page }) => {
+test('single-image hotspot form disables the topbar Hotspot-folder control before tab or API work', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   await openNewHotspotForm(page, '360');
-  await expect(page.locator('#open-hotspot-photo-folder-topbar-btn')).toBeDisabled();
+  await expect(page.locator('#open-hotspot-folder-topbar-btn')).toBeDisabled();
   const result = await page.evaluate(() => {
     var opens = 0;
     window.open = function () { opens += 1; return null; };
     return {
-      returnValue: openHotspotPhotoFolderInDrive(),
+      returnValue: openHotspotFolderInDrive(),
       opens: opens,
-      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit').length
+      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit').length
     };
   });
 
@@ -919,7 +919,7 @@ test('single-image hotspot form disables the topbar photo-folder control before 
   await expect(page.locator('#toast-msg')).toHaveText('ホットスポットの保存またはキャンセル後に操作してください。');
 });
 
-test('folder navigation keeps scene Drive on the current folder and photo Drive on the official API', async ({ page }) => {
+test('folder navigation keeps scene Drive on the current folder and Hotspot Drive on the official root API', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await activateEditing(page);
   await page.locator('#scene-list .scene-folder-item').click();
@@ -938,12 +938,12 @@ test('folder navigation keeps scene Drive on the current folder and photo Drive 
     urls: ['https://drive.google.com/drive/folders/fixture-subfolder'],
     currentFolderId: 'fixture-subfolder'
   });
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeVisible();
-  await expect(page.locator('#open-hotspot-photo-folder-topbar-btn')).toBeHidden();
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeVisible();
+  await expect(page.locator('#open-hotspot-folder-topbar-btn')).toBeHidden();
 });
 
-test('photo folder control opens a blank tab synchronously, calls the token API once, and navigates the tab', async ({ page }) => {
-  const driveUrl = 'https://drive.google.com/drive/folders/fixture-hotspot-photo-folder';
+test('Hotspot folder control opens a blank tab synchronously, calls the token API once, and navigates the tab', async ({ page }) => {
+  const driveUrl = 'https://drive.google.com/drive/folders/fixture-hotspot-root-folder';
   await page.context().route('https://drive.google.com/**', (route) => route.fulfill({
     status: 200,
     contentType: 'text/html',
@@ -952,86 +952,86 @@ test('photo folder control opens a blank tab synchronously, calls the token API 
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await activateEditing(page);
   await page.evaluate((url) => {
-    window.__PHOTO_FOLDER_OPEN_EVENTS__ = [];
+    window.__HOTSPOT_FOLDER_OPEN_EVENTS__ = [];
     var originalOpen = window.open;
     window.open = function () {
-      window.__PHOTO_FOLDER_OPEN_EVENTS__.push({
+      window.__HOTSPOT_FOLDER_OPEN_EVENTS__.push({
         apiCallsAtOpen: window.__HARNESS_CALLS__.filter(function (call) {
-          return call.method === 'getHotspotPhotoFolderUrlForEdit';
+          return call.method === 'getHotspotFolderUrlForEdit';
         }).length
       });
       return originalOpen.apply(window, arguments);
     };
-    window.__HARNESS_BEHAVIOR__.getHotspotPhotoFolderUrlForEdit = {
+    window.__HARNESS_BEHAVIOR__.getHotspotFolderUrlForEdit = {
       delay: 120,
       response: { success: true, url: url }
     };
   }, driveUrl);
 
   const popupPromise = page.waitForEvent('popup');
-  await page.locator('#open-hotspot-photo-folder-btn').click();
+  await page.locator('#open-hotspot-folder-btn').click();
   const popup = await popupPromise;
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeDisabled();
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toHaveAttribute('aria-busy', 'true');
-  await page.evaluate(() => openHotspotPhotoFolderInDrive());
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeDisabled();
+  await expect(page.locator('#open-hotspot-folder-btn')).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => openHotspotFolderInDrive());
 
   const requestState = await page.evaluate(() => ({
-    calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'),
-    openEvents: window.__PHOTO_FOLDER_OPEN_EVENTS__.slice()
+    calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'),
+    openEvents: window.__HOTSPOT_FOLDER_OPEN_EVENTS__.slice()
   }));
   expect(requestState.calls).toHaveLength(1);
   expect(requestState.calls[0].args).toEqual([{ __editToken: 'playwright-edit-token' }]);
   expect(requestState.openEvents).toEqual([{ apiCallsAtOpen: 0 }]);
 
   await popup.waitForURL(driveUrl);
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeEnabled();
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeEnabled();
+  await expect(page.locator('#open-hotspot-folder-btn')).toHaveAttribute('aria-busy', 'false');
 });
 
-test('photo folder API failure closes its blank tab, restores the control, and shows an error toast', async ({ page }) => {
+test('Hotspot folder API failure closes its blank tab, restores the control, and shows an error toast', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await activateEditing(page);
   await page.evaluate(() => {
-    window.__HARNESS_BEHAVIOR__.getHotspotPhotoFolderUrlForEdit = {
+    window.__HARNESS_BEHAVIOR__.getHotspotFolderUrlForEdit = {
       delay: 80,
-      response: { success: false, error: '写真フォルダを開けませんでした。' }
+      response: { success: false, error: 'Hotspotフォルダを開けませんでした。' }
     };
   });
 
   const popupPromise = page.waitForEvent('popup');
-  await page.locator('#open-hotspot-photo-folder-btn').click();
+  await page.locator('#open-hotspot-folder-btn').click();
   const popup = await popupPromise;
 
   await expect.poll(() => popup.isClosed()).toBe(true);
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeEnabled();
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toHaveAttribute('aria-busy', 'false');
-  await expect(page.locator('#toast-msg')).toContainText('写真フォルダを開けませんでした');
-  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'))).toHaveLength(1);
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeEnabled();
+  await expect(page.locator('#open-hotspot-folder-btn')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#toast-msg')).toContainText('Hotspotフォルダを開けませんでした');
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'))).toHaveLength(1);
 });
 
-test('popup blocker guidance skips the photo folder API entirely', async ({ page }) => {
+test('popup blocker guidance skips the Hotspot folder API entirely', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await activateEditing(page);
   await page.evaluate(() => { window.open = function () { return null; }; });
 
-  await page.locator('#open-hotspot-photo-folder-btn').click();
+  await page.locator('#open-hotspot-folder-btn').click();
 
   await expect(page.locator('#toast-msg')).toContainText('ポップアップ');
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeEnabled();
-  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit'))).toHaveLength(0);
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeEnabled();
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit'))).toHaveLength(0);
 });
 
-test('active hotspot form guards the photo folder control before opening a tab or calling GAS', async ({ page }) => {
+test('active hotspot form guards the Hotspot folder control before opening a tab or calling GAS', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360' });
   await openNewHotspotForm(page, '360');
-  await expect(page.locator('#open-hotspot-photo-folder-btn')).toBeDisabled();
+  await expect(page.locator('#open-hotspot-folder-btn')).toBeDisabled();
   const result = await page.evaluate(() => {
     var opens = 0;
     window.open = function () { opens += 1; return null; };
     return {
-      returnValue: openHotspotPhotoFolderInDrive(),
+      returnValue: openHotspotFolderInDrive(),
       opens: opens,
-      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotPhotoFolderUrlForEdit').length
+      calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getHotspotFolderUrlForEdit').length
     };
   });
 
@@ -1047,7 +1047,7 @@ for (const viewport of viewports) {
       await activateEditing(page);
 
       const layout = await collectLayout(page);
-      const selectors = ['#upload-btn', '#open-folder-btn', '#open-hotspot-photo-folder-btn', '#scene-list .scene-item'];
+      const selectors = ['#upload-btn', '#open-folder-btn', '#open-hotspot-folder-btn', '#scene-list .scene-item'];
       const controls = selectors.map((selector) => ({ selector, rect: layout.elements[selector] }));
       for (const control of controls) {
         assertInsideViewport(control.rect, layout.viewport, control.selector);
@@ -1068,18 +1068,18 @@ for (const viewport of viewports) {
 
 for (const viewport of viewports) {
   for (const theme of ['light', 'dark']) {
-    test(`single-image photo-folder topbar control is touch-sized and non-overlapping ${theme} ${viewport.name}`, async ({ page }) => {
+    test(`single-image attachment-folder topbar controls are touch-sized and non-overlapping ${theme} ${viewport.name}`, async ({ page }) => {
       await seedStoredTheme(page, theme);
       await openHarness(page, viewport, { mode: 'edit', sceneType: '360', storageMode: 'single' });
       await activateEditing(page);
 
       const layout = await collectLayout(page);
-      const topbarPhotoDrive = layout.elements['#open-hotspot-photo-folder-topbar-btn'];
-      assertInsideViewport(topbarPhotoDrive, layout.viewport, '#open-hotspot-photo-folder-topbar-btn');
+      const topbarPhotoDrive = layout.elements['#open-hotspot-folder-topbar-btn'];
+      assertInsideViewport(topbarPhotoDrive, layout.viewport, '#open-hotspot-folder-topbar-btn');
       expect(topbarPhotoDrive.width).toBeGreaterThanOrEqual(44);
       expect(topbarPhotoDrive.height).toBeGreaterThanOrEqual(44);
       expect(layout.elements['#open-folder-btn'].visible).toBe(false);
-      expect(layout.elements['#open-hotspot-photo-folder-btn'].visible).toBe(false);
+      expect(layout.elements['#open-hotspot-folder-btn'].visible).toBe(false);
 
       const topbarControls = await page.locator('#topbar .topbar-right > button:visible, #topbar .topbar-right > #mode-badge:visible, #bulk-input-trigger:visible').evaluateAll((elements) => elements.map((element) => {
         const rect = element.getBoundingClientRect();
@@ -1101,11 +1101,11 @@ for (const viewport of viewports) {
           expect(overlapArea(topbarControls[index], topbarControls[other]), `#${topbarControls[index].id} overlaps #${topbarControls[other].id}`).toBe(0);
         }
       }
-      const contrast = await page.locator('#open-hotspot-photo-folder-topbar-btn').evaluate((element) => {
+      const contrast = await page.locator('#open-hotspot-folder-topbar-btn').evaluate((element) => {
         const style = getComputedStyle(element);
         return { foreground: style.color, background: style.backgroundColor };
       });
-      expect(contrastRatio(contrast.foreground, contrast.background), 'topbar photo-folder text contrast').toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(contrast.foreground, contrast.background), 'topbar Hotspot-folder text contrast').toBeGreaterThanOrEqual(4.5);
       expect(layout.scroll.documentScrollWidth).toBeLessThanOrEqual(layout.scroll.documentClientWidth + 1);
       expect(layout.scroll.bodyScrollWidth).toBeLessThanOrEqual(layout.scroll.bodyClientWidth + 1);
       expect(layout.harnessErrors).toEqual([]);
@@ -1232,7 +1232,7 @@ for (const viewport of viewports) {
           '#sidebar-collapse-btn',
           '#upload-btn',
           '#open-folder-btn',
-          '#open-hotspot-photo-folder-btn',
+          '#open-hotspot-folder-btn',
           '#scene-list .scene-item',
           '#btn-home',
           '#quality-toggle-btn',
@@ -1550,7 +1550,7 @@ for (const viewport of viewports) {
   }
 }
 
-test('new marker selector exposes twelve grouped choices and saves every new nature icon', async ({ page }) => {
+test('new marker selector exposes thirteen grouped choices and saves every new nature icon', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
   await openNewHotspotFormDirect(page);
@@ -1569,6 +1569,7 @@ test('new marker selector exposes twelve grouped choices and saves every new nat
   expect(catalog.options).toEqual([
     { value: 'info', label: '情報' },
     { value: 'photo', label: '写真' },
+    { value: 'audio', label: '音声' },
     { value: 'link', label: 'リンク' },
     { value: 'wifi', label: 'Wi-Fi' },
     { value: 'quiz', label: 'クイズ' },
@@ -1581,8 +1582,8 @@ test('new marker selector exposes twelve grouped choices and saves every new nat
     { value: 'historic', label: '史跡' }
   ]);
   expect(catalog.groups).toEqual([
-    { label: '基本', hidden: false, options: selectableMarkerIcons.slice(0, 8) },
-    { label: '自然・地域学習', hidden: false, options: selectableMarkerIcons.slice(8) },
+    { label: '基本', hidden: false, options: selectableMarkerIcons.slice(0, 9) },
+    { label: '自然・地域学習', hidden: false, options: selectableMarkerIcons.slice(9) },
     { label: '旧アイコン', hidden: true, options: [] }
   ]);
 
@@ -1618,7 +1619,30 @@ test('new marker selector exposes twelve grouped choices and saves every new nat
   expect(await page.evaluate(() => window.__HARNESS_ERRORS__)).toEqual([]);
 });
 
-test('legacy video and audio edits preserve the old value until a current icon is selected', async ({ page }) => {
+test('audio marker can be selected, saved, and restored from localStorage', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await openHarness(page, viewports[1], { mode: 'edit', sceneType: '360', storageMode: 'single' });
+  await openNewHotspotFormDirect(page);
+  await page.locator('#marker-style-toggle').click();
+  await page.locator('#marker-icon').selectOption('audio');
+  await expect(page.locator('#marker-style-preview .hs-marker-core')).toHaveClass(/marker-icon-audio/);
+  await page.locator('#input-label').fill('音声アイコン');
+  await page.locator('#btn-save').click();
+
+  const saveCall = await page.evaluate(() => window.__HARNESS_CALLS__.find((call) => call.method === 'saveHotspot'));
+  expect(saveCall.args[0].markerIcon).toBe('audio');
+  expect(await page.evaluate(() => window.localStorage.getItem('hsMarkerIcon'))).toBe('audio');
+  await expect(page.locator('[data-pannellum-hotspot-id] .marker-icon-audio')).toHaveCount(1);
+
+  await openNewHotspotFormDirect(page, 1);
+  if (!(await page.locator('#marker-icon').isVisible())) await page.locator('#marker-style-toggle').click();
+  await expect(page.locator('#marker-icon')).toHaveValue('audio');
+  await page.keyboard.press('Escape');
+  expect(runtimeErrors).toEqual([]);
+  expect(await page.evaluate(() => window.__HARNESS_ERRORS__)).toEqual([]);
+});
+
+test('legacy video edits preserve the old value until a current icon is selected', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
 
   for (const legacyIcon of legacyMarkerIcons) {
@@ -1653,7 +1677,7 @@ test('legacy video and audio edits preserve the old value until a current icon i
     }));
     expect(legacySelection.value).toBe(legacyIcon);
     expect(legacySelection.values).toEqual(selectableMarkerIcons.concat(legacyIcon));
-    expect(legacySelection.selectedLabel).toBe(legacyIcon === 'video' ? '動画（旧アイコン）' : '音声（旧アイコン）');
+    expect(legacySelection.selectedLabel).toBe('動画（旧アイコン）');
     expect(legacySelection.legacyGroupHidden).toBe(false);
 
     await page.locator('#input-label').fill(`${legacyIcon} renamed`);
@@ -1759,7 +1783,7 @@ test('all current and legacy icons render in public, internal, and edit views fo
   expect(runtimeErrors).toEqual([]);
 });
 
-test('all twelve selectable icons render across three shapes, key colors, and both themes', async ({ page }) => {
+test('all thirteen selectable icons render across three shapes, key colors, and both themes', async ({ page }) => {
   await openHarness(page, viewports[1], { mode: 'public', sceneType: '2D' });
 
   for (const theme of ['light', 'dark']) {

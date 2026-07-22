@@ -7,10 +7,10 @@ const vm = require('node:vm');
 const code = fs.readFileSync(path.resolve(__dirname, '..', 'Code.js'), 'utf8');
 
 const SELECTABLE_MARKER_ICONS = [
-  'info', 'photo', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
+  'info', 'photo', 'audio', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
   'animal', 'leaf', 'flower', 'historic'
 ];
-const LEGACY_MARKER_ICONS = ['video', 'audio'];
+const LEGACY_MARKER_ICONS = ['video'];
 const SUPPORTED_MARKER_ICONS = SELECTABLE_MARKER_ICONS.concat(LEGACY_MARKER_ICONS);
 
 function getFunctionSource(functionName) {
@@ -42,8 +42,9 @@ function baseContext(overrides = {}) {
   return Object.assign({
     console: { error() {}, warn() {} },
     INFO_SHEET_NAME: 'info',
-    INFO_HEADERS: Array.from({ length: 13 }, (_, index) => `h${index}`),
+    INFO_HEADERS: Array.from({ length: 14 }, (_, index) => `h${index}`),
     ID_COL_INDEX: 12,
+    AUDIO_ID_COL_INDEX: 13,
     DEFAULT_MARKER_SHAPE: 'circle',
     DEFAULT_MARKER_COLOR: 'blue',
     DEFAULT_MARKER_ICON: 'info',
@@ -71,12 +72,15 @@ function baseContext(overrides = {}) {
     validateHotspotRelatedIds_(data) {
       return {
         photoId: String(data && data.photoId || '').trim(),
+        audioId: String(data && data.audioId || '').trim(),
         jumpSceneId: String(data && data.jumpSceneId || '').trim()
       };
     },
+    hasReadableInfoSheetSchema_() { return true; },
     buildNormalizedHotspot_(fileId, id, fields) {
       return Object.assign({ id: String(id || ''), fileId: String(fileId || '') }, fields || {});
     },
+    addHotspotFolderConfigWarnings_(result) { return result; },
     assertHotspotSceneTypeUnchanged_() {},
     assertEditToken_() {},
     acquireLock_() { return { releaseLock() {} }; },
@@ -145,7 +149,7 @@ test('saveHotspot and updateHotspot preserve the four new marker icon values', (
 
     const stored = [
       'date', 'scene-a', `old ${icon}`, '', '', 1, 2,
-      'circle', 'blue', 'info', '', '', `${icon}-id`
+      'circle', 'blue', 'info', '', '', `${icon}-id`, ''
     ];
     let written = null;
     const updateSheet = {
@@ -183,7 +187,7 @@ test('loadHotspots and updateHotspot preserve existing video and audio icon valu
   LEGACY_MARKER_ICONS.forEach((icon) => {
     const stored = [
       'date', 'scene-a', `${icon} marker`, 'old description', '', 1, 2,
-      'circle', 'blue', icon, '', '', `${icon}-id`
+      'circle', 'blue', icon, '', '', `${icon}-id`, ''
     ];
     let written = null;
     const sheet = {
@@ -223,9 +227,9 @@ test('loadHotspots and updateHotspot preserve existing video and audio icon valu
 test('loading legacy star data returns circle, keeps blank-label jumps, and never writes the info sheet', () => {
   const writes = [];
   const rows = [
-    ['date', 'scene-a', 'legacy marker', 'desc', '', 1, 2, 'star', 'blue', 'info', '', '', 'legacy-id'],
-    ['date', 'scene-a', '', '', '', 3, 4, 'circle', 'cyan', 'flag', '', 'scene-b', 'jump-id'],
-    ['date', 'scene-a', '', '', '', 5, 6, 'circle', 'blue', 'info', '', '', 'empty-id']
+    ['date', 'scene-a', 'legacy marker', 'desc', '', 1, 2, 'star', 'blue', 'info', '', '', 'legacy-id', ''],
+    ['date', 'scene-a', '', '', '', 3, 4, 'circle', 'cyan', 'flag', '', 'scene-b', 'jump-id', ''],
+    ['date', 'scene-a', '', '', '', 5, 6, 'circle', 'blue', 'info', '', '', 'empty-id', '']
   ];
   const sheet = {
     getLastRow() { return rows.length + 1; },
@@ -286,7 +290,7 @@ test('saveHotspot accepts a blank label only when a jump destination is preserve
 });
 
 test('updateHotspot moves a blank-label jump without discarding marker metadata', () => {
-  const stored = ['date', 'scene-a', '', '', '', 1, 2, 'diamond', 'pink', 'flag', 'photo-a', 'scene-b', 'jump-id'];
+  const stored = ['date', 'scene-a', '', '', '', 1, 2, 'diamond', 'pink', 'flag', 'photo-a', 'scene-b', 'jump-id', ''];
   let written = null;
   const range = {
     getValues() { return [stored.slice()]; },

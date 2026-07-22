@@ -1,1 +1,4 @@
 * text=auto
+app.html text eol=lf
+vendor/mediabunny-LICENSE.txt text eol=lf
+vendor/mediabunny-mp3-encoder-LICENSE.txt text eol=lf

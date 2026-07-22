@@ -7,10 +7,10 @@ const vm = require('node:vm');
 const rootDir = path.resolve(__dirname, '..');
 const codePath = path.join(rootDir, 'Code.js');
 
-const INFO_HEADERS = ['保存日時', '画像ID', 'ラベル', '説明', 'リンクURL', 'Pitch', 'Yaw', '形状', '色', 'アイコン', '写真ID', 'ジャンプ先ID', 'ID'];
+const INFO_HEADERS = ['保存日時', '画像ID', 'ラベル', '説明', 'リンクURL', 'Pitch', 'Yaw', '形状', '色', 'アイコン', '写真ID', 'ジャンプ先ID', 'ID', '音声ID'];
 const EXPECTED_CONFIG_KEYS = [
   'IMAGE_DRIVE_URL',
-  'HOTSPOT_PHOTO_FOLDER_URL',
+  'HOTSPOT_FOLDER_URL',
   'STUDENT_SHEET_URL',
   'EDIT_KEY',
   'WEB_APP_URL',
@@ -223,6 +223,7 @@ function createDriveFile({
     __setFailTrash(value) { failTrash = value; },
     get __blobReads() { return blobReads; },
     get __trashed() { return trashed; },
+    isTrashed() { return trashed; },
     getId() { return id; },
     getName() { return currentName; },
     getMimeType() { return mimeType; },
@@ -261,11 +262,17 @@ function createDriveFolder({
   files = [],
   folders = [],
   parentIds = [],
+  parentFolders = [],
   operations = [],
   listError = null,
   createError = null,
-  createdFileFailTrash = false
+  createdFileFailTrash = false,
+  failRename = false,
+  failMove = false,
+  failTrash = false
 }) {
+  let currentName = name;
+  let parents = parentFolders.length > 0 ? parentFolders.slice() : parentIds.slice();
   let uploadCounter = 0;
   let folderCounter = 0;
   let trashed = false;
@@ -273,15 +280,41 @@ function createDriveFolder({
     __files: files,
     __folders: folders,
     __setListError(value) { listError = value; },
+    __setFailRename(value) { failRename = value; },
+    __setFailMove(value) { failMove = value; },
+    __setFailTrash(value) { failTrash = value; },
+    __linkParents(folderMap) {
+      parents = parents.map((parent) => {
+        if (parent && typeof parent.getId === 'function') return parent;
+        return folderMap.get(String(parent)) || { getId() { return String(parent); } };
+      });
+      parents.forEach((parent) => {
+        if (parent.__folders && !parent.__folders.includes(folder)) parent.__folders.push(folder);
+      });
+    },
+    __setParents(nextParents) {
+      parents.forEach((parent) => {
+        if (!parent || !parent.__folders) return;
+        const index = parent.__folders.indexOf(folder);
+        if (index !== -1) parent.__folders.splice(index, 1);
+      });
+      parents = nextParents.slice();
+      parents.forEach((parent) => {
+        if (parent && parent.__folders && !parent.__folders.includes(folder)) parent.__folders.push(folder);
+      });
+    },
     get __trashed() { return trashed; },
     getId() { return id; },
-    getName() { return name; },
+    getName() { return currentName; },
     getParents() {
-      return createIterator(parentIds.map((parentId) => ({ getId() { return parentId; } })));
+      return createIterator(parents.map((parent) => {
+        if (parent && typeof parent.getId === 'function') return parent;
+        return { getId() { return String(parent); } };
+      }));
     },
     getFolders() {
       if (listError) throw new Error(String(listError));
-      return createIterator(folders);
+      return createIterator(folders.filter((child) => !child.__trashed));
     },
     getFiles() {
       if (listError) throw new Error(String(listError));
@@ -295,6 +328,7 @@ function createDriveFolder({
         id: `uploaded-file-${uploadCounter}`,
         name: blob.getName(),
         mimeType: blob.getContentType(),
+        bytes: blob.getBytes(),
         operations,
         failTrash: createdFileFailTrash
       });
@@ -309,14 +343,27 @@ function createDriveFolder({
       const child = createDriveFolder({
         id: `${id}-folder-${folderCounter}`,
         name: String(folderName || ''),
-        parentIds: [id],
+        parentFolders: [folder],
         operations
       });
       folders.push(child);
       return child;
     },
+    setName(nextName) {
+      operations.push(`rename-folder:${id}:${String(nextName || '')}`);
+      if (failRename) throw new Error('Drive folder rename failed');
+      currentName = String(nextName || '');
+      return this;
+    },
+    moveTo(destination) {
+      operations.push(`move-folder:${id}:${destination.getId()}`);
+      if (failMove) throw new Error('Drive folder move failed');
+      folder.__setParents([destination]);
+      return this;
+    },
     setTrashed(value) {
       operations.push(`trash-folder:${id}`);
+      if (failTrash) throw new Error('Drive folder trash failed');
       trashed = !!value;
       return this;
     }
@@ -377,6 +424,9 @@ function loadCode({
   const externalById = new Map(Object.entries(externalSpreadsheets));
   const driveFoldersById = new Map(Object.entries(driveFolders));
   const driveFilesById = new Map(Object.entries(driveFiles));
+  driveFoldersById.forEach((folder) => {
+    if (folder && typeof folder.__linkParents === 'function') folder.__linkParents(driveFoldersById);
+  });
   const containerDriveFile = createDriveFile({
     id: 'container-spreadsheet-id',
     name: 'Hemisphere spreadsheet',
@@ -452,8 +502,20 @@ function loadCode({
             return Object.prototype.hasOwnProperty.call(scriptProperties, key) ? scriptProperties[key] : null;
           },
           setProperty(key, value) {
-            if (scriptPropertyWriteError) throw new Error(String(scriptPropertyWriteError));
+            if (typeof scriptPropertyWriteError === 'function') {
+              scriptPropertyWriteError({ operation: 'set', key, value, scriptProperties });
+            } else if (scriptPropertyWriteError) {
+              throw new Error(String(scriptPropertyWriteError));
+            }
             scriptProperties[key] = value;
+          },
+          deleteProperty(key) {
+            if (typeof scriptPropertyWriteError === 'function') {
+              scriptPropertyWriteError({ operation: 'delete', key, scriptProperties });
+            } else if (scriptPropertyWriteError) {
+              throw new Error(String(scriptPropertyWriteError));
+            }
+            delete scriptProperties[key];
           }
         };
       }
@@ -627,6 +689,13 @@ function configObject(context) {
   return Object.fromEntries(configRows(context).filter((row) => row[0]).map((row) => [row[0], row[1]]));
 }
 
+function driveParentIds(item) {
+  const ids = [];
+  const parents = item.getParents();
+  while (parents.hasNext()) ids.push(parents.next().getId());
+  return ids;
+}
+
 function getFunctionBody(source, functionName) {
   const start = source.indexOf(`function ${functionName}(`);
   assert.notEqual(start, -1, `${functionName} should exist`);
@@ -652,7 +721,7 @@ test('extractSpreadsheetId_ accepts Google Sheets URLs and raw IDs only', () => 
 });
 
 test('setupSheets is idempotent and preserves config formulas and existing info data', () => {
-  const infoData = ['2026-01-01', 'image-1', 'label', 'description', 'https://example.test', 1, 2, 'circle', 'blue', 'info', '', '', 'hotspot-1'];
+  const infoData = ['2026-01-01', 'image-1', 'label', 'description', 'https://example.test', 1, 2, 'circle', 'blue', 'info', '', '', 'hotspot-1', ''];
   const context = loadCode({
     sheets: {
       config: createSheet('config', [
@@ -673,7 +742,7 @@ test('setupSheets is idempotent and preserves config formulas and existing info 
   const twice = JSON.stringify(Array.from(context.__spreadsheet.__sheets.entries()).map(([name, sheet]) => [name, sheet.__rows]));
 
   assert.equal(twice, once);
-  assert.deepEqual(configRows(context).slice(0, 6).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
+  assert.deepEqual(configRows(context).slice(0, EXPECTED_CONFIG_KEYS.length).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
   assert.equal(configRows(context).filter((row) => row[0] === 'EDIT_KEY').length, 1);
   assert.equal(configObject(context).EDIT_KEY, 'existing-key');
   assert.equal(configObject(context).EDIT_URL, 'https://keep.example/exec?mode=edit&editKey=old');
@@ -683,16 +752,18 @@ test('setupSheets is idempotent and preserves config formulas and existing info 
   assert.deepEqual(context.__spreadsheet.getSheetByName('scenes').__rows[0].slice(0, 10), EXPECTED_SCENE_HEADERS);
 });
 
-test('a new environment creates the exact primary config order with an empty managed photo folder URL', () => {
+test('a new environment creates the exact primary config order with one empty managed attachment root URL', () => {
   const context = loadCode();
 
   context.setupSheets();
 
-  assert.deepEqual(configRows(context).slice(0, 6).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
-  assert.equal(configObject(context).HOTSPOT_PHOTO_FOLDER_URL, '');
+  assert.deepEqual(configRows(context).slice(0, EXPECTED_CONFIG_KEYS.length).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
+  assert.equal(configObject(context).HOTSPOT_FOLDER_URL, '');
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(context), 'HOTSPOT_PHOTO_FOLDER_URL'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(context), 'HOTSPOT_AUDIO_FOLDER_URL'), false);
 });
 
-test('config repair inserts the managed hotspot photo URL below IMAGE_DRIVE_URL and safely reorders legacy primary rows', () => {
+test('config repair inserts the managed hotspot root URL below IMAGE_DRIVE_URL and keeps legacy URL rows until migration verifies them', () => {
   const config = createSheet('config', [
     ['設定項目', '値', '説明'],
     ['WEB_APP_URL', 'https://example.test/exec', 'web app'],
@@ -707,18 +778,18 @@ test('config repair inserts the managed hotspot photo URL below IMAGE_DRIVE_URL 
   const result = context.repairConfigSheet_(config);
   const rows = configRows(context);
 
-  assert.deepEqual(rows.slice(0, 6).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
-  assert.equal(rows[1][0], 'HOTSPOT_PHOTO_FOLDER_URL');
+  assert.deepEqual(rows.slice(0, EXPECTED_CONFIG_KEYS.length).map((row) => row[0]), EXPECTED_CONFIG_KEYS);
+  assert.equal(rows[1][0], 'HOTSPOT_FOLDER_URL');
   assert.equal(rows[1][1], '');
-  assert.equal(rows[1][2], 'ホットスポット添付写真の専用Google DriveフォルダURL。システムが自動設定します。');
+  assert.equal(rows[1][2], 'ホットスポット添付ファイルの共通Google DriveフォルダURL。システムが自動設定します。');
   assert.equal(rows.find((row) => row[0] === 'IMAGE_DRIVE_URL')[1], '=CONCAT("https://drive.google.com/drive/folders/","root-id")');
   assert.equal(rows.find((row) => row[0] === 'EDIT_URL')[1], '=A1');
   assert.equal(rows.find((row) => row[0] === 'CUSTOM_SETTING')[1], '=CONCAT("cus","tom")');
   assert.equal(rows.find((row) => row[0] === 'CUSTOM_SETTING')[2], '独自行');
-  assert.deepEqual(Array.from(result.addedKeys), ['HOTSPOT_PHOTO_FOLDER_URL']);
+  assert.deepEqual(Array.from(result.addedKeys), ['HOTSPOT_FOLDER_URL']);
 });
 
-test('setup synchronizes the managed hotspot photo URL from the validated official property and clears it when uncreated', () => {
+test('setup migrates an official legacy child, synchronizes the root URL, and preserves unexpected legacy URL values', () => {
   const rootId = 'config-photo-scene-root';
   const parentId = 'config-photo-container-parent';
   const photoFolderId = 'config-official-photo-folder';
@@ -740,10 +811,11 @@ test('setup synchronizes the managed hotspot photo URL from the validated offici
 
   restored.setupSheets();
 
-  assert.equal(
-    configObject(restored).HOTSPOT_PHOTO_FOLDER_URL,
-    `https://drive.google.com/drive/folders/${photoFolderId}`
-  );
+  const restoredConfig = configObject(restored);
+  assert.equal(photoFolder.getName(), 'photos');
+  assert.equal(driveParentIds(photoFolder)[0], restored.__scriptProperties.HOTSPOT_FOLDER_ID);
+  assert.equal(restoredConfig.HOTSPOT_FOLDER_URL, `https://drive.google.com/drive/folders/${restored.__scriptProperties.HOTSPOT_FOLDER_ID}`);
+  assert.equal(restoredConfig.HOTSPOT_PHOTO_FOLDER_URL, 'https://drive.google.com/drive/folders/tampered-folder');
 
   const uncreated = loadCode({
     sheets: {
@@ -757,7 +829,8 @@ test('setup synchronizes the managed hotspot photo URL from the validated offici
 
   uncreated.setupSheets();
 
-  assert.equal(configObject(uncreated).HOTSPOT_PHOTO_FOLDER_URL, '');
+  assert.equal(configObject(uncreated).HOTSPOT_FOLDER_URL, '');
+  assert.equal(configObject(uncreated).HOTSPOT_PHOTO_FOLDER_URL, 'https://drive.google.com/drive/folders/user-edited');
 });
 
 test('setup migrates a legacy edit key while preserving its existing EDIT_URL', () => {
@@ -862,13 +935,34 @@ test('info migration keeps unknown schemas untouched and aligns known five-colum
   });
   legacyContext.migrateSheetIfNeeded_(legacy);
 
-  assert.deepEqual(legacy.__rows[0].slice(0, 13), INFO_HEADERS);
+  assert.deepEqual(legacy.__rows[0].slice(0, 14), INFO_HEADERS);
   assert.equal(legacy.__rows[1][1], fileId);
   assert.equal(legacy.__rows[1][2], 'label');
   assert.equal(legacy.__rows[1][3], 'description');
   assert.equal(legacy.__rows[1][4], '');
   assert.equal(legacy.__rows[1][5], 12);
   assert.equal(legacy.__rows[1][6], 34);
+  assert.equal(legacy.__rows[1][12], 'uuid-1');
+  assert.equal(legacy.__rows[1][13], '');
+});
+
+test('info migration appends audio ID after the existing M-column hotspot ID without moving or replacing it', () => {
+  const previousHeaders = INFO_HEADERS.slice(0, 13);
+  const info = createSheet('info', [
+    previousHeaders,
+    ['2026-07-18', 'scene-a', 'Existing', '', '', 1, 2, 'circle', 'blue', 'info', '', '', 'keep-existing-id'],
+    ['2026-07-18', 'scene-a', 'Missing ID', '', '', 3, 4, 'circle', 'blue', 'info', '', '', '']
+  ]);
+  const context = loadCode({ sheets: { info } });
+
+  const result = context.migrateSheetIfNeeded_(info);
+
+  assert.equal(result.warning, undefined);
+  assert.deepEqual(info.__rows[0].slice(0, 14), INFO_HEADERS);
+  assert.equal(info.__rows[1][12], 'keep-existing-id');
+  assert.equal(info.__rows[1][13], '');
+  assert.equal(info.__rows[2][12], 'uuid-1');
+  assert.equal(info.__rows[2][13], '');
 });
 
 test('ScriptProperties student ID is authoritative and setup repairs a conflicting config display URL', () => {
@@ -3665,7 +3759,8 @@ function reviewInfoRow(fileId, label, id, options = {}) {
     options.markerIcon || 'info',
     options.photoId || '',
     options.jumpSceneId || '',
-    id
+    id,
+    options.audioId || ''
   ];
 }
 
@@ -4215,6 +4310,892 @@ function createHotspotPhotoServerFixture(options = {}) {
   return { context, rootId, root, containerParentId, containerParent, sceneId, sceneFile, scenes, info };
 }
 
+function createHotspotFolderStructureFixture(options = {}) {
+  const operations = options.driveOperations || [];
+  const imageRootId = 'unified-hotspot-scene-root';
+  const containerParentId = 'unified-hotspot-project-parent';
+  const containerParent = createDriveFolder({ id: containerParentId, name: 'Project', operations });
+  const imageRoot = createDriveFolder({ id: imageRootId, name: 'Scenes', operations });
+  const legacyPhoto = options.legacyPhoto === false ? null : createDriveFolder({
+    id: 'legacy-hotspot-photo-folder',
+    name: 'Hemisphere ホットスポット写真',
+    files: options.photoFiles || [],
+    parentFolders: [containerParent],
+    operations,
+    failMove: !!options.failPhotoMove,
+    failRename: !!options.failPhotoRename
+  });
+  const legacyAudio = options.legacyAudio === false ? null : createDriveFolder({
+    id: 'legacy-hotspot-audio-folder',
+    name: 'Hemisphere ホットスポット音声',
+    files: options.audioFiles || [],
+    parentFolders: [containerParent],
+    operations,
+    failMove: !!options.failAudioMove,
+    failRename: !!options.failAudioRename
+  });
+  if (legacyPhoto) containerParent.__folders.push(legacyPhoto);
+  if (legacyAudio) containerParent.__folders.push(legacyAudio);
+  (options.extraProjectFolders || []).forEach((folder) => {
+    folder.__setParents([containerParent]);
+  });
+  const scriptProperties = Object.assign({}, options.scriptProperties || {});
+  if (legacyPhoto && options.useLegacyPhotoProperty !== false) {
+    scriptProperties.HOTSPOT_PHOTO_FOLDER_ID = legacyPhoto.getId();
+  }
+  if (legacyAudio && options.useLegacyAudioProperty !== false) {
+    scriptProperties.HOTSPOT_AUDIO_FOLDER_ID = legacyAudio.getId();
+  }
+  const config = options.config || createSheet('config', [
+    ['設定項目', '値', '説明'],
+    ['IMAGE_DRIVE_URL', `https://drive.google.com/drive/folders/${imageRootId}`, ''],
+    ['HOTSPOT_PHOTO_FOLDER_URL', legacyPhoto ? `https://drive.google.com/drive/folders/${legacyPhoto.getId()}` : '', ''],
+    ['HOTSPOT_AUDIO_FOLDER_URL', legacyAudio ? `https://drive.google.com/drive/folders/${legacyAudio.getId()}` : '', '']
+  ]);
+  const info = options.info || createSheet('info', [INFO_HEADERS]);
+  const folders = {
+    [imageRootId]: imageRoot,
+    [containerParentId]: containerParent
+  };
+  if (legacyPhoto) folders[legacyPhoto.getId()] = legacyPhoto;
+  if (legacyAudio) folders[legacyAudio.getId()] = legacyAudio;
+  (options.extraProjectFolders || []).forEach((folder) => { folders[folder.getId()] = folder; });
+  const context = loadCode({
+    sheets: { config, info },
+    scriptProperties,
+    scriptPropertyWriteError: options.scriptPropertyWriteError || null,
+    driveFolders: folders,
+    containerParentFolderIds: [containerParentId],
+    driveOperations: operations
+  });
+  context.assertEditToken_ = function () {};
+  return { context, operations, imageRoot, containerParent, legacyPhoto, legacyAudio, info };
+}
+
+function addDirectChildFolderForTest(parentFolder, childFolder) {
+  childFolder.__setParents([parentFolder]);
+  if (!parentFolder.__folders.includes(childFolder)) parentFolder.__folders.push(childFolder);
+  return childFolder;
+}
+
+function restartHotspotFolderStructureFixture(fixture, options = {}) {
+  const firstConfig = fixture.context.__spreadsheet.getSheetByName('config');
+  const firstInfo = fixture.context.__spreadsheet.getSheetByName('info');
+  const config = createSheet('config', firstConfig.__rows.map((row) => row.map(cloneCell)));
+  const info = createSheet('info', firstInfo.__rows.map((row) => row.map(cloneCell)));
+  const driveFolders = Object.fromEntries(fixture.context.__driveFolders.entries());
+  const scriptProperties = Object.assign({}, fixture.context.__scriptProperties);
+  const context = loadCode({
+    sheets: { config, info },
+    scriptProperties,
+    scriptPropertyWriteError: options.scriptPropertyWriteError || null,
+    driveFolders,
+    containerParentFolderIds: [fixture.containerParent.getId()],
+    driveOperations: fixture.operations
+  });
+  context.assertEditToken_ = function () {};
+  return Object.assign({}, fixture, { context, info });
+}
+
+function hotspotFolderMigrationStateForTest(options = {}) {
+  const transactionId = options.transactionId || 'interrupted-transaction';
+  const oldProperties = Object.assign({ rootId: '', photoId: '', audioId: '' }, options.oldProperties || {});
+  return {
+    version: 1,
+    transactionId,
+    mode: options.mode || 'forward',
+    phase: options.phase || 'started',
+    oldProperties,
+    oldConfig: options.oldConfig || { rows: [] },
+    root: Object.assign({
+      id: '',
+      temporaryName: `Hemisphere Hotspot.__pending__${transactionId}`,
+      created: !oldProperties.rootId,
+      renamed: false
+    }, options.root || {}),
+    photo: Object.assign({
+      id: oldProperties.photoId,
+      oldName: '',
+      oldParentId: '',
+      temporaryName: `photos.__pending__${transactionId}`,
+      created: !oldProperties.photoId,
+      moved: false,
+      renamed: false
+    }, options.photo || {}),
+    audio: Object.assign({
+      id: oldProperties.audioId,
+      oldName: '',
+      oldParentId: '',
+      temporaryName: `audio.__pending__${transactionId}`,
+      created: !oldProperties.audioId,
+      moved: false,
+      renamed: false
+    }, options.audio || {}),
+    configWarnings: []
+  };
+}
+
+function createInterruptedRootMigrationSnapshot(stage) {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({ phase: stage });
+  let pendingRoot = null;
+  if (stage !== 'started') {
+    pendingRoot = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+      id: 'interrupted-pending-root',
+      name: state.root.temporaryName,
+      operations: first.operations
+    }));
+  }
+  if (stage === 'root_created' || stage === 'root_property_saved') {
+    state.root.id = pendingRoot.getId();
+  }
+  if (stage === 'root_property_saved') {
+    first.context.__scriptProperties.HOTSPOT_FOLDER_ID = pendingRoot.getId();
+  }
+  first.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE = JSON.stringify(state);
+  return restartHotspotFolderStructureFixture(first);
+}
+
+function assertCompletedHotspotFolderStructure(fixture, structure) {
+  const properties = fixture.context.__scriptProperties;
+  assert.equal(properties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.equal(structure.rootFolder.getName(), 'Hemisphere Hotspot');
+  assert.equal(structure.photoFolder.getName(), 'photos');
+  assert.equal(structure.audioFolder.getName(), 'audio');
+  assert.deepEqual(driveParentIds(structure.rootFolder), [fixture.containerParent.getId()]);
+  assert.deepEqual(driveParentIds(structure.photoFolder), [structure.rootFolder.getId()]);
+  assert.deepEqual(driveParentIds(structure.audioFolder), [structure.rootFolder.getId()]);
+  assert.equal(new Set([
+    properties.HOTSPOT_FOLDER_ID,
+    properties.HOTSPOT_PHOTO_FOLDER_ID,
+    properties.HOTSPOT_AUDIO_FOLDER_ID
+  ]).size, 3);
+  assert.equal(
+    fixture.containerParent.__folders.filter((folder) => !folder.__trashed && /\.__pending__/.test(folder.getName())).length,
+    0
+  );
+}
+
+[
+  ['journal creation before root creation', 'started'],
+  ['temporary root creation before its ID is journaled', 'root_create_pending'],
+  ['root ID journal persistence before the formal property', 'root_created'],
+  ['formal root property persistence before the final rename', 'root_property_saved']
+].forEach(([label, stage]) => {
+  test(`a new execution resumes ${label}`, () => {
+    const fixture = createInterruptedRootMigrationSnapshot(stage);
+
+    const structure = fixture.context.getHotspotFolderStructure_(true);
+
+    assertCompletedHotspotFolderStructure(fixture, structure);
+  });
+});
+
+function captureHotspotFolderConfigStateForTest(fixture) {
+  const config = fixture.context.__spreadsheet.getSheetByName('config');
+  return JSON.parse(JSON.stringify(fixture.context.captureHotspotFolderConfigState_(config)));
+}
+
+function setHotspotMigrationJournalForTest(fixture, state) {
+  fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE = JSON.stringify(state);
+  return restartHotspotFolderStructureFixture(fixture);
+}
+
+function createInterruptedLegacyChildSnapshot(stage) {
+  const first = createHotspotFolderStructureFixture();
+  const oldConfig = captureHotspotFolderConfigStateForTest(first);
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'interrupted-legacy-root',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  first.context.__scriptProperties.HOTSPOT_FOLDER_ID = root.getId();
+  first.legacyPhoto.moveTo(root);
+  if (stage === 'photo_ready') first.legacyPhoto.setName('photos');
+  const state = hotspotFolderMigrationStateForTest({
+    phase: stage,
+    oldProperties: {
+      rootId: '',
+      photoId: first.legacyPhoto.getId(),
+      audioId: first.legacyAudio.getId()
+    },
+    oldConfig,
+    root: { id: root.getId(), created: true, renamed: true },
+    photo: {
+      id: first.legacyPhoto.getId(),
+      oldName: 'Hemisphere ホットスポット写真',
+      oldParentId: first.containerParent.getId(),
+      created: false,
+      moved: stage === 'photo_ready',
+      renamed: stage === 'photo_ready'
+    },
+    audio: {
+      id: first.legacyAudio.getId(),
+      oldName: 'Hemisphere ホットスポット音声',
+      oldParentId: first.containerParent.getId(),
+      created: false
+    }
+  });
+  return setHotspotMigrationJournalForTest(first, state);
+}
+
+test('a new execution resumes an existing photo move that ended before rename', () => {
+  const fixture = createInterruptedLegacyChildSnapshot('photo_move_pending');
+  const originalInfo = fixture.info.__rows.map((row) => row.slice());
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(structure.photoFolder.getId(), fixture.legacyPhoto.getId());
+  assert.equal(structure.audioFolder.getId(), fixture.legacyAudio.getId());
+  assert.deepEqual(fixture.info.__rows, originalInfo);
+});
+
+test('a new execution resumes after photo rename without repeating its move or rename', () => {
+  const fixture = createInterruptedLegacyChildSnapshot('photo_ready');
+  const photoMoveCount = fixture.operations.filter((entry) => entry.startsWith(`move-folder:${fixture.legacyPhoto.getId()}:`)).length;
+  const photoRenameCount = fixture.operations.filter((entry) => entry.startsWith(`rename-folder:${fixture.legacyPhoto.getId()}:`)).length;
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(
+    fixture.operations.filter((entry) => entry.startsWith(`move-folder:${fixture.legacyPhoto.getId()}:`)).length,
+    photoMoveCount
+  );
+  assert.equal(
+    fixture.operations.filter((entry) => entry.startsWith(`rename-folder:${fixture.legacyPhoto.getId()}:`)).length,
+    photoRenameCount
+  );
+});
+
+function createInterruptedNewChildrenSnapshot(stage) {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const oldConfig = captureHotspotFolderConfigStateForTest(first);
+  const transactionId = 'interrupted-new-children';
+  const state = hotspotFolderMigrationStateForTest({
+    transactionId,
+    phase: stage,
+    oldConfig,
+    root: { id: 'interrupted-new-root', created: true, renamed: true }
+  });
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: state.root.id,
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  first.context.__scriptProperties.HOTSPOT_FOLDER_ID = root.getId();
+
+  const photo = addDirectChildFolderForTest(root, createDriveFolder({
+    id: 'interrupted-new-photo',
+    name: stage === 'photo_created' ? state.photo.temporaryName : 'photos',
+    operations: first.operations
+  }));
+  state.photo.id = photo.getId();
+  state.photo.created = true;
+  state.photo.renamed = stage !== 'photo_created';
+  if (stage !== 'photo_created') {
+    first.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID = photo.getId();
+  }
+
+  let audio = null;
+  if (stage !== 'photo_created') {
+    audio = addDirectChildFolderForTest(root, createDriveFolder({
+      id: 'interrupted-new-audio',
+      name: stage === 'audio_created' ? state.audio.temporaryName : 'audio',
+      operations: first.operations
+    }));
+    state.audio.id = audio.getId();
+    state.audio.created = true;
+    state.audio.renamed = stage !== 'audio_created';
+    if (stage !== 'audio_created') {
+      first.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID = audio.getId();
+    }
+  }
+
+  if (stage === 'config_synced') {
+    first.context.syncHotspotFolderUrlConfig_(root.getId(), first.context.__spreadsheet.getSheetByName('config'), {
+      rootFolder: root,
+      photoFolder: photo,
+      audioFolder: audio
+    });
+    state.configSynced = true;
+  }
+  return setHotspotMigrationJournalForTest(first, state);
+}
+
+test('a new execution resumes a newly created photos folder before its property is saved', () => {
+  const fixture = createInterruptedNewChildrenSnapshot('photo_created');
+  const pendingPhotoId = JSON.parse(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE).photo.id;
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(structure.photoFolder.getId(), pendingPhotoId);
+});
+
+test('a new execution resumes a newly created audio folder before its property is saved', () => {
+  const fixture = createInterruptedNewChildrenSnapshot('audio_created');
+  const pendingAudioId = JSON.parse(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE).audio.id;
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(structure.audioFolder.getId(), pendingAudioId);
+});
+
+test('a new execution completes config synchronization after all three properties were saved', () => {
+  const fixture = createInterruptedNewChildrenSnapshot('final_properties_saved');
+  assert.equal(configObject(fixture.context).HOTSPOT_FOLDER_URL, undefined);
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(configObject(fixture.context).HOTSPOT_FOLDER_URL, `https://drive.google.com/drive/folders/${structure.rootFolder.getId()}`);
+});
+
+test('a new execution only clears the journal after config synchronization completed', () => {
+  const fixture = createInterruptedNewChildrenSnapshot('config_synced');
+  const operationsBefore = fixture.operations.slice();
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.deepEqual(fixture.operations, operationsBefore);
+});
+
+function createPreJournalRootRecoverySnapshot(options = {}) {
+  const first = createHotspotFolderStructureFixture(options);
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'pre-journal-recovered-root',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  first.legacyPhoto.moveTo(root);
+  first.legacyPhoto.setName('photos');
+  delete first.context.__scriptProperties.HOTSPOT_FOLDER_ID;
+  delete first.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+  return restartHotspotFolderStructureFixture(first);
+}
+
+test('a missing root property is recovered only from an official child with one verified root parent', () => {
+  const fixture = createPreJournalRootRecoverySnapshot();
+  const expectedRoot = driveParentIds(fixture.legacyPhoto)[0];
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(structure.rootFolder.getId(), expectedRoot);
+  assert.equal(structure.photoFolder.getId(), fixture.legacyPhoto.getId());
+  assert.equal(structure.audioFolder.getId(), fixture.legacyAudio.getId());
+});
+
+test('pre-journal recovery preserves every attachment file ID and the info M and N values', () => {
+  const photo = createDriveFile({ id: 'pre-journal-photo-file', name: 'existing.jpg' });
+  const audio = createDriveFile({ id: 'pre-journal-audio-file', name: 'internal.mp3', mimeType: 'audio/mpeg' });
+  const infoRow = ['2026-07-21', 'scene', 'label', '', '', 0, 0, 'circle', 'blue', 'info', photo.getId(), '', 'hotspot-id', audio.getId()];
+  const fixture = createPreJournalRootRecoverySnapshot({
+    photoFiles: [photo],
+    audioFiles: [audio],
+    info: createSheet('info', [INFO_HEADERS, infoRow])
+  });
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assert.equal(structure.photoFolder.__files[0].getId(), photo.getId());
+  assert.equal(structure.audioFolder.__files[0].getId(), audio.getId());
+  assert.deepEqual(fixture.info.__rows[1], infoRow);
+});
+
+test('a formal root adopts one exact MIME-compatible child left by the pre-journal version', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'pre-journal-formal-root',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  const photo = addDirectChildFolderForTest(root, createDriveFolder({
+    id: 'pre-journal-untracked-photo',
+    name: 'photos',
+    files: [createDriveFile({ id: 'pre-journal-child-photo', name: 'photo.jpg', mimeType: 'image/jpeg' })],
+    operations: first.operations
+  }));
+  const audio = addDirectChildFolderForTest(root, createDriveFolder({
+    id: 'pre-journal-untracked-audio',
+    name: 'audio',
+    files: [createDriveFile({ id: 'pre-journal-child-audio', name: 'audio.mp3', mimeType: 'audio/mpeg' })],
+    operations: first.operations
+  }));
+  first.context.__scriptProperties.HOTSPOT_FOLDER_ID = root.getId();
+  const fixture = restartHotspotFolderStructureFixture(first);
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.equal(structure.photoFolder.getId(), photo.getId());
+  assert.equal(structure.audioFolder.getId(), audio.getId());
+});
+
+test('multiple same-name pre-journal child candidates stop without adoption or Drive changes', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'ambiguous-formal-root',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  addDirectChildFolderForTest(root, createDriveFolder({ id: 'ambiguous-photo-a', name: 'photos', operations: first.operations }));
+  addDirectChildFolderForTest(root, createDriveFolder({ id: 'ambiguous-photo-b', name: 'photos', operations: first.operations }));
+  first.context.__scriptProperties.HOTSPOT_FOLDER_ID = root.getId();
+  const fixture = restartHotspotFolderStructureFixture(first);
+  const operationsBefore = fixture.operations.slice();
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /複数|自動採用|管理者/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.deepEqual(fixture.operations, operationsBefore);
+});
+
+test('a journal ID that does not match Drive stops safely and remains available for administrator recovery', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({
+    phase: 'root_created',
+    root: { id: 'missing-journal-root', created: true }
+  });
+  const fixture = setHotspotMigrationJournalForTest(first, state);
+  const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /ジャーナル|構造|管理者/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, journalBefore);
+  assert.equal(fixture.containerParent.__folders.length, 0);
+});
+
+test('an unknown journal mode is treated as corruption and never starts Drive migration', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({ mode: 'unexpected-mode', phase: 'started' });
+  first.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE = JSON.stringify(state);
+  const fixture = restartHotspotFolderStructureFixture(first);
+  const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /ジャーナル|形式|管理者|不正/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, journalBefore);
+  assert.equal(fixture.containerParent.__folders.length, 0);
+});
+
+test('an official child under an IMAGE_DRIVE_URL root is never used to recover the Hotspot root', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const imageHotspotRoot = addDirectChildFolderForTest(first.imageRoot, createDriveFolder({
+    id: 'image-root-hotspot-candidate',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  const photo = addDirectChildFolderForTest(imageHotspotRoot, createDriveFolder({
+    id: 'image-root-photo-candidate',
+    name: 'photos',
+    operations: first.operations
+  }));
+  first.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID = photo.getId();
+  const fixture = restartHotspotFolderStructureFixture(first);
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /IMAGE_DRIVE_URL|親|管理者/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+});
+
+test('recovery is idempotent after completion and never changes folder count, IDs, names, or Drive operations', () => {
+  const fixture = createPreJournalRootRecoverySnapshot();
+  const first = fixture.context.getHotspotFolderStructure_(true);
+  const operationsAfterFirst = fixture.operations.slice();
+  const idsAfterFirst = [first.rootFolder.getId(), first.photoFolder.getId(), first.audioFolder.getId()];
+  const folderCountAfterFirst = first.rootFolder.__folders.filter((folder) => !folder.__trashed).length;
+
+  const second = fixture.context.getHotspotFolderStructure_(true);
+
+  assert.deepEqual([second.rootFolder.getId(), second.photoFolder.getId(), second.audioFolder.getId()], idsAfterFirst);
+  assert.deepEqual([second.rootFolder.getName(), second.photoFolder.getName(), second.audioFolder.getName()], ['Hemisphere Hotspot', 'photos', 'audio']);
+  assert.equal(second.rootFolder.__folders.filter((folder) => !folder.__trashed).length, folderCountAfterFirst);
+  assert.deepEqual(fixture.operations, operationsAfterFirst);
+});
+
+test('an already complete normal structure performs zero Drive mutations on later calls', () => {
+  const fixture = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  fixture.context.getHotspotFolderStructure_(true);
+  const operationsAfterFirst = fixture.operations.slice();
+
+  fixture.context.getHotspotFolderStructure_(true);
+
+  assert.deepEqual(fixture.operations, operationsAfterFirst);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+});
+
+test('read-only folder lookup never resumes or mutates an active migration journal', () => {
+  const fixture = createInterruptedRootMigrationSnapshot('root_created');
+  const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+  const operationsBefore = fixture.operations.slice();
+
+  const structure = fixture.context.getHotspotFolderStructure_(false);
+
+  assert.equal(structure.rootFolder, null);
+  assert.equal(structure.photoFolder, null);
+  assert.equal(structure.audioFolder, null);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, journalBefore);
+  assert.deepEqual(fixture.operations, operationsBefore);
+});
+
+test('setupSheets resumes a journal even when no formal folder property has been saved yet', () => {
+  const fixture = createInterruptedRootMigrationSnapshot('started');
+
+  fixture.context.setupSheets();
+
+  const properties = fixture.context.__scriptProperties;
+  assert.equal(properties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.ok(properties.HOTSPOT_FOLDER_ID);
+  assert.ok(properties.HOTSPOT_PHOTO_FOLDER_ID);
+  assert.ok(properties.HOTSPOT_AUDIO_FOLDER_ID);
+  const root = fixture.context.DriveApp.getFolderById(properties.HOTSPOT_FOLDER_ID);
+  assert.equal(root.getName(), 'Hemisphere Hotspot');
+  assert.deepEqual(root.__folders.filter((folder) => !folder.__trashed).map((folder) => folder.getName()).sort(), ['audio', 'photos']);
+});
+
+test('multiple pending roots for the same journal transaction stop safely and retain the journal', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({ phase: 'root_create_pending' });
+  addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'duplicate-pending-root-a',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'duplicate-pending-root-b',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  const fixture = setHotspotMigrationJournalForTest(first, state);
+  const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /複数|管理者|ジャーナル/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, journalBefore);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+});
+
+test('a journaled root ID still stops when a second pending root has the same transaction name', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({ phase: 'root_created' });
+  const officialPending = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'journaled-pending-root',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'untracked-second-pending-root',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  state.root.id = officialPending.getId();
+  const fixture = setHotspotMigrationJournalForTest(first, state);
+  const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /複数|管理者|ジャーナル/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, journalBefore);
+  assert.equal(fixture.containerParent.__folders.filter((folder) => !folder.__trashed).length, 2);
+});
+
+test('rollback keeps its journal when the same transaction has multiple pending roots', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({
+    mode: 'rollback',
+    phase: 'rollback_started'
+  });
+  addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'rollback-duplicate-root-a',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'rollback-duplicate-root-b',
+    name: state.root.temporaryName,
+    operations: first.operations
+  }));
+  const fixture = setHotspotMigrationJournalForTest(first, state);
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /ロールバック|構造不整合|管理者/);
+  assert.ok(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  assert.equal(fixture.containerParent.__folders.filter((folder) => !folder.__trashed).length, 2);
+});
+
+test('rollback retains its journal when Drive reports success without restoring an existing child parent', () => {
+  const firstRestart = createInterruptedLegacyChildSnapshot('photo_ready');
+  const state = JSON.parse(firstRestart.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  state.mode = 'rollback';
+  state.phase = 'rollback_started';
+  state.root.created = false;
+  firstRestart.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE = JSON.stringify(state);
+  const photo = firstRestart.legacyPhoto;
+  photo.moveTo = function() { return this; };
+  const fixture = restartHotspotFolderStructureFixture(firstRestart);
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /ロールバック|構造不整合|管理者/);
+  assert.ok(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  assert.notDeepEqual(driveParentIds(fixture.legacyPhoto), [fixture.containerParent.getId()]);
+});
+
+test('a unique pre-journal child with a conflicting MIME is not adopted', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const root = addDirectChildFolderForTest(first.containerParent, createDriveFolder({
+    id: 'mime-conflict-root',
+    name: 'Hemisphere Hotspot',
+    operations: first.operations
+  }));
+  addDirectChildFolderForTest(root, createDriveFolder({
+    id: 'mime-conflict-photos',
+    name: 'photos',
+    files: [createDriveFile({ id: 'mime-conflict-file', name: 'wrong.mp3', mimeType: 'audio/mpeg' })],
+    operations: first.operations
+  }));
+  first.context.__scriptProperties.HOTSPOT_FOLDER_ID = root.getId();
+  const fixture = restartHotspotFolderStructureFixture(first);
+  const operationsBefore = fixture.operations.slice();
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /内容|MIME|自動採用|管理者/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.deepEqual(fixture.operations, operationsBefore);
+});
+
+test('public folder URL failure never exposes journal contents or internal folder IDs', () => {
+  const first = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const state = hotspotFolderMigrationStateForTest({
+    phase: 'root_created',
+    root: { id: 'private-missing-journal-root', created: true }
+  });
+  const fixture = setHotspotMigrationJournalForTest(first, state);
+
+  const result = fixture.context.getHotspotFolderUrlForEdit({ __editToken: 'accepted' });
+  const serialized = JSON.stringify(result);
+
+  assert.equal(result.success, false);
+  assert.doesNotMatch(serialized, /HOTSPOT_FOLDER_MIGRATION_STATE|interrupted-transaction|private-missing-journal-root/);
+  assert.doesNotMatch(serialized, /rootId|photoId|audioId|transactionId/);
+});
+
+test('a persisted rollback journal is completed before a fresh forward migration starts', () => {
+  const firstRestart = createInterruptedLegacyChildSnapshot('photo_ready');
+  const state = JSON.parse(firstRestart.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  state.mode = 'rollback';
+  state.phase = 'rollback_started';
+  firstRestart.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE = JSON.stringify(state);
+  const interruptedRootId = state.root.id;
+  const fixture = restartHotspotFolderStructureFixture(firstRestart);
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assertCompletedHotspotFolderStructure(fixture, structure);
+  assert.notEqual(structure.rootFolder.getId(), interruptedRootId);
+  assert.equal(fixture.context.DriveApp.getFolderById(interruptedRootId).__trashed, true);
+  assert.equal(structure.photoFolder.getId(), fixture.legacyPhoto.getId());
+  assert.equal(structure.audioFolder.getId(), fixture.legacyAudio.getId());
+});
+
+test('the unified Hotspot folder API lazily creates one root with distinct photos and audio children', () => {
+  const fixture = createHotspotFolderStructureFixture({
+    legacyPhoto: false,
+    legacyAudio: false
+  });
+
+  const result = fixture.context.getHotspotFolderUrlForEdit({ __editToken: 'accepted' });
+  const rootId = fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID;
+  const photoId = fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID;
+  const audioId = fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID;
+  const root = fixture.context.__driveFolders.get(rootId) || fixture.containerParent.__folders.find((folder) => folder.getId() === rootId);
+
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.url, `https://drive.google.com/drive/folders/${rootId}`);
+  assert.equal(root.getName(), 'Hemisphere Hotspot');
+  assert.deepEqual(driveParentIds(root), [fixture.containerParent.getId()]);
+  assert.equal(root.__folders.find((folder) => folder.getId() === photoId).getName(), 'photos');
+  assert.equal(root.__folders.find((folder) => folder.getId() === audioId).getName(), 'audio');
+  assert.deepEqual(driveParentIds(root.__folders.find((folder) => folder.getId() === photoId)), [rootId]);
+  assert.deepEqual(driveParentIds(root.__folders.find((folder) => folder.getId() === audioId)), [rootId]);
+  assert.equal(new Set([rootId, photoId, audioId]).size, 3);
+  assert.equal(configObject(fixture.context).HOTSPOT_FOLDER_URL, result.url);
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(fixture.context), 'HOTSPOT_PHOTO_FOLDER_URL'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(fixture.context), 'HOTSPOT_AUDIO_FOLDER_URL'), false);
+  assert.deepEqual(new Set(Array.from(fixture.context.getProtectedHotspotAttachmentFolderIds_())), new Set([rootId, photoId, audioId]));
+  assert.equal(fixture.imageRoot.__folders.length, 0);
+});
+
+test('legacy photo and audio folders move and rename in place while file IDs and info IDs remain unchanged', () => {
+  const photoFile = createDriveFile({ id: 'existing-photo-file', name: 'existing.jpg' });
+  const audioFile = createDriveFile({ id: 'existing-audio-file', name: 'hotspot_audio_internal.mp3', mimeType: 'audio/mpeg' });
+  const infoRow = ['2026-07-20', 'scene', 'label', '', '', 0, 0, 'circle', 'blue', 'info', photoFile.getId(), '', 'hotspot-id', audioFile.getId()];
+  const info = createSheet('info', [INFO_HEADERS, infoRow]);
+  const fixture = createHotspotFolderStructureFixture({ photoFiles: [photoFile], audioFiles: [audioFile], info });
+
+  const first = fixture.context.getHotspotFolderUrlForEdit({ __editToken: 'accepted' });
+  const operationsAfterFirst = fixture.operations.slice();
+  const second = fixture.context.getHotspotFolderUrlForEdit({ __editToken: 'accepted' });
+  const rootId = fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID;
+
+  assert.equal(first.success, true);
+  assert.equal(second.url, first.url);
+  assert.equal(fixture.legacyPhoto.getId(), 'legacy-hotspot-photo-folder');
+  assert.equal(fixture.legacyAudio.getId(), 'legacy-hotspot-audio-folder');
+  assert.equal(fixture.legacyPhoto.getName(), 'photos');
+  assert.equal(fixture.legacyAudio.getName(), 'audio');
+  assert.deepEqual(driveParentIds(fixture.legacyPhoto), [rootId]);
+  assert.deepEqual(driveParentIds(fixture.legacyAudio), [rootId]);
+  assert.equal(fixture.legacyPhoto.__files[0].getId(), photoFile.getId());
+  assert.equal(fixture.legacyAudio.__files[0].getId(), audioFile.getId());
+  assert.deepEqual(fixture.info.__rows[1], infoRow);
+  assert.equal(
+    fixture.operations.filter((operation) => operation.startsWith('move-folder:')).length,
+    2,
+    JSON.stringify(fixture.operations)
+  );
+  assert.equal(fixture.operations.filter((operation) => operation.startsWith('rename-folder:')).length, 3);
+  assert.deepEqual(fixture.operations, operationsAfterFirst);
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(fixture.context), 'HOTSPOT_PHOTO_FOLDER_URL'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(configObject(fixture.context), 'HOTSPOT_AUDIO_FOLDER_URL'), false);
+});
+
+test('migration creates only the missing child when one legacy attachment folder exists', () => {
+  const fixture = createHotspotFolderStructureFixture({ legacyAudio: false });
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+
+  assert.equal(structure.photoFolder.getId(), fixture.legacyPhoto.getId());
+  assert.equal(structure.photoFolder.getName(), 'photos');
+  assert.equal(structure.audioFolder.getName(), 'audio');
+  assert.notEqual(structure.audioFolder.getId(), structure.photoFolder.getId());
+  assert.equal(structure.rootFolder.__folders.length, 2);
+});
+
+test('an untracked same-name Hotspot folder stops creation instead of being adopted or duplicated', () => {
+  const duplicate = createDriveFolder({ id: 'untracked-hotspot-root', name: 'Hemisphere Hotspot' });
+  const fixture = createHotspotFolderStructureFixture({
+    legacyPhoto: false,
+    legacyAudio: false,
+    extraProjectFolders: [duplicate]
+  });
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /同名|正式ID|自動.*採用/);
+  assert.equal(fixture.containerParent.__folders.filter((folder) => folder.getName() === 'Hemisphere Hotspot').length, 1);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+});
+
+test('a mid-migration failure restores legacy parents and names and trashes only the newly created empty root', () => {
+  const infoRow = ['2026-07-20', 'scene', 'label', '', '', 0, 0, 'circle', 'blue', 'info', 'photo-id', '', 'hotspot-id', 'audio-id'];
+  const fixture = createHotspotFolderStructureFixture({
+    failAudioMove: true,
+    info: createSheet('info', [INFO_HEADERS, infoRow])
+  });
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /移行|フォルダ|Drive/);
+  assert.equal(fixture.legacyPhoto.getName(), 'Hemisphere ホットスポット写真');
+  assert.equal(fixture.legacyAudio.getName(), 'Hemisphere ホットスポット音声');
+  assert.deepEqual(driveParentIds(fixture.legacyPhoto), [fixture.containerParent.getId()]);
+  assert.deepEqual(driveParentIds(fixture.legacyAudio), [fixture.containerParent.getId()]);
+  assert.deepEqual(fixture.info.__rows[1], infoRow);
+  const createdRoot = fixture.containerParent.__folders.find((folder) => folder.getName() === 'Hemisphere Hotspot');
+  assert.ok(createdRoot);
+  assert.equal(createdRoot.__trashed, true);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, fixture.legacyPhoto.getId());
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID, fixture.legacyAudio.getId());
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+});
+
+test('rollback journal persistence failure stops before any Drive or property rollback mutation', () => {
+  const fixture = createHotspotFolderStructureFixture({
+    failAudioMove: true,
+    scriptPropertyWriteError({ operation, key, value }) {
+      if (operation !== 'set' || key !== 'HOTSPOT_FOLDER_MIGRATION_STATE') return;
+      if (JSON.parse(value).mode === 'rollback') throw new Error('rollback journal unavailable');
+    }
+  });
+
+  assert.throws(
+    () => fixture.context.getHotspotFolderStructure_(true),
+    /ロールバック|構造不整合|管理者/
+  );
+
+  const retainedJournal = JSON.parse(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  const root = fixture.context.DriveApp.getFolderById(retainedJournal.root.id);
+  assert.equal(retainedJournal.mode, 'forward');
+  assert.equal(root.__trashed, false);
+  assert.equal(root.getName(), 'Hemisphere Hotspot');
+  assert.equal(fixture.legacyPhoto.getName(), 'photos');
+  assert.deepEqual(driveParentIds(fixture.legacyPhoto), [root.getId()]);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, root.getId());
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, fixture.legacyPhoto.getId());
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID, fixture.legacyAudio.getId());
+});
+
+test('new-structure property persistence failure trashes all folders created by that attempt and restores properties', () => {
+  const fixture = createHotspotFolderStructureFixture({
+    legacyPhoto: false,
+    legacyAudio: false,
+    scriptPropertyWriteError({ operation, key }) {
+      if (operation === 'set' && key === 'HOTSPOT_AUDIO_FOLDER_ID') throw new Error('properties unavailable');
+    }
+  });
+
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(true), /保存|プロパティ|構造/);
+  const createdRoot = fixture.containerParent.__folders.find((folder) => folder.getName() === 'Hemisphere Hotspot');
+  assert.ok(createdRoot);
+  assert.equal(createdRoot.__trashed, true);
+  assert.equal(createdRoot.__folders.length, 2);
+  assert.equal(createdRoot.__folders.every((folder) => folder.__trashed), true);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+});
+
+test('rollback failure is reported as an attachment-folder structure inconsistency requiring administrator review', () => {
+  const fixture = createHotspotFolderStructureFixture({ failAudioMove: true });
+  const originalMove = fixture.legacyPhoto.moveTo.bind(fixture.legacyPhoto);
+  let photoMoveCount = 0;
+  fixture.legacyPhoto.moveTo = function(destination) {
+    photoMoveCount += 1;
+    if (photoMoveCount > 1) throw new Error('rollback move failed');
+    return originalMove(destination);
+  };
+
+  assert.throws(
+    () => fixture.context.getHotspotFolderStructure_(true),
+    /構造不整合|管理者.*確認|ロールバック/
+  );
+  const retainedJournal = JSON.parse(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE);
+  assert.equal(retainedJournal.mode, 'rollback');
+  assert.deepEqual(Object.keys(retainedJournal).sort(), [
+    'audio',
+    'configSynced',
+    'configWarnings',
+    'mode',
+    'oldConfig',
+    'oldProperties',
+    'phase',
+    'photo',
+    'root',
+    'transactionId',
+    'version'
+  ]);
+  assert.doesNotMatch(JSON.stringify(retainedJournal), /base64|data:|fileContents|fileBytes|blob/i);
+});
+
+test('verified legacy config URLs are removed but an unexpected user value is preserved with a warning', () => {
+  const fixture = createHotspotFolderStructureFixture();
+  fixture.context.__spreadsheet.getSheetByName('config').__rows[2][1] = 'https://drive.google.com/drive/folders/unexpected-user-folder';
+
+  const structure = fixture.context.getHotspotFolderStructure_(true);
+  const config = configObject(fixture.context);
+
+  assert.equal(config.HOTSPOT_PHOTO_FOLDER_URL, 'https://drive.google.com/drive/folders/unexpected-user-folder');
+  assert.equal(Object.prototype.hasOwnProperty.call(config, 'HOTSPOT_AUDIO_FOLDER_URL'), false);
+  assert.equal(config.HOTSPOT_FOLDER_URL, `https://drive.google.com/drive/folders/${structure.rootFolder.getId()}`);
+  assert.equal(structure.warnings.some((warning) => /HOTSPOT_PHOTO_FOLDER_URL|旧.*URL|想定外/.test(warning)), true);
+});
+
 test('hotspot photo upload validates MIME, extension, signature, original size, decoded size, and declared size', () => {
   const { context } = createHotspotPhotoServerFixture();
   const normalized = context.normalizeHotspotPhotoUpload_(makeHotspotPhotoUpload());
@@ -4271,10 +5252,13 @@ test('authoritative hotspot photo folder is created once beside the spreadsheet 
   const second = fixture.context.getHotspotPhotoFolder_(true);
 
   assert.equal(first.getId(), second.getId());
-  assert.equal(first.getName(), 'Hemisphere ホットスポット写真');
+  assert.equal(first.getName(), 'photos');
   assert.equal(fixture.containerParent.__folders.length, 1);
+  assert.equal(fixture.containerParent.__folders[0].getName(), 'Hemisphere Hotspot');
+  assert.equal(fixture.containerParent.__folders[0].__folders.length, 2);
   assert.equal(fixture.root.__folders.length, 0);
   assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, first.getId());
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, fixture.containerParent.__folders[0].getId());
 });
 
 test('the edit-token folder API creates or reuses one official folder, synchronizes config, and returns only its URL', () => {
@@ -4289,25 +5273,26 @@ test('the edit-token folder API creates or reuses one official folder, synchroni
   assert.equal(first.url, second.url);
   assert.equal(fixture.containerParent.__folders.length, 1);
   assert.equal(
-    configObject(fixture.context).HOTSPOT_PHOTO_FOLDER_URL,
-    `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID}`
+    configObject(fixture.context).HOTSPOT_FOLDER_URL,
+    `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID}`
   );
   assert.deepEqual(Object.keys(first).sort(), ['success', 'url']);
   assert.doesNotMatch(JSON.stringify(first), /HOTSPOT_PHOTO_FOLDER_ID|folderId|officialId/);
 });
 
-test('hotspot photo folder property persistence failure rolls back the newly created folder', () => {
+test('hotspot photo folder journal persistence failure performs no Drive change', () => {
   const fixture = createHotspotPhotoServerFixture({
     scriptPropertyWriteError: 'properties unavailable'
   });
 
   assert.throws(
     () => fixture.context.getHotspotPhotoFolder_(true),
-    /専用フォルダID|保存/
+    /保存|構造/
   );
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
   assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, undefined);
-  assert.equal(fixture.containerParent.__folders.length, 1);
-  assert.equal(fixture.containerParent.__folders[0].__trashed, true);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.equal(fixture.containerParent.__folders.length, 0);
 });
 
 test('the folder API requires edit authorization and sanitizes failures without creating a replacement', () => {
@@ -4448,19 +5433,20 @@ test('saveHotspot stores an attachment only during save, returns normalized phot
     photoUpload: makeHotspotPhotoUpload()
   });
 
-  assert.equal(result.success, true);
+  assert.equal(result.success, true, JSON.stringify(result));
   assert.equal(result.photoId, result.hotspot.photoId);
   assert.equal(result.hotspot.id, result.id);
   assert.equal(result.hotspot.fileId, fixture.sceneId);
   assert.equal(fixture.info.__rows[1][10], result.photoId);
   assert.equal(JSON.stringify(fixture.scenes.__rows), scenesBefore);
-  assert.equal(fixture.containerParent.__folders[0].__files.length, 1);
-  assert.match(fixture.containerParent.__folders[0].__files[0].getName(), /^hotspot_\d{8}_\d{6}_[A-Za-z0-9]+\.jpg$/);
+  const photoFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  assert.equal(photoFolder.__files.length, 1);
+  assert.match(photoFolder.__files[0].getName(), /^hotspot_\d{8}_\d{6}_[A-Za-z0-9]+\.jpg$/);
   assert.equal(
-    configObject(fixture.context).HOTSPOT_PHOTO_FOLDER_URL,
-    `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID}`
+    configObject(fixture.context).HOTSPOT_FOLDER_URL,
+    `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID}`
   );
-  assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.containerParent.__folders[0].getId()));
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID));
 });
 
 test('the first two photo uploads create exactly one official folder and store both files there', () => {
@@ -4485,10 +5471,13 @@ test('the first two photo uploads create exactly one official folder and store b
   assert.equal(first.success, true);
   assert.equal(second.success, true);
   assert.equal(fixture.containerParent.__folders.length, 1);
-  assert.equal(fixture.containerParent.__folders[0].__files.length, 2);
+  const rootFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID);
+  const photoFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  assert.equal(rootFolder.__folders.length, 2);
+  assert.equal(photoFolder.__files.length, 2);
   assert.equal(
     fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID,
-    fixture.containerParent.__folders[0].getId()
+    photoFolder.getId()
   );
 });
 
@@ -4520,13 +5509,24 @@ test('a user-edited config photo URL never changes the official upload destinati
   });
 
   assert.equal(result.success, true);
+  assert.equal(result.partialSuccess, true);
+  assert.match(result.warning, /HOTSPOT_PHOTO_FOLDER_URL|想定外|旧URL/);
   assert.equal(official.__files.length, 1);
   assert.equal(tampered.__files.length, 0);
-  assert.equal(configObject(fixture.context).HOTSPOT_PHOTO_FOLDER_URL, `https://drive.google.com/drive/folders/${officialId}`);
+  assert.equal(configObject(fixture.context).HOTSPOT_PHOTO_FOLDER_URL, `https://drive.google.com/drive/folders/${tamperedId}`);
+  assert.equal(configObject(fixture.context).HOTSPOT_FOLDER_URL, `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID}`);
 });
 
-test('config URL synchronization failure keeps the official folder and upload as a partial success', () => {
+test('config URL synchronization failure rolls back a newly created attachment structure before upload', () => {
   const fixture = createHotspotPhotoServerFixture();
+  const hotspotConfigKeys = new Set([
+    'HOTSPOT_FOLDER_URL',
+    'HOTSPOT_PHOTO_FOLDER_URL',
+    'HOTSPOT_AUDIO_FOLDER_URL'
+  ]);
+  const hotspotConfigBefore = configRows(fixture.context)
+    .filter((row) => hotspotConfigKeys.has(row[0]))
+    .map((row) => row.slice());
   fixture.context.assertEditToken_ = function () {};
   fixture.context.setConfigValueInSheet_ = function () {
     throw new Error('config write unavailable');
@@ -4540,18 +5540,20 @@ test('config URL synchronization failure keeps the official folder and upload as
     photoUpload: makeHotspotPhotoUpload()
   });
 
-  assert.equal(result.success, true);
-  assert.equal(result.partialSuccess, true);
-  assert.match(result.warning, /config|同期|写真フォルダ/);
-  assert.ok(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  assert.equal(result.success, false);
+  assert.match(result.error, /config|同期|保存|構造/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.deepEqual(
+    configRows(fixture.context).filter((row) => hotspotConfigKeys.has(row[0])),
+    hotspotConfigBefore
+  );
   assert.equal(fixture.containerParent.__folders.length, 1);
-  assert.equal(fixture.containerParent.__folders[0].__trashed, false);
-  assert.equal(fixture.containerParent.__folders[0].__files.length, 1);
-
-  const opened = fixture.context.getHotspotPhotoFolderUrlForEdit({ __editToken: 'accepted' });
-  assert.equal(opened.success, true);
-  assert.equal(opened.partialSuccess, true);
-  assert.equal(fixture.containerParent.__folders.length, 1);
+  assert.equal(fixture.containerParent.__folders[0].__trashed, true);
+  assert.equal(fixture.containerParent.__folders[0].__folders.every((folder) => folder.__trashed), true);
+  assert.equal(fixture.containerParent.__folders[0].__folders.every((folder) => folder.__files.length === 0), true);
 });
 
 test('saveHotspot trashes a newly created attachment when the info write fails', () => {
@@ -4569,7 +5571,8 @@ test('saveHotspot trashes a newly created attachment when the info write fails',
   });
 
   assert.equal(result.success, false);
-  const attachment = fixture.containerParent.__folders[0].__files[0];
+  const photoFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  const attachment = photoFolder.__files[0];
   assert.equal(attachment.__trashed, true);
   assert.ok(operations.includes(`trash:${attachment.getId()}`));
   assert.equal(info.getLastRow(), 1);
@@ -4581,14 +5584,21 @@ test('saveHotspot reports cleanupRequired when attachment rollback also fails', 
   const fixture = createHotspotPhotoServerFixture({ info });
   const originalCreateFolder = fixture.containerParent.createFolder.bind(fixture.containerParent);
   fixture.containerParent.createFolder = function(name) {
-    const folder = originalCreateFolder(name);
-    const originalCreateFile = folder.createFile.bind(folder);
-    folder.createFile = function(blob) {
-      const file = originalCreateFile(blob);
-      file.__setFailTrash(true);
-      return file;
+    const rootFolder = originalCreateFolder(name);
+    const originalCreateChild = rootFolder.createFolder.bind(rootFolder);
+    rootFolder.createFolder = function(childName) {
+      const child = originalCreateChild(childName);
+      if (String(childName).startsWith('photos')) {
+        const originalCreateFile = child.createFile.bind(child);
+        child.createFile = function(blob) {
+          const file = originalCreateFile(blob);
+          file.__setFailTrash(true);
+          return file;
+        };
+      }
+      return child;
     };
-    return folder;
+    return rootFolder;
   };
   fixture.context.assertEditToken_ = function () {};
 
@@ -4603,7 +5613,8 @@ test('saveHotspot reports cleanupRequired when attachment rollback also fails', 
   assert.equal(result.success, false);
   assert.equal(result.cleanupRequired, true);
   assert.match(result.warning, /添付写真|整理|取り消し/);
-  assert.equal(fixture.containerParent.__folders[0].__files[0].__trashed, false);
+  const photoFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  assert.equal(photoFolder.__files[0].__trashed, false);
 });
 
 test('updateHotspot finds the owned row first and trashes a replacement upload when the info write fails', () => {
@@ -4645,7 +5656,8 @@ test('updateHotspot finds the owned row first and trashes a replacement upload w
     photoUpload: makeHotspotPhotoUpload()
   }, 'update-rollback-hotspot');
   assert.equal(failed.success, false);
-  const attachment = fixture.containerParent.__folders[0].__files[0];
+  const photoFolder = fixture.context.DriveApp.getFolderById(fixture.context.__scriptProperties.HOTSPOT_PHOTO_FOLDER_ID);
+  const attachment = photoFolder.__files[0];
   assert.equal(attachment.__trashed, true);
   assert.equal(info.__rows[1][2], 'Existing');
 });
@@ -4989,4 +6001,493 @@ test('public hotspot photo reads require an exact association and allow only reg
   assert.equal(legacyIdOnly.success, false);
   assert.doesNotMatch(JSON.stringify(managed), new RegExp(photoFolderId));
   assert.doesNotMatch(JSON.stringify(managed), /drive\.google\.com|googleusercontent/);
+});
+
+function hotspotMp3Bytes(options = {}) {
+  const frame = options.frame || [0xff, 0xfb, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x00];
+  if (options.withId3 === false) return frame.slice();
+  return [0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00].concat(frame);
+}
+
+function makeHotspotAudioUpload(options = {}) {
+  const bytes = options.bytes || hotspotMp3Bytes();
+  return {
+    fileName: options.fileName || 'trimmed-audio.mp3',
+    mimeType: options.mimeType || 'audio/mpeg',
+    sizeBytes: options.sizeBytes == null ? bytes.length : options.sizeBytes,
+    durationSeconds: options.durationSeconds == null ? 30 : options.durationSeconds,
+    base64: options.base64 || Buffer.from(bytes).toString('base64')
+  };
+}
+
+function createHotspotAudioServerFixture(options = {}) {
+  const audioFolderId = options.audioFolderId || 'audio-feature-official-folder';
+  const audioFolder = options.audioFolder || createDriveFolder({
+    id: audioFolderId,
+    name: 'Hemisphere ホットスポット音声',
+    files: options.audioFiles || [],
+    parentIds: [options.containerParentId || 'photo-feature-container-parent'],
+    operations: options.driveOperations || []
+  });
+  const scriptProperties = Object.assign({}, options.scriptProperties || {});
+  const driveFolders = Object.assign({}, options.driveFolders || {});
+  if (options.precreateAudioFolder !== false) {
+    scriptProperties.HOTSPOT_AUDIO_FOLDER_ID = audioFolderId;
+    driveFolders[audioFolderId] = audioFolder;
+  }
+  const fixture = createHotspotPhotoServerFixture(Object.assign({}, options, {
+    scriptProperties,
+    driveFolders
+  }));
+  return Object.assign(fixture, { audioFolderId, audioFolder });
+}
+
+test('hotspot MP3 upload validation accepts ID3 or a direct Layer III frame and rejects spoofed or malformed payloads', () => {
+  const context = createHotspotAudioServerFixture().context;
+  const withId3 = context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload());
+  const direct = context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    bytes: hotspotMp3Bytes({ withId3: false })
+  }));
+
+  assert.equal(withId3.mimeType, 'audio/mpeg');
+  assert.equal(withId3.extension, 'mp3');
+  assert.deepEqual(Array.from(direct.bytes), hotspotMp3Bytes({ withId3: false }));
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    mimeType: 'audio/wav'
+  })), /MP3|MIME|形式/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    fileName: 'renamed.wav'
+  })), /拡張子|MP3/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    bytes: Array.from(Buffer.from('RIFF0000WAVE'))
+  })), /MP3|実データ|形式/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    bytes: [0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+  })), /MP3|フレーム|実データ/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    sizeBytes: 999
+  })), /サイズ/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    durationSeconds: 120.01
+  })), /120|時間/);
+  const invalidBase64 = makeHotspotAudioUpload();
+  invalidBase64.base64 = '%%%=';
+  assert.throws(() => context.normalizeHotspotAudioUpload_(invalidBase64), /Base64/);
+  const emptyBase64 = makeHotspotAudioUpload();
+  emptyBase64.base64 = '';
+  assert.throws(() => context.normalizeHotspotAudioUpload_(emptyBase64), /Base64|空|サイズ/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    sizeBytes: 4 * 1024 * 1024 + 1
+  })), /4MB|サイズ/);
+  assert.throws(() => context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload({
+    fileName: '../escape.mp3'
+  })), /ファイル名|不正/);
+
+  const unsignedDecode = context.Utilities.base64Decode;
+  context.Utilities.base64Decode = function(value) {
+    return unsignedDecode(value).map((byte) => byte > 127 ? byte - 256 : byte);
+  };
+  assert.equal(context.normalizeHotspotAudioUpload_(makeHotspotAudioUpload()).mimeType, 'audio/mpeg');
+});
+
+test('the official audio folder is lazy, authoritative, protected from scene listing, and exposed only through the edit-token URL API', () => {
+  const fixture = createHotspotAudioServerFixture({ precreateAudioFolder: false });
+  fixture.context.assertEditToken_ = function () {};
+
+  assert.equal(fixture.context.getHotspotAudioFolder_(false), null);
+  const first = fixture.context.getHotspotAudioFolderUrlForEdit({ __editToken: 'accepted' });
+  const second = fixture.context.getHotspotAudioFolderUrlForEdit({ __editToken: 'accepted' });
+  const officialId = fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID;
+
+  assert.equal(first.success, true);
+  assert.equal(first.url, second.url);
+  assert.equal(fixture.containerParent.__folders.length, 1);
+  assert.equal(fixture.containerParent.__folders[0].getName(), 'Hemisphere Hotspot');
+  assert.equal(fixture.context.DriveApp.getFolderById(officialId).getName(), 'audio');
+  assert.equal(configObject(fixture.context).HOTSPOT_FOLDER_URL, `https://drive.google.com/drive/folders/${fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID}`);
+  assert.equal(fixture.context.listDriveFolderItems_(fixture.containerParentId).folders.some((folder) => folder.id === officialId), false);
+  assert.throws(() => fixture.context.listDriveFolderItems_(officialId), /専用フォルダ|シーン一覧|公開/);
+  assert.deepEqual(Object.keys(first).sort(), ['success', 'url']);
+  assert.doesNotMatch(JSON.stringify(first), /HOTSPOT_AUDIO_FOLDER_ID|officialId|folderId/);
+});
+
+test('audio folder access is authorized and fails closed for a broken official ID without creating a replacement', () => {
+  const unauthorized = createHotspotAudioServerFixture({ precreateAudioFolder: false });
+  const denied = unauthorized.context.getHotspotAudioFolderUrlForEdit({});
+  assert.equal(denied.success, false);
+  assert.equal(unauthorized.containerParent.__folders.length, 0);
+  assert.doesNotMatch(JSON.stringify(denied), /EDIT_TOKEN_|HOTSPOT_AUDIO_FOLDER_ID|folderId/);
+
+  const brokenId = 'missing-official-audio-folder';
+  const broken = createHotspotAudioServerFixture({
+    precreateAudioFolder: false,
+    scriptProperties: { HOTSPOT_AUDIO_FOLDER_ID: brokenId }
+  });
+  broken.context.assertEditToken_ = function () {};
+  const failed = broken.context.getHotspotAudioFolderUrlForEdit({ __editToken: 'accepted' });
+  assert.equal(failed.success, false);
+  assert.equal(broken.containerParent.__folders.length, 0);
+  assert.doesNotMatch(JSON.stringify(failed), new RegExp(brokenId));
+  assert.doesNotMatch(JSON.stringify(failed), /HOTSPOT_AUDIO_FOLDER_ID|権限|親フォルダ/);
+});
+
+test('audio folder journal persistence failure performs no Drive change', () => {
+  const fixture = createHotspotAudioServerFixture({
+    precreateAudioFolder: false,
+    scriptPropertyWriteError: 'properties unavailable'
+  });
+  assert.throws(() => fixture.context.getHotspotAudioFolder_(true), /保存|構造/);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_AUDIO_FOLDER_ID, undefined);
+  assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+  assert.equal(fixture.containerParent.__folders.length, 0);
+});
+
+test('audio save, load, keep, replace, and remove preserve the M-column ID and clean only superseded managed files', () => {
+  const fixture = createHotspotAudioServerFixture();
+  fixture.context.assertEditToken_ = function () {};
+
+  const saved = fixture.context.saveHotspot({
+    fileId: fixture.sceneId,
+    label: 'Audio hotspot',
+    pitch: 1,
+    yaw: 2,
+    audioUpload: makeHotspotAudioUpload()
+  });
+  assert.equal(saved.success, true);
+  assert.ok(saved.audioId);
+  assert.equal(saved.hotspot.audioId, saved.audioId);
+  assert.equal(fixture.info.__rows[1][12], saved.id);
+  assert.equal(fixture.info.__rows[1][13], saved.audioId);
+  assert.deepEqual(Array.from(fixture.context.loadHotspots({ fileId: fixture.sceneId }).hotspots)[0].audioId, saved.audioId);
+  const firstFile = fixture.audioFolder.__files[0];
+
+  const kept = fixture.context.updateHotspot({
+    fileId: fixture.sceneId,
+    label: 'Kept audio',
+    pitch: 3,
+    yaw: 4,
+    audioId: saved.audioId
+  }, saved.id);
+  assert.equal(kept.success, true);
+  assert.equal(kept.audioId, saved.audioId);
+  assert.equal(firstFile.__trashed, false);
+
+  const replaced = fixture.context.updateHotspot({
+    fileId: fixture.sceneId,
+    label: 'Replaced audio',
+    pitch: 5,
+    yaw: 6,
+    audioId: '',
+    audioUpload: makeHotspotAudioUpload({ fileName: 'replacement.mp3' })
+  }, saved.id);
+  assert.equal(replaced.success, true);
+  assert.notEqual(replaced.audioId, saved.audioId);
+  assert.equal(firstFile.__trashed, true);
+  const replacementFile = fixture.audioFolder.__files.find((file) => file.getId() === replaced.audioId);
+
+  const removed = fixture.context.updateHotspot({
+    fileId: fixture.sceneId,
+    label: 'Removed audio',
+    pitch: 7,
+    yaw: 8,
+    audioId: ''
+  }, saved.id);
+  assert.equal(removed.success, true);
+  assert.equal(removed.audioId, '');
+  assert.equal(replacementFile.__trashed, true);
+  assert.equal(fixture.info.__rows[1][12], saved.id);
+  assert.equal(fixture.info.__rows[1][13], '');
+});
+
+test('photo and audio save together and an audio-only info failure rolls its new file back', () => {
+  const savedFixture = createHotspotAudioServerFixture({ precreateAudioFolder: false });
+  savedFixture.context.assertEditToken_ = function () {};
+  const saved = savedFixture.context.saveHotspot({
+    fileId: savedFixture.sceneId,
+    label: 'Photo and audio',
+    pitch: 1,
+    yaw: 2,
+    photoUpload: makeHotspotPhotoUpload(),
+    audioUpload: makeHotspotAudioUpload()
+  });
+
+  assert.equal(saved.success, true);
+  assert.ok(saved.photoId);
+  assert.ok(saved.audioId);
+  assert.equal(savedFixture.info.__rows[1][10], saved.photoId);
+  assert.equal(savedFixture.info.__rows[1][13], saved.audioId);
+  const savedRoot = savedFixture.context.DriveApp.getFolderById(savedFixture.context.__scriptProperties.HOTSPOT_FOLDER_ID);
+  assert.equal(savedRoot.__folders.find((folder) => folder.getName() === 'photos').__files.length, 1);
+  assert.equal(savedRoot.__folders.find((folder) => folder.getName() === 'audio').__files.length, 1);
+
+  const failingInfo = createSheet('info', [INFO_HEADERS]);
+  failingInfo.appendRow = function () { throw new Error('info append failed'); };
+  const rollbackFixture = createHotspotAudioServerFixture({ info: failingInfo });
+  rollbackFixture.context.assertEditToken_ = function () {};
+  const failed = rollbackFixture.context.saveHotspot({
+    fileId: rollbackFixture.sceneId,
+    label: 'Audio rollback',
+    pitch: 1,
+    yaw: 2,
+    audioUpload: makeHotspotAudioUpload()
+  });
+
+  assert.equal(failed.success, false);
+  assert.equal(rollbackFixture.audioFolder.__files.length, 1);
+  assert.equal(rollbackFixture.audioFolder.__files[0].__trashed, true);
+  assert.equal(failingInfo.getLastRow(), 1);
+});
+
+test('audio replacement write failure rolls back only the new file and preserves the previous row and audio', () => {
+  const previousAudio = createDriveFile({
+    id: 'audio-update-previous',
+    name: 'previous.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const info = createSheet('info', [
+    INFO_HEADERS,
+    reviewInfoRow('audio-update-scene', 'Existing', 'audio-update-hotspot', { audioId: previousAudio.getId() })
+  ]);
+  const originalGetRange = info.getRange.bind(info);
+  info.getRange = function (row, col, numRows, numCols) {
+    const range = originalGetRange(row, col, numRows, numCols);
+    if (row === 2 && col === 1 && numRows === 1 && numCols === INFO_HEADERS.length) {
+      range.setValues = function () { throw new Error('info update failed'); };
+    }
+    return range;
+  };
+  const fixture = createHotspotAudioServerFixture({
+    sceneId: 'audio-update-scene',
+    info,
+    audioFiles: [previousAudio]
+  });
+  fixture.context.assertEditToken_ = function () {};
+
+  const failed = fixture.context.updateHotspot({
+    fileId: fixture.sceneId,
+    label: 'Replacement',
+    pitch: 3,
+    yaw: 4,
+    audioId: '',
+    audioUpload: makeHotspotAudioUpload({ fileName: 'new.mp3' })
+  }, 'audio-update-hotspot');
+
+  assert.equal(failed.success, false);
+  assert.equal(previousAudio.__trashed, false);
+  assert.equal(info.__rows[1][13], previousAudio.getId());
+  const replacement = fixture.audioFolder.__files.find((file) => file.getId() !== previousAudio.getId());
+  assert.ok(replacement);
+  assert.equal(replacement.__trashed, true);
+});
+
+test('audio cleanup preserves shared and unmanaged files, removes the final orphan, and reports trash failure as partial success', () => {
+  const shared = createDriveFile({
+    id: 'audio-shared-managed',
+    name: 'shared.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const unmanaged = createDriveFile({
+    id: 'audio-unmanaged',
+    name: 'outside.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const failing = createDriveFile({
+    id: 'audio-cleanup-failing',
+    name: 'failing.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes(),
+    failTrash: true
+  });
+  const info = createSheet('info', [
+    INFO_HEADERS,
+    reviewInfoRow('audio-cleanup-scene', 'Shared one', 'shared-one', { audioId: shared.getId() }),
+    reviewInfoRow('audio-cleanup-scene', 'Shared two', 'shared-two', { audioId: shared.getId() }),
+    reviewInfoRow('audio-cleanup-scene', 'Unmanaged', 'unmanaged-one', { audioId: unmanaged.getId() }),
+    reviewInfoRow('audio-cleanup-scene', 'Failing', 'failing-one', { audioId: failing.getId() })
+  ]);
+  const fixture = createHotspotAudioServerFixture({
+    sceneId: 'audio-cleanup-scene',
+    info,
+    audioFiles: [shared, failing]
+  });
+  fixture.root.__files.push(unmanaged);
+  unmanaged.__setParents([fixture.root]);
+  fixture.context.assertEditToken_ = function () {};
+
+  const firstDelete = fixture.context.deleteHotspot({ fileId: fixture.sceneId, id: 'shared-one' });
+  assert.equal(firstDelete.success, true);
+  assert.equal(shared.__trashed, false);
+  const finalDelete = fixture.context.deleteHotspot({ fileId: fixture.sceneId, id: 'shared-two' });
+  assert.equal(finalDelete.success, true);
+  assert.equal(shared.__trashed, true);
+
+  const unmanagedRemoved = fixture.context.updateHotspot({
+    fileId: fixture.sceneId,
+    label: 'Unmanaged removed',
+    pitch: 1,
+    yaw: 2,
+    audioId: ''
+  }, 'unmanaged-one');
+  assert.equal(unmanagedRemoved.success, true);
+  assert.equal(unmanaged.__trashed, false);
+
+  const partial = fixture.context.deleteHotspot({ fileId: fixture.sceneId, id: 'failing-one' });
+  assert.equal(partial.success, true);
+  assert.equal(partial.partialSuccess, true);
+  assert.match(partial.warning, /音声|整理/);
+  assert.equal(failing.__trashed, false);
+});
+
+test('new hotspot audio rejects arbitrary IDs and combined photo/audio writes roll back every newly created file', () => {
+  const invalid = createHotspotAudioServerFixture();
+  invalid.context.assertEditToken_ = function () {};
+  const arbitrary = invalid.context.saveHotspot({
+    fileId: invalid.sceneId,
+    label: 'Arbitrary ID',
+    pitch: 1,
+    yaw: 2,
+    audioId: 'some-drive-file'
+  });
+  assert.equal(arbitrary.success, false);
+  assert.equal(invalid.audioFolder.__files.length, 0);
+
+  const info = createSheet('info', [INFO_HEADERS]);
+  info.appendRow = function () { throw new Error('info append failed'); };
+  const rollback = createHotspotAudioServerFixture({ info, precreateAudioFolder: false });
+  rollback.context.assertEditToken_ = function () {};
+  const failed = rollback.context.saveHotspot({
+    fileId: rollback.sceneId,
+    label: 'Both uploads',
+    pitch: 1,
+    yaw: 2,
+    photoUpload: makeHotspotPhotoUpload(),
+    audioUpload: makeHotspotAudioUpload()
+  });
+
+  assert.equal(failed.success, false);
+  const rollbackRoot = rollback.context.DriveApp.getFolderById(rollback.context.__scriptProperties.HOTSPOT_FOLDER_ID);
+  const createdFiles = rollbackRoot.__folders.flatMap((folder) => folder.__files);
+  assert.equal(createdFiles.length, 2);
+  assert.equal(createdFiles.every((file) => file.__trashed), true);
+  assert.equal(info.getLastRow(), 1);
+});
+
+test('public audio retrieval requires the exact scene, hotspot, and audio association in the official audio folder', () => {
+  const containerParentId = 'public-audio-container-parent';
+  const audioFolderId = 'public-audio-folder';
+  const managed = createDriveFile({
+    id: 'public-managed-audio',
+    name: 'managed.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const wrongMime = createDriveFile({
+    id: 'public-wrong-mime-audio',
+    name: 'wrong.mp3',
+    mimeType: 'application/octet-stream',
+    bytes: hotspotMp3Bytes()
+  });
+  const arbitrary = createDriveFile({
+    id: 'public-arbitrary-audio',
+    name: 'arbitrary.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const audioFolder = createDriveFolder({
+    id: audioFolderId,
+    name: 'Hemisphere ホットスポット音声',
+    files: [managed, wrongMime],
+    parentIds: [containerParentId]
+  });
+  const info = createSheet('info', [
+    INFO_HEADERS,
+    reviewInfoRow('public-audio-scene', 'Managed', 'managed-hotspot', { audioId: managed.getId() }),
+    reviewInfoRow('public-audio-scene', 'Wrong MIME', 'wrong-mime-hotspot', { audioId: wrongMime.getId() }),
+    reviewInfoRow('public-audio-scene', 'Arbitrary', 'arbitrary-hotspot', { audioId: arbitrary.getId() })
+  ]);
+  const fixture = createHotspotAudioServerFixture({
+    containerParentId,
+    sceneId: 'public-audio-scene',
+    info,
+    audioFolderId,
+    audioFolder
+  });
+  fixture.root.__files.push(arbitrary);
+  arbitrary.__setParents([fixture.root]);
+
+  const served = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'managed-hotspot',
+    audioId: managed.getId()
+  });
+  const wrongHotspot = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'wrong-mime-hotspot',
+    audioId: managed.getId()
+  });
+  const wrongMimeResult = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'wrong-mime-hotspot',
+    audioId: wrongMime.getId()
+  });
+  const arbitraryResult = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'arbitrary-hotspot',
+    audioId: arbitrary.getId()
+  });
+  const missingRow = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'missing-hotspot',
+    audioId: managed.getId()
+  });
+  const legacyIdOnly = fixture.context.getHotspotAudioData(managed.getId());
+
+  assert.equal(served.success, true);
+  assert.match(served.dataUri, /^data:audio\/mpeg;base64,/);
+  assert.equal(served.mimeType, 'audio/mpeg');
+  assert.equal(Object.prototype.hasOwnProperty.call(served, 'fileName'), false);
+  assert.doesNotMatch(JSON.stringify(served), /managed\.mp3|hotspot_audio_|uuid/i);
+  assert.equal(wrongHotspot.success, false);
+  assert.equal(wrongMimeResult.success, false);
+  assert.equal(arbitraryResult.success, false);
+  assert.equal(missingRow.success, false);
+  assert.equal(legacyIdOnly.success, false);
+  assert.doesNotMatch(JSON.stringify(served), new RegExp(audioFolderId));
+  assert.doesNotMatch(JSON.stringify(served), /drive\.google\.com|googleusercontent/);
+});
+
+test('unknown N-column headers stop public audio reads before Drive bytes are accessed', () => {
+  const managed = createDriveFile({
+    id: 'unknown-header-audio',
+    name: 'unknown.mp3',
+    mimeType: 'audio/mpeg',
+    bytes: hotspotMp3Bytes()
+  });
+  const unknownHeaders = INFO_HEADERS.slice();
+  unknownHeaders[13] = '未知の追加列';
+  const info = createSheet('info', [
+    unknownHeaders,
+    reviewInfoRow('unknown-header-scene', 'Unknown', 'unknown-header-hotspot', { audioId: managed.getId() })
+  ]);
+  const fixture = createHotspotAudioServerFixture({
+    sceneId: 'unknown-header-scene',
+    info,
+    audioFiles: [managed]
+  });
+  const before = info.__rows.map((row) => row.slice());
+
+  const result = fixture.context.getHotspotAudioData({
+    fileId: fixture.sceneId,
+    hotspotId: 'unknown-header-hotspot',
+    audioId: managed.getId()
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(managed.__blobReads, 0);
+  assert.deepEqual(info.__rows, before);
+  assert.deepEqual(Array.from(fixture.context.loadHotspots({ fileId: fixture.sceneId }).hotspots), []);
 });

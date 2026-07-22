@@ -113,7 +113,7 @@ test('one central form guard protects every scene-changing and hotspot-conflicti
     'toggleQuality',
     'toggleMode',
     'openUploadModal',
-    'openHotspotPhotoFolderInDrive',
+    'openHotspotFolderInDrive',
     'onBulkInputDropdownClick'
   ].forEach((functionName) => {
     assert.match(
@@ -124,45 +124,48 @@ test('one central form guard protects every scene-changing and hotspot-conflicti
   });
 });
 
-test('edit-only scene and hotspot photo Drive controls are accessible and use the guarded popup-safe API flow', () => {
+test('edit-only scene and hotspot attachment Drive controls are accessible and use guarded popup-safe API flows', () => {
   assert.match(index, /id="open-folder-btn"[^>]*title="シーン画像フォルダをGoogle Driveで開く"[^>]*aria-label="シーン画像フォルダをGoogle Driveで開く"/);
   assert.match(index, /id="open-folder-btn"[\s\S]*?<span class="scene-action-label-full">シーンDrive<\/span>/);
-  assert.match(index, /id="open-hotspot-photo-folder-btn"[^>]*title="ホットスポット写真フォルダをGoogle Driveで開く"[^>]*aria-label="ホットスポット写真フォルダをGoogle Driveで開く"/);
-  assert.match(index, /id="open-hotspot-photo-folder-btn"[\s\S]*?<svg[\s\S]*?<span class="scene-action-label-full">写真フォルダ<\/span>/);
-  assert.match(index, /id="open-hotspot-photo-folder-topbar-btn"[^>]*title="ホットスポット写真フォルダをGoogle Driveで開く"[^>]*aria-label="ホットスポット写真フォルダをGoogle Driveで開く"/);
-  assert.match(index, /id="open-hotspot-photo-folder-topbar-btn"[\s\S]*?<svg[\s\S]*?<span[^>]*>写真フォルダ<\/span>/);
+  assert.match(index, /id="open-hotspot-folder-btn"[^>]*title="HotspotフォルダをGoogle Driveで開く"[^>]*aria-label="HotspotフォルダをGoogle Driveで開く"/);
+  assert.match(index, /id="open-hotspot-folder-btn"[\s\S]*?<svg[\s\S]*?<span class="scene-action-label-full">Hotspotフォルダ<\/span>/);
+  assert.match(index, /id="open-hotspot-folder-topbar-btn"[^>]*title="HotspotフォルダをGoogle Driveで開く"[^>]*aria-label="HotspotフォルダをGoogle Driveで開く"/);
+  assert.match(index, /id="open-hotspot-folder-topbar-btn"[\s\S]*?<svg[\s\S]*?<span[^>]*>Hotspotフォルダ<\/span>/);
+  assert.doesNotMatch(index, /id="open-hotspot-(?:photo|audio)-folder/);
+  assert.doesNotMatch(index, />写真フォルダ<|>音声フォルダ</);
 
-  const open = getFunctionSource(app, 'openHotspotPhotoFolderInDrive');
+  const open = getFunctionSource(app, 'openHotspotFolderInDrive');
   assert.match(open, /!canEdit\s*\|\|\s*!isEditMode/);
   assert.match(open, /guardHotspotFormOperation\(/);
-  assert.match(open, /hotspotPhotoFolderOpenPending/);
+  assert.match(open, /hotspotFolderOpenPending/);
   assert.match(open, /window\.open\(/);
   assert.ok(open.indexOf('window.open(') < open.indexOf('google.script.run'), 'blank tab must open before the asynchronous GAS API call');
   assert.match(open, /if\s*\(!popupTab\)[\s\S]*showToast[\s\S]*return false/);
-  assert.match(open, /getHotspotPhotoFolderUrlForEdit\(withEditToken\(\{\}\)\)/);
+  assert.match(open, /getHotspotFolderUrlForEdit\(withEditToken\(\{\}\)\)/);
   assert.match(open, /popupTab\.close\(\)/);
-  assert.match(open, /setHotspotPhotoFolderButtonBusy\(false\)/);
+  assert.match(open, /setHotspotFolderButtonBusy\(false\)/);
 
   const lockControls = getFunctionSource(app, 'getHotspotFormLockControls');
-  assert.match(lockControls, /#open-hotspot-photo-folder-btn/);
-  assert.match(lockControls, /#open-hotspot-photo-folder-topbar-btn/);
+  assert.match(lockControls, /#open-hotspot-folder-btn/);
+  assert.match(lockControls, /#open-hotspot-folder-topbar-btn/);
+  assert.doesNotMatch(lockControls, /open-hotspot-(?:photo|audio)-folder/);
   const toggleMode = getFunctionSource(app, 'toggleMode');
-  assert.match(toggleMode, /open-hotspot-photo-folder-btn/);
-  assert.match(toggleMode, /open-hotspot-photo-folder-topbar-btn/);
+  assert.match(toggleMode, /open-hotspot-folder-btn/);
+  assert.match(toggleMode, /open-hotspot-folder-topbar-btn/);
 
-  const getPhotoFolderButtons = getFunctionSource(app, 'getHotspotPhotoFolderButtons');
-  assert.match(getPhotoFolderButtons, /querySelectorAll\('\.hotspot-photo-folder-button'\)/);
+  const getFolderButtons = getFunctionSource(app, 'getHotspotFolderButtons');
+  assert.match(getFolderButtons, /querySelectorAll\('\.hotspot-folder-button'\)/);
   const syncDriveButtons = getFunctionSource(app, 'syncDriveFolderButtons');
   assert.match(syncDriveButtons, /canEdit\s*&&\s*isEditMode\s*&&\s*!!rootFolderId/);
   assert.match(syncDriveButtons, /canEdit\s*&&\s*isEditMode\s*&&\s*!rootFolderId/);
-  const setBusy = getFunctionSource(app, 'setHotspotPhotoFolderButtonBusy');
-  assert.match(setBusy, /getHotspotPhotoFolderButtons\(\)/);
+  const setBusy = getFunctionSource(app, 'setHotspotFolderButtonBusy');
+  assert.match(setBusy, /getHotspotFolderButtons\(\)/);
   assert.match(setBusy, /setAttribute\('aria-busy'/);
 
-  assert.match(styles, /#open-folder-btn,\s*#open-hotspot-photo-folder-btn\s*\{[\s\S]*min-height:\s*44px/);
-  assert.match(styles, /html\[data-theme="dark"\]\s*#open-folder-btn,\s*html\[data-theme="dark"\]\s*#open-hotspot-photo-folder-btn/);
-  assert.match(styles, /#open-hotspot-photo-folder-topbar-btn\s*\{[\s\S]*min-height:\s*44px/);
-  assert.match(styles, /#open-hotspot-photo-folder-topbar-btn\.loading,\s*#open-hotspot-photo-folder-topbar-btn:disabled/);
+  assert.match(styles, /#open-folder-btn,\s*#open-hotspot-folder-btn\s*\{[\s\S]*min-height:\s*44px/);
+  assert.match(styles, /html\[data-theme="dark"\]\s*#open-folder-btn,\s*html\[data-theme="dark"\]\s*#open-hotspot-folder-btn/);
+  assert.match(styles, /#open-hotspot-folder-topbar-btn\s*\{[\s\S]*min-height:\s*44px/);
+  assert.match(styles, /#open-hotspot-folder-topbar-btn\.loading,\s*#open-hotspot-folder-topbar-btn:disabled/);
 });
 
 test('form lock reflects disabled state in the DOM and restores the previous state', () => {

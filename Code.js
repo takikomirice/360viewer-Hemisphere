@@ -8,8 +8,10 @@ const CONFIG_SHEET_NAME = 'config';
 const CONFIG_HEADERS = ['設定項目', '値', '説明'];
 const IMAGE_DRIVE_URL_CONFIG_KEY = 'IMAGE_DRIVE_URL';
 const IMAGE_DRIVE_URL_CONFIG_DESCRIPTION = '360度画像のGoogleドライブURL（単一ファイルまたはフォルダ）。共有設定を「リンクを知っている全員が閲覧可」にしてください。';
+const HOTSPOT_FOLDER_URL_CONFIG_KEY = 'HOTSPOT_FOLDER_URL';
+const HOTSPOT_FOLDER_URL_CONFIG_DESCRIPTION = 'ホットスポット添付ファイルの共通Google DriveフォルダURL。システムが自動設定します。';
 const HOTSPOT_PHOTO_FOLDER_URL_CONFIG_KEY = 'HOTSPOT_PHOTO_FOLDER_URL';
-const HOTSPOT_PHOTO_FOLDER_URL_CONFIG_DESCRIPTION = 'ホットスポット添付写真の専用Google DriveフォルダURL。システムが自動設定します。';
+const HOTSPOT_AUDIO_FOLDER_URL_CONFIG_KEY = 'HOTSPOT_AUDIO_FOLDER_URL';
 const STUDENT_SHEET_URL_CONFIG_KEY = 'STUDENT_SHEET_URL';
 const STUDENT_SHEET_URL_CONFIG_DESCRIPTION = 'ScriptPropertiesのSTUDENT_SHEET_IDに紐づく一括入力用スプシの表示URL（直接編集しても紐づき先は変わりません）。';
 const WEB_APP_URL_CONFIG_KEY = 'WEB_APP_URL';
@@ -20,7 +22,7 @@ const EDIT_KEY_CONFIG_KEY = 'EDIT_KEY';
 const EDIT_KEY_CONFIG_DESCRIPTION = '編集URL用の共有キー。編集URLを知っている人は共同編集できます。';
 const CONFIG_PRIMARY_KEYS = [
   IMAGE_DRIVE_URL_CONFIG_KEY,
-  HOTSPOT_PHOTO_FOLDER_URL_CONFIG_KEY,
+  HOTSPOT_FOLDER_URL_CONFIG_KEY,
   STUDENT_SHEET_URL_CONFIG_KEY,
   EDIT_KEY_CONFIG_KEY,
   WEB_APP_URL_CONFIG_KEY,
@@ -28,7 +30,7 @@ const CONFIG_PRIMARY_KEYS = [
 ];
 const CONFIG_DESCRIPTIONS = {
   IMAGE_DRIVE_URL: IMAGE_DRIVE_URL_CONFIG_DESCRIPTION,
-  HOTSPOT_PHOTO_FOLDER_URL: HOTSPOT_PHOTO_FOLDER_URL_CONFIG_DESCRIPTION,
+  HOTSPOT_FOLDER_URL: HOTSPOT_FOLDER_URL_CONFIG_DESCRIPTION,
   STUDENT_SHEET_URL: STUDENT_SHEET_URL_CONFIG_DESCRIPTION,
   EDIT_KEY: EDIT_KEY_CONFIG_DESCRIPTION,
   WEB_APP_URL: WEB_APP_URL_CONFIG_DESCRIPTION,
@@ -37,9 +39,14 @@ const CONFIG_DESCRIPTIONS = {
 
 /** ホットスポット保存シート名 */
 const INFO_SHEET_NAME = 'info';
-const INFO_HEADERS = ['保存日時', '画像ID', 'ラベル', '説明', 'リンクURL', 'Pitch', 'Yaw', '形状', '色', 'アイコン', '写真ID', 'ジャンプ先ID', 'ID'];
+const INFO_HEADERS = ['保存日時', '画像ID', 'ラベル', '説明', 'リンクURL', 'Pitch', 'Yaw', '形状', '色', 'アイコン', '写真ID', 'ジャンプ先ID', 'ID', '音声ID'];
+const HOTSPOT_FOLDER_ID_KEY = 'HOTSPOT_FOLDER_ID';
+const HOTSPOT_FOLDER_MIGRATION_STATE_KEY = 'HOTSPOT_FOLDER_MIGRATION_STATE';
+const HOTSPOT_FOLDER_MIGRATION_VERSION = 1;
+const HOTSPOT_FOLDER_PENDING_SEPARATOR = '.__pending__';
+const HOTSPOT_FOLDER_NAME = 'Hemisphere Hotspot';
 const HOTSPOT_PHOTO_FOLDER_ID_KEY = 'HOTSPOT_PHOTO_FOLDER_ID';
-const HOTSPOT_PHOTO_FOLDER_NAME = 'Hemisphere ホットスポット写真';
+const HOTSPOT_PHOTO_FOLDER_NAME = 'photos';
 const HOTSPOT_PHOTO_ORIGINAL_MAX_BYTES = 20 * 1024 * 1024;
 const HOTSPOT_PHOTO_FINAL_MAX_BYTES = 6 * 1024 * 1024;
 const HOTSPOT_PHOTO_MIME_EXTENSIONS = {
@@ -47,20 +54,33 @@ const HOTSPOT_PHOTO_MIME_EXTENSIONS = {
   'image/png': ['png'],
   'image/webp': ['webp']
 };
+const HOTSPOT_AUDIO_FOLDER_ID_KEY = 'HOTSPOT_AUDIO_FOLDER_ID';
+const HOTSPOT_AUDIO_FOLDER_NAME = 'audio';
+const HOTSPOT_AUDIO_MIME_TYPE = 'audio/mpeg';
+const HOTSPOT_AUDIO_FINAL_MAX_BYTES = 4 * 1024 * 1024;
+const HOTSPOT_AUDIO_MIN_DURATION_SECONDS = 0.5;
+const HOTSPOT_AUDIO_MAX_DURATION_SECONDS = 120;
 const DEFAULT_MARKER_SHAPE = 'circle';
 const DEFAULT_MARKER_COLOR = 'blue';
 const DEFAULT_MARKER_ICON = 'info';
 const ALLOWED_MARKER_SHAPES = ['circle', 'square', 'diamond'];
 const ALLOWED_MARKER_COLORS = ['blue', 'cyan', 'teal', 'green', 'lime', 'yellow', 'orange', 'red', 'pink', 'purple', 'gray', 'white'];
 const SELECTABLE_MARKER_ICONS = [
-  'info', 'photo', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
+  'info', 'photo', 'audio', 'link', 'wifi', 'quiz', 'eye', 'warning', 'flag',
   'animal', 'leaf', 'flower', 'historic'
 ];
-const LEGACY_MARKER_ICONS = ['video', 'audio'];
+const LEGACY_MARKER_ICONS = ['video'];
 const SUPPORTED_MARKER_ICONS = SELECTABLE_MARKER_ICONS.concat(LEGACY_MARKER_ICONS);
 
-/** ID列のインデックス（0-based） */
-const ID_COL_INDEX = 12;
+/** info列のインデックス（0-based）。既存M列IDは移動しない。 */
+const INFO_COLUMN_INDEX = {
+  photoId: 10,
+  jumpSceneId: 11,
+  id: 12,
+  audioId: 13
+};
+const ID_COL_INDEX = INFO_COLUMN_INDEX.id;
+const AUDIO_ID_COL_INDEX = INFO_COLUMN_INDEX.audioId;
 
 /** 一括入力用スプレッドシートIDの PropertiesService キー */
 const STUDENT_SHEET_ID_KEY = 'STUDENT_SHEET_ID';
@@ -387,45 +407,82 @@ function setConfigValueInSheet_(sheet, key, value, description) {
   if (description) sheet.getRange(row, 3).setValue(description);
 }
 
-/** 正式なホットスポット写真フォルダIDから、人間向けDrive URLを生成する。 */
-function buildHotspotPhotoFolderUrl_(folderId) {
+/** 正式なホットスポット添付フォルダIDから、人間向けDrive URLを生成する。 */
+function buildHotspotFolderUrl_(folderId) {
   const normalizedId = String(folderId || '').trim();
   if (!normalizedId) return '';
   if (!/^[A-Za-z0-9_-]+$/.test(normalizedId)) {
-    throw new Error('正式なホットスポット写真専用フォルダIDが不正です。');
+    throw new Error('正式なホットスポット添付フォルダIDが不正です。');
   }
   return 'https://drive.google.com/drive/folders/' + normalizedId;
 }
 
 /**
- * 正式フォルダIDだけからconfigの参照URLを同期する。
- * config更新失敗は正式フォルダやScriptPropertiesへ波及させない。
+ * 旧子フォルダURL行は、空欄または正式子フォルダURLと一致する場合だけ削除する。
+ * 正式URLと一致しない利用者編集値は保持し、警告を返す。
  *
- * @param {string} folderId 空文字なら未作成状態としてconfigを空欄にする
- * @param {GoogleAppsScript.Spreadsheet.Sheet=} sheet
- * @returns {{success:boolean,url:string,warning?:string}}
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {{photoFolder:Object,audioFolder:Object}} structure
+ * @returns {{removed:number,warnings:Array<string>}}
  */
-function syncHotspotPhotoFolderUrlConfig_(folderId, sheet) {
-  const url = buildHotspotPhotoFolderUrl_(folderId);
+function removeVerifiedLegacyHotspotFolderUrlRows_(sheet, structure) {
+  if (!sheet || !structure || !structure.photoFolder || !structure.audioFolder) {
+    return { removed: 0, warnings: [] };
+  }
+  const expectedByKey = {};
+  expectedByKey[HOTSPOT_PHOTO_FOLDER_URL_CONFIG_KEY] = buildHotspotFolderUrl_(structure.photoFolder.getId());
+  expectedByKey[HOTSPOT_AUDIO_FOLDER_URL_CONFIG_KEY] = buildHotspotFolderUrl_(structure.audioFolder.getId());
+  const rows = readConfigRows_(sheet);
+  const keepRows = [];
+  const warnings = [];
+  let removed = 0;
+  rows.forEach(function(row) {
+    if (!Object.prototype.hasOwnProperty.call(expectedByKey, row.key)) {
+      keepRows.push(row.cells.slice(0, CONFIG_HEADERS.length));
+      return;
+    }
+    const value = String(row.cells[1] == null ? '' : row.cells[1]).trim();
+    if (!value || value === expectedByKey[row.key]) {
+      removed += 1;
+      return;
+    }
+    keepRows.push(row.cells.slice(0, CONFIG_HEADERS.length));
+    warnings.push(row.key + ' に想定外の旧URL値があるため削除せず保持しました。');
+  });
+  if (removed > 0) writeConfigRows_(sheet, keepRows);
+  return { removed: removed, warnings: warnings };
+}
+
+/** 正式ルートIDだけからconfigの表示用URLを同期する。 */
+function syncHotspotFolderUrlConfig_(folderId, sheet, structure) {
+  const url = buildHotspotFolderUrl_(folderId);
   try {
     const configSheet = sheet || getOrCreateConfigSheet_();
     repairConfigSheet_(configSheet);
     setConfigValueInSheet_(
       configSheet,
-      HOTSPOT_PHOTO_FOLDER_URL_CONFIG_KEY,
+      HOTSPOT_FOLDER_URL_CONFIG_KEY,
       url,
-      HOTSPOT_PHOTO_FOLDER_URL_CONFIG_DESCRIPTION
+      HOTSPOT_FOLDER_URL_CONFIG_DESCRIPTION
     );
-    return { success: true, url: url };
+    const cleanup = structure
+      ? removeVerifiedLegacyHotspotFolderUrlRows_(configSheet, structure)
+      : { removed: 0, warnings: [] };
+    return { success: true, url: url, warnings: cleanup.warnings, removedLegacyRows: cleanup.removed };
   } catch (e) {
-    console.error('ホットスポット写真フォルダURLのconfig同期エラー:', e && e.message ? e.message : e);
+    console.error('HotspotフォルダURLのconfig同期エラー:', e && e.message ? e.message : e);
     return {
       success: false,
       url: url,
-      warning: '写真フォルダは利用できますが、configの写真フォルダURLを同期できませんでした。'
+      warnings: [],
+      warning: 'Hotspotフォルダ構成を確認できましたが、configのフォルダURLを同期できませんでした。'
     };
   }
 }
+
+/** 旧内部呼び出し互換。configの正式項目は更新しない。 */
+function buildHotspotPhotoFolderUrl_(folderId) { return buildHotspotFolderUrl_(folderId); }
+function buildHotspotAudioFolderUrl_(folderId) { return buildHotspotFolderUrl_(folderId); }
 
 /**
  * config シートに WEB_APP_URL 行を用意する。既存値は上書きしない。
@@ -2214,17 +2271,39 @@ function getOfficialHotspotPhotoFolderId_() {
   ).trim();
 }
 
+function getOfficialHotspotFolderId_() {
+  return String(
+    PropertiesService.getScriptProperties().getProperty(HOTSPOT_FOLDER_ID_KEY) || ''
+  ).trim();
+}
+
+function getOfficialHotspotAudioFolderId_() {
+  return String(
+    PropertiesService.getScriptProperties().getProperty(HOTSPOT_AUDIO_FOLDER_ID_KEY) || ''
+  ).trim();
+}
+
+function getProtectedHotspotAttachmentFolderIds_() {
+  return [
+    getOfficialHotspotFolderId_(),
+    getOfficialHotspotPhotoFolderId_(),
+    getOfficialHotspotAudioFolderId_()
+  ].filter(function(folderId, index, all) {
+    return !!folderId && all.indexOf(folderId) === index;
+  });
+}
+
 function listDriveFolderItems_(folderId) {
-  const protectedPhotoFolderId = getOfficialHotspotPhotoFolderId_();
-  if (protectedPhotoFolderId && String(folderId || '').trim() === protectedPhotoFolderId) {
-    throw new Error('ホットスポット写真専用フォルダはシーン一覧へ公開できません。');
+  const protectedFolderIds = getProtectedHotspotAttachmentFolderIds_();
+  if (protectedFolderIds.indexOf(String(folderId || '').trim()) !== -1) {
+    throw new Error('ホットスポット添付専用フォルダはシーン一覧へ公開できません。');
   }
   const folder = DriveApp.getFolderById(folderId);
   const folders = [];
   const subfolders = folder.getFolders();
   while (subfolders.hasNext()) {
     const subfolder = subfolders.next();
-    if (protectedPhotoFolderId && String(subfolder.getId() || '').trim() === protectedPhotoFolderId) {
+    if (protectedFolderIds.indexOf(String(subfolder.getId() || '').trim()) !== -1) {
       continue;
     }
     folders.push({ id: subfolder.getId(), name: subfolder.getName(), type: 'folder' });
@@ -2740,25 +2819,27 @@ function setupSheets() {
     if (configRepair.removedDuplicateKeys.length > 0) {
       msgs.push('⚠️ configの重複基本項目を1行へ統合しました: ' + configRepair.removedDuplicateKeys.join(', '));
     }
-    try {
-      const officialPhotoFolder = getHotspotPhotoFolder_(false);
-      const photoFolderSync = syncHotspotPhotoFolderUrlConfig_(
-        officialPhotoFolder ? officialPhotoFolder.getId() : '',
-        configSheet
-      );
-      if (!photoFolderSync.success) {
-        msgs.push('⚠️ ' + photoFolderSync.warning);
-      } else if (officialPhotoFolder) {
-        msgs.push('✅ 正式な写真フォルダからconfigのHOTSPOT_PHOTO_FOLDER_URLを修復しました。');
+    const hasOfficialHotspotFolder = !!(
+      getOfficialHotspotFolderId_() ||
+      getOfficialHotspotPhotoFolderId_() ||
+      getOfficialHotspotAudioFolderId_() ||
+      String(PropertiesService.getScriptProperties().getProperty(HOTSPOT_FOLDER_MIGRATION_STATE_KEY) || '').trim()
+    );
+    if (hasOfficialHotspotFolder) {
+      try {
+        const hotspotStructure = getHotspotFolderStructure_(true, configSheet);
+        msgs.push('✅ Hemisphere Hotspot/photos/audioの構成を検証・補修し、configのHOTSPOT_FOLDER_URLを同期しました。');
+        (hotspotStructure.warnings || []).forEach(function(warning) { msgs.push('⚠️ ' + warning); });
+      } catch (hotspotFolderError) {
+        msgs.push('⚠️ Hotspot添付フォルダ構成を安全に検証・移行できませんでした。既存データは置き換えていません。');
+        console.error(
+          'setupSheets Hotspotフォルダ検証・移行エラー:',
+          hotspotFolderError && hotspotFolderError.message ? hotspotFolderError.message : hotspotFolderError
+        );
       }
-    } catch (photoFolderError) {
-      const clearPhotoFolderUrl = syncHotspotPhotoFolderUrlConfig_('', configSheet);
-      msgs.push('⚠️ 正式なホットスポット写真フォルダを検証できませんでした。新しいフォルダは作成していません。');
-      if (!clearPhotoFolderUrl.success) msgs.push('⚠️ ' + clearPhotoFolderUrl.warning);
-      console.error(
-        'setupSheets ホットスポット写真フォルダ検証エラー:',
-        photoFolderError && photoFolderError.message ? photoFolderError.message : photoFolderError
-      );
+    } else {
+      const emptyFolderSync = syncHotspotFolderUrlConfig_('', configSheet, null);
+      if (!emptyFolderSync.success) msgs.push('⚠️ ' + emptyFolderSync.warning);
     }
     const configRows = readConfigRows_(configSheet);
 
@@ -3092,6 +3173,70 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+const AUDIO_VENDOR_VERSION = '1.50.8';
+const AUDIO_VENDOR_START_MARKER = 'AUDIO_VENDOR_BUNDLE_START';
+const AUDIO_VENDOR_END_MARKER = 'AUDIO_VENDOR_BUNDLE_END';
+
+/**
+ * app.html の音声vendor領域を厳密に検証して返す。
+ *
+ * @param {string} appSource
+ * @returns {{ markerStart: number, markerEnd: number, source: string }}
+ */
+function locateAudioVendorRegion_(appSource) {
+  const source = String(appSource || '');
+  const startAt = source.indexOf(AUDIO_VENDOR_START_MARKER);
+  const endAt = source.indexOf(AUDIO_VENDOR_END_MARKER);
+  if (startAt === -1 || startAt !== source.lastIndexOf(AUDIO_VENDOR_START_MARKER)) {
+    throw new Error('Audio vendor start marker must appear exactly once.');
+  }
+  if (endAt === -1 || endAt !== source.lastIndexOf(AUDIO_VENDOR_END_MARKER)) {
+    throw new Error('Audio vendor end marker must appear exactly once.');
+  }
+  if (startAt >= endAt) {
+    throw new Error('Audio vendor marker order is invalid.');
+  }
+
+  const markedStart = startAt + AUDIO_VENDOR_START_MARKER.length;
+  const markedSource = source.slice(markedStart, endAt);
+  const prefix = markedSource.match(/^(?:\r\n|\n)<script>(?:\r\n|\n)/);
+  if (!prefix
+      || markedSource.split('<script>').length - 1 !== 1
+      || markedSource.split('</script>').length - 1 !== 1) {
+    throw new Error('Audio vendor region must contain one directly wrapped script.');
+  }
+  const closingScriptAt = markedSource.indexOf('</script>');
+  const suffix = markedSource.slice(closingScriptAt + '</script>'.length);
+  if (!/^(?:\r\n|\n)$/.test(suffix)) {
+    throw new Error('Audio vendor region has an invalid closing boundary.');
+  }
+
+  const contentStart = markedStart + prefix[0].length;
+  const contentEnd = markedStart + closingScriptAt;
+  const vendorSource = source.slice(contentStart, contentEnd);
+  if (/<\/script/i.test(vendorSource)) {
+    throw new Error('Audio vendor source contains an unsafe closing script sequence.');
+  }
+  return {
+    markerStart: startAt,
+    markerEnd: endAt + AUDIO_VENDOR_END_MARKER.length,
+    source: vendorSource
+  };
+}
+
+/**
+ * 認証済み編集画面へ音声vendorバンドルを返す。
+ *
+ * @param {{ __editToken?: string }} payload
+ * @returns {{ version: string, source: string }}
+ */
+function getAudioVendorBundle(payload) {
+  assertEditToken_(payload);
+  const appSource = HtmlService.createHtmlOutputFromFile('app').getContent();
+  const region = locateAudioVendorRegion_(appSource);
+  return { version: AUDIO_VENDOR_VERSION, source: region.source };
+}
+
 /**
  * HTML テンプレートで <?!= include('filename') ?> を使って
  * 別ファイルの内容を埋め込むためのヘルパー。
@@ -3100,7 +3245,11 @@ function doGet(e) {
  * @returns {string}
  */
 function include(filename) {
-  return HtmlService.createHtmlOutputFromFile(filename).getContent();
+  const source = HtmlService.createHtmlOutputFromFile(filename).getContent();
+  if (filename !== 'app') return source;
+
+  const region = locateAudioVendorRegion_(source);
+  return source.slice(0, region.markerStart) + source.slice(region.markerEnd);
 }
 
 
@@ -3410,7 +3559,7 @@ function getHotspotPhotoDataUri(request) {
 
     // 写真Driveへ触れる前に、scene・hotspot・photoの三値が現在のinfo行と一致することを確認する。
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(INFO_SHEET_NAME);
-    if (!sheet || sheet.getLastRow() <= 1) {
+    if (!sheet || sheet.getLastRow() <= 1 || !hasReadableInfoSheetSchema_(sheet)) {
       return { success: false, error: '写真は公開中のホットスポットに関連付けられていません。' };
     }
     const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, INFO_HEADERS.length).getValues();
@@ -3559,98 +3708,938 @@ function normalizeHotspotPhotoUpload_(photoUpload) {
   };
 }
 
-/** 本体スプレッドシートと同じ親にある正式添付フォルダを取得し、未設定時だけ遅延作成する。 */
-function getHotspotPhotoFolder_(createIfMissing) {
-  const properties = PropertiesService.getScriptProperties();
-  const officialId = getOfficialHotspotPhotoFolderId_();
-  if (!officialId && !createIfMissing) return null;
+function getFolderParentObjects_(folder) {
+  const result = [];
+  const parents = folder.getParents();
+  while (parents.hasNext()) result.push(parents.next());
+  return result;
+}
+
+function getHotspotFolderContainerContext_() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   if (!spreadsheet || !spreadsheet.getId()) {
     throw new Error('本体スプレッドシートを特定できません。');
   }
   const spreadsheetFile = DriveApp.getFileById(spreadsheet.getId());
-  const spreadsheetParentIds = getFileParentFolderIds_(spreadsheetFile);
+  const spreadsheetParents = getFolderParentObjects_(spreadsheetFile);
+  const spreadsheetParentIds = spreadsheetParents.map(function(folder) {
+    return String(folder.getId() || '').trim();
+  }).filter(Boolean);
   if (spreadsheetParentIds.length === 0) {
     throw new Error('本体スプレッドシートの親フォルダを特定できません。');
   }
   const configuredImageRootId = extractDriveFolderId_(
     getAppConfig_()[IMAGE_DRIVE_URL_CONFIG_KEY] || ''
   ) || '';
-
-  if (officialId) {
-    let officialFolder;
-    try {
-      officialFolder = DriveApp.getFolderById(officialId);
-    } catch (folderError) {
-      throw new Error('ScriptProperties の HOTSPOT_PHOTO_FOLDER_ID が壊れています。');
-    }
-    if (String(officialFolder.getId() || '').trim() !== officialId) {
-      throw new Error('正式なホットスポット写真専用フォルダIDが一致しません。');
-    }
-    const officialParentIds = getFileParentFolderIds_(officialFolder);
-    const isSibling = officialParentIds.some(function(parentId) {
-      return spreadsheetParentIds.indexOf(parentId) !== -1;
-    });
-    if (!isSibling) {
-      throw new Error('正式なホットスポット写真専用フォルダは本体スプレッドシートと同じ親にありません。');
-    }
-    if (configuredImageRootId && isDriveFolderWithinRoot_(officialId, configuredImageRootId)) {
-      throw new Error('正式なホットスポット写真専用フォルダはIMAGE_DRIVE_URL配下に配置できません。');
-    }
-    return officialFolder;
+  const eligibleParents = spreadsheetParents.filter(function(folder) {
+    const folderId = String(folder.getId() || '').trim();
+    return !configuredImageRootId || !isDriveFolderWithinRoot_(folderId, configuredImageRootId);
+  });
+  if (eligibleParents.length === 0) {
+    throw new Error('HotspotフォルダはIMAGE_DRIVE_URL配下には作成・移行できません。');
   }
+  return {
+    spreadsheetParentIds: spreadsheetParentIds,
+    parentFolder: eligibleParents[0],
+    configuredImageRootId: configuredImageRootId
+  };
+}
 
-  const eligibleParentIds = configuredImageRootId
-    ? spreadsheetParentIds.filter(function(parentId) {
-        return !isDriveFolderWithinRoot_(parentId, configuredImageRootId);
-      })
-    : spreadsheetParentIds.slice();
-  if (eligibleParentIds.length === 0) {
-    throw new Error('ホットスポット写真専用フォルダはIMAGE_DRIVE_URL配下には作成できません。');
-  }
-  const parentFolder = DriveApp.getFolderById(eligibleParentIds[0]);
-  const createdFolder = parentFolder.createFolder(HOTSPOT_PHOTO_FOLDER_NAME);
+function getOfficialDriveFolder_(folderId, propertyKey) {
+  if (!folderId) return null;
+  let folder;
   try {
-    properties.setProperty(HOTSPOT_PHOTO_FOLDER_ID_KEY, createdFolder.getId());
-  } catch (propertyError) {
-    let folderRollbackFailed = false;
-    try { createdFolder.setTrashed(true); } catch (rollbackError) {
-      folderRollbackFailed = true;
-      console.error(
-        'ホットスポット写真フォルダrollbackエラー folderId=' + String(createdFolder.getId() || '') + ':',
-        rollbackError.message
+    folder = DriveApp.getFolderById(folderId);
+  } catch (error) {
+    throw new Error('ScriptProperties の ' + propertyKey + ' が壊れています。');
+  }
+  if (String(folder.getId() || '').trim() !== folderId) {
+    throw new Error('ScriptProperties の ' + propertyKey + ' とDriveフォルダIDが一致しません。');
+  }
+  return folder;
+}
+
+function findDirectChildFoldersByName_(parentFolder, name, ignoredFolderId) {
+  const matches = [];
+  const ignoredId = String(ignoredFolderId || '').trim();
+  const folders = parentFolder.getFolders();
+  while (folders.hasNext()) {
+    const folder = folders.next();
+    const folderId = String(folder.getId() || '').trim();
+    if (folderId === ignoredId) continue;
+    if (String(folder.getName() || '') === name) matches.push(folder);
+  }
+  return matches;
+}
+
+function findDirectChildFolderByName_(parentFolder, name, ignoredFolderId) {
+  const matches = findDirectChildFoldersByName_(parentFolder, name, ignoredFolderId);
+  return matches.length > 0 ? matches[0] : null;
+}
+
+function assertNoUntrackedHotspotFolderName_(parentFolder, name, officialId) {
+  if (findDirectChildFoldersByName_(parentFolder, name, officialId).length > 0) {
+    throw new Error('正式IDに紐付かない同名の「' + name + '」フォルダがあるため自動採用・重複作成を停止しました。');
+  }
+}
+
+function createHotspotFolderMigrationError_(message, unsafe) {
+  const error = new Error(message);
+  error.hotspotFolderMigrationUnsafe = !!unsafe;
+  return error;
+}
+
+function getHotspotFolderPropertyIds_(properties) {
+  return {
+    rootId: String(properties.getProperty(HOTSPOT_FOLDER_ID_KEY) || '').trim(),
+    photoId: String(properties.getProperty(HOTSPOT_PHOTO_FOLDER_ID_KEY) || '').trim(),
+    audioId: String(properties.getProperty(HOTSPOT_AUDIO_FOLDER_ID_KEY) || '').trim()
+  };
+}
+
+function getHotspotFolderConfigKeys_() {
+  return [
+    HOTSPOT_FOLDER_URL_CONFIG_KEY,
+    HOTSPOT_PHOTO_FOLDER_URL_CONFIG_KEY,
+    HOTSPOT_AUDIO_FOLDER_URL_CONFIG_KEY
+  ];
+}
+
+function captureHotspotFolderConfigState_(sheet) {
+  const keys = getHotspotFolderConfigKeys_();
+  const rows = [];
+  readConfigRows_(sheet).forEach(function(row, index) {
+    if (keys.indexOf(row.key) === -1) return;
+    rows.push({
+      index: index,
+      cells: row.cells.slice(0, CONFIG_HEADERS.length)
+    });
+  });
+  return { rows: rows };
+}
+
+function restoreHotspotFolderConfigState_(sheet, savedState) {
+  const keys = getHotspotFolderConfigKeys_();
+  const keepRows = readConfigRows_(sheet).filter(function(row) {
+    return keys.indexOf(row.key) === -1;
+  }).map(function(row) {
+    return row.cells.slice(0, CONFIG_HEADERS.length);
+  });
+  const savedRows = savedState && Array.isArray(savedState.rows)
+    ? savedState.rows.slice().sort(function(a, b) { return Number(a.index) - Number(b.index); })
+    : [];
+  savedRows.forEach(function(entry) {
+    const index = Math.max(0, Math.min(keepRows.length, Number(entry.index) || 0));
+    keepRows.splice(index, 0, entry.cells.slice(0, CONFIG_HEADERS.length));
+  });
+  writeConfigRows_(sheet, keepRows);
+}
+
+function hotspotFolderConfigStateMatches_(sheet, savedState) {
+  return JSON.stringify(captureHotspotFolderConfigState_(sheet)) ===
+    JSON.stringify(savedState || { rows: [] });
+}
+
+function buildHotspotFolderPendingName_(baseName, transactionId) {
+  return baseName + HOTSPOT_FOLDER_PENDING_SEPARATOR + transactionId;
+}
+
+function validateHotspotFolderMigrationState_(state) {
+  if (!state || typeof state !== 'object' || state.version !== HOTSPOT_FOLDER_MIGRATION_VERSION) {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルの形式が不正です。', true);
+  }
+  const transactionId = String(state.transactionId || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(transactionId)) {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルの識別子が不正です。', true);
+  }
+  if (!state.oldProperties || !state.root || !state.photo || !state.audio ||
+      !state.oldConfig || !Array.isArray(state.oldConfig.rows)) {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルに復旧情報が不足しています。', true);
+  }
+  if (state.mode !== 'forward' && state.mode !== 'rollback') {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルの実行モードが不正です。', true);
+  }
+  if (typeof state.phase !== 'string' || !state.phase.trim()) {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルのphaseが不正です。', true);
+  }
+  const expectedNames = {
+    root: buildHotspotFolderPendingName_(HOTSPOT_FOLDER_NAME, transactionId),
+    photo: buildHotspotFolderPendingName_(HOTSPOT_PHOTO_FOLDER_NAME, transactionId),
+    audio: buildHotspotFolderPendingName_(HOTSPOT_AUDIO_FOLDER_NAME, transactionId)
+  };
+  ['root', 'photo', 'audio'].forEach(function(key) {
+    if (String(state[key].temporaryName || '') !== expectedNames[key]) {
+      throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルの一時名が一致しません。', true);
+    }
+    if (typeof state[key].created !== 'boolean' || typeof state[key].renamed !== 'boolean' ||
+        (key !== 'root' && typeof state[key].moved !== 'boolean')) {
+      throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルの変更状態が不正です。', true);
+    }
+    state[key].id = String(state[key].id || '').trim();
+  });
+  state.oldConfig.rows.forEach(function(entry) {
+    if (!entry || typeof entry.index !== 'number' || !isFinite(entry.index) ||
+        Math.floor(entry.index) !== entry.index || entry.index < 0 || !Array.isArray(entry.cells)) {
+      throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルのconfig復元情報が不正です。', true);
+    }
+  });
+  state.oldProperties.rootId = String(state.oldProperties.rootId || '').trim();
+  state.oldProperties.photoId = String(state.oldProperties.photoId || '').trim();
+  state.oldProperties.audioId = String(state.oldProperties.audioId || '').trim();
+  state.phase = state.phase.trim();
+  state.configWarnings = Array.isArray(state.configWarnings) ? state.configWarnings.map(String) : [];
+  state.configSynced = !!state.configSynced || state.phase === 'config_synced';
+  return state;
+}
+
+function readHotspotFolderMigrationState_(properties) {
+  const raw = String(properties.getProperty(HOTSPOT_FOLDER_MIGRATION_STATE_KEY) || '').trim();
+  if (!raw) return null;
+  let state;
+  try {
+    state = JSON.parse(raw);
+  } catch (error) {
+    throw createHotspotFolderMigrationError_('Hotspotフォルダ移行ジャーナルを解析できません。', true);
+  }
+  return validateHotspotFolderMigrationState_(state);
+}
+
+function writeHotspotFolderMigrationState_(properties, state, phase) {
+  if (phase) state.phase = phase;
+  validateHotspotFolderMigrationState_(state);
+  properties.setProperty(HOTSPOT_FOLDER_MIGRATION_STATE_KEY, JSON.stringify(state));
+}
+
+function getMigrationFolderById_(folderId, label) {
+  if (!folderId) return null;
+  let folder;
+  try {
+    folder = DriveApp.getFolderById(folderId);
+  } catch (error) {
+    throw createHotspotFolderMigrationError_('移行ジャーナルの' + label + 'フォルダをDrive上で確認できません。', true);
+  }
+  if (String(folder.getId() || '').trim() !== folderId) {
+    throw createHotspotFolderMigrationError_('移行ジャーナルの' + label + 'フォルダIDがDriveと一致しません。', true);
+  }
+  return folder;
+}
+
+function validateMigrationRootFolder_(folder, containerContext, allowedNames) {
+  const folderId = String(folder.getId() || '').trim();
+  const parentIds = getFileParentFolderIds_(folder);
+  if (parentIds.length !== 1 || containerContext.spreadsheetParentIds.indexOf(parentIds[0]) === -1) {
+    throw createHotspotFolderMigrationError_('移行中のHotspotルートの親フォルダが一致しません。', true);
+  }
+  if (allowedNames.indexOf(String(folder.getName() || '')) === -1) {
+    throw createHotspotFolderMigrationError_('移行中のHotspotルート名がジャーナルと一致しません。', true);
+  }
+  if (containerContext.configuredImageRootId &&
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+    throw createHotspotFolderMigrationError_('移行中のHotspotルートはIMAGE_DRIVE_URL配下に配置できません。', true);
+  }
+}
+
+function validateRecoverableHotspotChildContents_(folder, kind, containerContext) {
+  const folderId = String(folder.getId() || '').trim();
+  if (containerContext.configuredImageRootId &&
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+    throw createHotspotFolderMigrationError_('未追跡の添付候補はIMAGE_DRIVE_URL配下にあるため採用できません。', true);
+  }
+  const childFolders = folder.getFolders();
+  if (childFolders.hasNext()) {
+    throw createHotspotFolderMigrationError_('未追跡の添付候補にサブフォルダがあるため自動採用できません。', true);
+  }
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const scenesSheet = spreadsheet ? spreadsheet.getSheetByName(SCENES_SHEET_NAME) : null;
+  const registeredScenes = scenesSheet ? readSceneRows_(scenesSheet).byFileId : {};
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileId = String(file.getId() || '').trim();
+    const mimeType = String(file.getMimeType() || '').trim().toLowerCase();
+    const mimeMatches = kind === 'photo'
+      ? !!HOTSPOT_PHOTO_MIME_EXTENSIONS[mimeType]
+      : mimeType === HOTSPOT_AUDIO_MIME_TYPE;
+    if (!mimeMatches || registeredScenes[fileId]) {
+      throw createHotspotFolderMigrationError_('未追跡の添付候補の内容が対象種別と一致しません。', true);
+    }
+  }
+}
+
+function recoverHotspotRootFromOfficialChildren_(photoFolder, audioFolder, containerContext) {
+  const candidates = [];
+  [photoFolder, audioFolder].forEach(function(childFolder) {
+    if (!childFolder) return;
+    const parents = getFolderParentObjects_(childFolder);
+    if (parents.length !== 1) {
+      throw createHotspotFolderMigrationError_('正式な添付子フォルダに複数または不明な親があります。', true);
+    }
+    const parent = parents[0];
+    const parentId = String(parent.getId() || '').trim();
+    if (containerContext.spreadsheetParentIds.indexOf(parentId) !== -1) return;
+    if (String(parent.getName() || '') !== HOTSPOT_FOLDER_NAME) {
+      throw createHotspotFolderMigrationError_('正式な添付子フォルダの親をHotspotルートとして確認できません。', true);
+    }
+    validateMigrationRootFolder_(parent, containerContext, [HOTSPOT_FOLDER_NAME]);
+    candidates.push(parent);
+  });
+  if (candidates.length === 0) return null;
+  const rootId = String(candidates[0].getId() || '').trim();
+  if (candidates.some(function(folder) { return String(folder.getId() || '').trim() !== rootId; })) {
+    throw createHotspotFolderMigrationError_('正式な写真・音声フォルダが異なるHotspotルートを指しています。', true);
+  }
+  const childIds = [photoFolder, audioFolder].filter(Boolean).map(function(folder) {
+    return String(folder.getId() || '').trim();
+  });
+  if (!rootId || childIds.indexOf(rootId) !== -1) {
+    throw createHotspotFolderMigrationError_('Hotspotルートと添付子フォルダのIDが衝突しています。', true);
+  }
+  return candidates[0];
+}
+
+function recoverUntrackedHotspotChild_(rootFolder, targetName, kind, otherOfficialId, containerContext) {
+  const candidates = findDirectChildFoldersByName_(rootFolder, targetName, '');
+  if (candidates.length === 0) return null;
+  if (candidates.length !== 1) {
+    throw createHotspotFolderMigrationError_('正式IDのない「' + targetName + '」候補が複数あるため自動採用できません。', true);
+  }
+  const candidate = candidates[0];
+  const candidateId = String(candidate.getId() || '').trim();
+  if (!candidateId || candidateId === String(rootFolder.getId() || '').trim() ||
+      candidateId === String(otherOfficialId || '').trim()) {
+    throw createHotspotFolderMigrationError_('未追跡の添付候補IDが既存の正式フォルダと衝突しています。', true);
+  }
+  validateRecoverableHotspotChildContents_(candidate, kind, containerContext);
+  return candidate;
+}
+
+function inspectHotspotFolderStructure_(propertyIds, containerContext, allowInterruptedRecovery) {
+  const distinctIds = [propertyIds.rootId, propertyIds.photoId, propertyIds.audioId].filter(Boolean);
+  if (new Set(distinctIds).size !== distinctIds.length) {
+    throw new Error('Hotspotルート、photos、audioにはすべて異なる正式IDが必要です。');
+  }
+  let rootFolder = getOfficialDriveFolder_(propertyIds.rootId, HOTSPOT_FOLDER_ID_KEY);
+  let photoFolder = getOfficialDriveFolder_(propertyIds.photoId, HOTSPOT_PHOTO_FOLDER_ID_KEY);
+  let audioFolder = getOfficialDriveFolder_(propertyIds.audioId, HOTSPOT_AUDIO_FOLDER_ID_KEY);
+  if (!rootFolder && allowInterruptedRecovery && (photoFolder || audioFolder)) {
+    rootFolder = recoverHotspotRootFromOfficialChildren_(photoFolder, audioFolder, containerContext);
+  }
+  if (rootFolder) validateMigrationRootFolder_(rootFolder, containerContext, [HOTSPOT_FOLDER_NAME]);
+  photoFolder = validateHotspotChildForRead_(photoFolder, rootFolder, containerContext, 'photos');
+  audioFolder = validateHotspotChildForRead_(audioFolder, rootFolder, containerContext, 'audio');
+  if (allowInterruptedRecovery && rootFolder) {
+    if (!photoFolder && !propertyIds.photoId) {
+      photoFolder = recoverUntrackedHotspotChild_(
+        rootFolder,
+        HOTSPOT_PHOTO_FOLDER_NAME,
+        'photo',
+        propertyIds.audioId,
+        containerContext
       );
     }
-    throw new Error(folderRollbackFailed
-      ? 'ホットスポット写真専用フォルダIDを保存できず、作成フォルダの取り消しにも失敗しました。管理者へ連絡してください。'
-      : 'ホットスポット写真専用フォルダIDを保存できませんでした。');
+    if (!audioFolder && !propertyIds.audioId) {
+      audioFolder = recoverUntrackedHotspotChild_(
+        rootFolder,
+        HOTSPOT_AUDIO_FOLDER_NAME,
+        'audio',
+        photoFolder ? photoFolder.getId() : propertyIds.photoId,
+        containerContext
+      );
+    }
   }
-  return createdFolder;
+  return { rootFolder: rootFolder, photoFolder: photoFolder, audioFolder: audioFolder };
+}
+
+function isCompleteHotspotFolderStructure_(propertyIds, inspected) {
+  if (!propertyIds.rootId || !propertyIds.photoId || !propertyIds.audioId ||
+      !inspected.rootFolder || !inspected.photoFolder || !inspected.audioFolder) return false;
+  const rootId = String(inspected.rootFolder.getId() || '').trim();
+  return rootId === propertyIds.rootId &&
+    String(inspected.rootFolder.getName() || '') === HOTSPOT_FOLDER_NAME &&
+    String(inspected.photoFolder.getId() || '').trim() === propertyIds.photoId &&
+    String(inspected.photoFolder.getName() || '') === HOTSPOT_PHOTO_FOLDER_NAME &&
+    getFileParentFolderIds_(inspected.photoFolder).join(',') === rootId &&
+    String(inspected.audioFolder.getId() || '').trim() === propertyIds.audioId &&
+    String(inspected.audioFolder.getName() || '') === HOTSPOT_AUDIO_FOLDER_NAME &&
+    getFileParentFolderIds_(inspected.audioFolder).join(',') === rootId;
+}
+
+function createHotspotFolderMigrationState_(properties, configSheet, containerContext) {
+  const oldProperties = getHotspotFolderPropertyIds_(properties);
+  const inspected = inspectHotspotFolderStructure_(oldProperties, containerContext, true);
+  if (!inspected.rootFolder &&
+      findDirectChildFoldersByName_(containerContext.parentFolder, HOTSPOT_FOLDER_NAME, '').length > 0) {
+    throw new Error('正式な子フォルダIDから確認できない同名の「' + HOTSPOT_FOLDER_NAME + '」があるため自動採用を停止しました。');
+  }
+  const transactionId = String(Utilities.getUuid() || '').replace(/[^A-Za-z0-9_-]/g, '') ||
+    String(new Date().getTime());
+  function childState(folder, oldId, targetName) {
+    const parents = folder ? getFolderParentObjects_(folder) : [];
+    if (folder && parents.length !== 1) {
+      throw createHotspotFolderMigrationError_('正式な添付子フォルダの親を一意に記録できません。', true);
+    }
+    return {
+      id: folder ? String(folder.getId() || '').trim() : '',
+      oldName: folder ? String(folder.getName() || '') : '',
+      oldParentId: folder ? String(parents[0].getId() || '').trim() : '',
+      created: !folder,
+      moved: false,
+      renamed: false,
+      temporaryName: buildHotspotFolderPendingName_(targetName, transactionId)
+    };
+  }
+  const state = {
+    version: HOTSPOT_FOLDER_MIGRATION_VERSION,
+    transactionId: transactionId,
+    mode: 'forward',
+    phase: 'started',
+    oldProperties: oldProperties,
+    oldConfig: captureHotspotFolderConfigState_(configSheet),
+    root: {
+      id: inspected.rootFolder ? String(inspected.rootFolder.getId() || '').trim() : '',
+      temporaryName: buildHotspotFolderPendingName_(HOTSPOT_FOLDER_NAME, transactionId),
+      created: !inspected.rootFolder,
+      renamed: false
+    },
+    photo: childState(inspected.photoFolder, oldProperties.photoId, HOTSPOT_PHOTO_FOLDER_NAME),
+    audio: childState(inspected.audioFolder, oldProperties.audioId, HOTSPOT_AUDIO_FOLDER_NAME),
+    configWarnings: [],
+    configSynced: false
+  };
+  writeHotspotFolderMigrationState_(properties, state, 'started');
+  return state;
+}
+
+function restoreHotspotFolderProperty_(properties, key, value) {
+  if (value) properties.setProperty(key, value);
+  else properties.deleteProperty(key);
+}
+
+function isHotspotFolderEmpty_(folder) {
+  return !folder.getFiles().hasNext() && !folder.getFolders().hasNext();
+}
+
+function hasDirectChildFolderId_(parentFolder, folderId) {
+  if (!parentFolder || !folderId) return false;
+  const folders = parentFolder.getFolders();
+  while (folders.hasNext()) {
+    if (String(folders.next().getId() || '').trim() === String(folderId || '').trim()) return true;
+  }
+  return false;
+}
+
+function findMigrationFolderForRollback_(component, parentFolder, failures, label) {
+  if (component.id) {
+    try { return DriveApp.getFolderById(component.id); } catch (error) {
+      failures.push(label + 'フォルダの再取得');
+      return null;
+    }
+  }
+  if (!parentFolder || !component.temporaryName) return null;
+  const matches = findDirectChildFoldersByName_(parentFolder, component.temporaryName, '');
+  if (matches.length > 1) {
+    failures.push(label + '一時フォルダ候補の重複');
+    return null;
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function rollbackHotspotFolderTransaction_(transaction) {
+  const failures = [];
+  const state = transaction.state;
+  const properties = transaction.properties;
+  const previousMode = state.mode;
+  const previousPhase = state.phase;
+  try {
+    state.mode = 'rollback';
+    writeHotspotFolderMigrationState_(properties, state, 'rollback_started');
+  } catch (error) {
+    state.mode = previousMode;
+    state.phase = previousPhase;
+    failures.push('移行ジャーナルのrollback状態保存');
+    console.error('Hotspotフォルダjournal rollback開始エラー:', error && error.message ? error.message : error);
+    return failures;
+  }
+
+  ['audio', 'photo'].forEach(function(key) {
+    const component = state[key];
+    if (component.created || !component.id) return;
+    let folder;
+    try { folder = DriveApp.getFolderById(component.id); } catch (error) {
+      failures.push(key + 'フォルダの再取得');
+      return;
+    }
+    if (component.oldName && String(folder.getName() || '') !== component.oldName) {
+      try { folder.setName(component.oldName); } catch (error) {
+        failures.push(key + 'フォルダ名の復元');
+        console.error('Hotspotフォルダ名rollbackエラー:', error && error.message ? error.message : error);
+      }
+    }
+    const parentIds = getFileParentFolderIds_(folder);
+    if (component.oldParentId && (parentIds.length !== 1 || parentIds[0] !== component.oldParentId)) {
+      try { folder.moveTo(DriveApp.getFolderById(component.oldParentId)); } catch (error) {
+        failures.push(key + '親フォルダの復元');
+        console.error('Hotspotフォルダ親rollbackエラー:', error && error.message ? error.message : error);
+      }
+    }
+  });
+
+  const rootFolder = findMigrationFolderForRollback_(
+    state.root,
+    transaction.containerContext.parentFolder,
+    failures,
+    'ルート'
+  );
+  ['audio', 'photo'].forEach(function(key) {
+    const component = state[key];
+    if (!component.created) return;
+    const folder = findMigrationFolderForRollback_(component, rootFolder, failures, key);
+    if (!folder) return;
+    try {
+      if (!isHotspotFolderEmpty_(folder)) throw new Error('作成した子フォルダが空ではありません。');
+      folder.setTrashed(true);
+    } catch (error) {
+      failures.push('作成した' + key + 'フォルダの破棄');
+      console.error('Hotspot子フォルダrollbackエラー:', error && error.message ? error.message : error);
+    }
+  });
+
+  const oldValueByKey = {};
+  oldValueByKey[HOTSPOT_FOLDER_ID_KEY] = state.oldProperties.rootId;
+  oldValueByKey[HOTSPOT_PHOTO_FOLDER_ID_KEY] = state.oldProperties.photoId;
+  oldValueByKey[HOTSPOT_AUDIO_FOLDER_ID_KEY] = state.oldProperties.audioId;
+  Object.keys(oldValueByKey).forEach(function(key) {
+    try { restoreHotspotFolderProperty_(properties, key, oldValueByKey[key]); } catch (error) {
+      failures.push('ScriptPropertiesの復元');
+      console.error('HotspotフォルダScriptProperties rollbackエラー:', error && error.message ? error.message : error);
+    }
+  });
+  try { restoreHotspotFolderConfigState_(transaction.configSheet, state.oldConfig); } catch (error) {
+    failures.push('configの復元');
+    console.error('Hotspotフォルダconfig rollbackエラー:', error && error.message ? error.message : error);
+  }
+
+  if (state.root.created && rootFolder) {
+    try {
+      if (!isHotspotFolderEmpty_(rootFolder)) throw new Error('作成したルートフォルダが空ではありません。');
+      rootFolder.setTrashed(true);
+    } catch (error) {
+      failures.push('作成したルートフォルダの破棄');
+      console.error('Hotspotルートフォルダrollbackエラー:', error && error.message ? error.message : error);
+    }
+  }
+
+  try {
+    const restored = getHotspotFolderPropertyIds_(properties);
+    if (JSON.stringify(restored) !== JSON.stringify(state.oldProperties)) {
+      throw new Error('ScriptPropertiesが旧状態と一致しません。');
+    }
+    if (!hotspotFolderConfigStateMatches_(transaction.configSheet, state.oldConfig)) {
+      throw new Error('configが旧状態と一致しません。');
+    }
+    ['photo', 'audio'].forEach(function(key) {
+      const component = state[key];
+      if (component.created || !component.id) return;
+      const folder = DriveApp.getFolderById(component.id);
+      if (component.oldName && String(folder.getName() || '') !== component.oldName) {
+        throw new Error(key + 'フォルダ名が旧状態と一致しません。');
+      }
+      const parentIds = getFileParentFolderIds_(folder);
+      if (component.oldParentId &&
+          (parentIds.length !== 1 || parentIds[0] !== component.oldParentId)) {
+        throw new Error(key + 'フォルダの親が旧状態と一致しません。');
+      }
+    });
+    ['photo', 'audio'].forEach(function(key) {
+      const component = state[key];
+      if (!component.created || !component.id || !rootFolder) return;
+      if (hasDirectChildFolderId_(rootFolder, component.id)) {
+        throw new Error('作成した' + key + 'フォルダが移行ルート直下に残っています。');
+      }
+    });
+    if (state.root.created && state.root.id &&
+        hasDirectChildFolderId_(transaction.containerContext.parentFolder, state.root.id)) {
+      throw new Error('作成したHotspotルートが元の親直下に残っています。');
+    }
+  } catch (error) {
+    failures.push('rollback結果の再検証');
+    console.error('Hotspotフォルダrollback再検証エラー:', error && error.message ? error.message : error);
+  }
+
+  if (failures.length === 0) {
+    try { properties.deleteProperty(HOTSPOT_FOLDER_MIGRATION_STATE_KEY); } catch (error) {
+      failures.push('移行ジャーナルの削除');
+      console.error('Hotspotフォルダjournal削除エラー:', error && error.message ? error.message : error);
+    }
+  }
+  return failures;
+}
+
+function validateHotspotChildForRead_(folder, rootFolder, containerContext, label) {
+  if (!folder) return null;
+  const folderId = String(folder.getId() || '').trim();
+  const parentIds = getFileParentFolderIds_(folder);
+  const rootId = rootFolder ? String(rootFolder.getId() || '').trim() : '';
+  const isRootChild = !!rootId && parentIds.length === 1 && parentIds[0] === rootId;
+  const isLegacySibling = parentIds.length === 1 &&
+    containerContext.spreadsheetParentIds.indexOf(parentIds[0]) !== -1;
+  if (!isRootChild && !isLegacySibling) {
+    throw new Error('正式な' + label + 'フォルダの親フォルダが不正です。');
+  }
+  if (containerContext.configuredImageRootId &&
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+    throw new Error('正式な' + label + 'フォルダはIMAGE_DRIVE_URL配下に配置できません。');
+  }
+  return folder;
+}
+
+function migrateOrCreateHotspotChild_(options) {
+  const state = options.state;
+  const properties = options.properties;
+  const rootFolder = options.rootFolder;
+  const rootId = String(rootFolder.getId() || '').trim();
+  let folder = state.id ? getMigrationFolderById_(state.id, options.label) : null;
+  if (!folder) {
+    if (!state.created) {
+      throw createHotspotFolderMigrationError_('移行ジャーナルの' + options.label + 'フォルダIDがありません。', true);
+    }
+    const pendingMatches = findDirectChildFoldersByName_(rootFolder, state.temporaryName, '');
+    if (pendingMatches.length > 1) {
+      throw createHotspotFolderMigrationError_('同じ移行識別子の' + options.label + '一時フォルダが複数あります。', true);
+    }
+    if (pendingMatches.length === 1) {
+      folder = pendingMatches[0];
+    } else {
+      if (findDirectChildFoldersByName_(rootFolder, options.targetName, '').length > 0) {
+        throw createHotspotFolderMigrationError_('正式IDに紐付かない同名の' + options.label + 'フォルダがあります。', true);
+      }
+      writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_create_pending');
+      folder = rootFolder.createFolder(state.temporaryName);
+    }
+    state.id = String(folder.getId() || '').trim();
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_created');
+  }
+  const folderId = String(folder.getId() || '').trim();
+  if (findDirectChildFoldersByName_(rootFolder, state.temporaryName, folderId).length > 0) {
+    throw createHotspotFolderMigrationError_('同じ移行識別子の' + options.label + '一時フォルダが複数あります。', true);
+  }
+  if (!folderId || folderId === rootId || folderId === String(options.otherFolderId || '').trim()) {
+    throw createHotspotFolderMigrationError_('Hotspotルートと添付子フォルダのIDが衝突しています。', true);
+  }
+  const parents = getFolderParentObjects_(folder);
+  const parentIds = parents.map(function(parent) { return String(parent.getId() || '').trim(); });
+  const isDirectChild = parentIds.length === 1 && parentIds[0] === rootId;
+  const isRecordedOldParent = parentIds.length === 1 && !!state.oldParentId && parentIds[0] === state.oldParentId;
+  if (!isDirectChild && !isRecordedOldParent) {
+    throw createHotspotFolderMigrationError_('移行中の' + options.label + 'フォルダの親がジャーナルと一致しません。', true);
+  }
+  if (options.containerContext.configuredImageRootId &&
+      isDriveFolderWithinRoot_(folderId, options.containerContext.configuredImageRootId)) {
+    throw createHotspotFolderMigrationError_('正式な' + options.label + 'フォルダはIMAGE_DRIVE_URL配下から移行できません。', true);
+  }
+  if (!isDirectChild) {
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_move_pending');
+    folder.moveTo(rootFolder);
+    state.moved = true;
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_moved');
+  } else if (state.oldParentId && state.oldParentId !== rootId) {
+    state.moved = true;
+  }
+
+  const currentPropertyId = String(properties.getProperty(options.propertyKey) || '').trim();
+  if (currentPropertyId && currentPropertyId !== folderId) {
+    throw createHotspotFolderMigrationError_('移行中の' + options.label + '正式IDがジャーナルと一致しません。', true);
+  }
+  if (!currentPropertyId) {
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_property_pending');
+    properties.setProperty(options.propertyKey, folderId);
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_property_saved');
+  }
+
+  const currentName = String(folder.getName() || '');
+  const allowedCurrentNames = [options.targetName, state.temporaryName];
+  if (!state.created && state.oldName) allowedCurrentNames.push(state.oldName);
+  if (allowedCurrentNames.indexOf(currentName) === -1) {
+    throw createHotspotFolderMigrationError_('移行中の' + options.label + 'フォルダ名がジャーナルと一致しません。', true);
+  }
+  if (currentName !== options.targetName) {
+    if (findDirectChildFoldersByName_(rootFolder, options.targetName, folderId).length > 0) {
+      throw createHotspotFolderMigrationError_('移行先に別IDの同名' + options.label + 'フォルダがあります。', true);
+    }
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_rename_pending');
+    folder.setName(options.targetName);
+    state.renamed = true;
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_ready');
+  } else {
+    if (state.oldName && state.oldName !== options.targetName) state.renamed = true;
+    writeHotspotFolderMigrationState_(properties, options.migrationState, options.phasePrefix + '_ready');
+  }
+  return folder;
+}
+
+function resumeHotspotFolderMigration_(transaction) {
+  const state = transaction.state;
+  const properties = transaction.properties;
+  const containerContext = transaction.containerContext;
+  let rootFolder = state.root.id ? getMigrationFolderById_(state.root.id, 'ルート') : null;
+  if (!rootFolder) {
+    if (!state.root.created) {
+      throw createHotspotFolderMigrationError_('移行ジャーナルのHotspotルートIDがありません。', true);
+    }
+    const pendingMatches = findDirectChildFoldersByName_(
+      containerContext.parentFolder,
+      state.root.temporaryName,
+      ''
+    );
+    if (pendingMatches.length > 1) {
+      throw createHotspotFolderMigrationError_('同じ移行識別子のHotspot一時ルートが複数あります。', true);
+    }
+    if (pendingMatches.length === 1) {
+      rootFolder = pendingMatches[0];
+    } else {
+      if (findDirectChildFoldersByName_(containerContext.parentFolder, HOTSPOT_FOLDER_NAME, '').length > 0) {
+        throw createHotspotFolderMigrationError_('正式な子IDで確認できない同名Hotspotルートがあります。', true);
+      }
+      writeHotspotFolderMigrationState_(properties, state, 'root_create_pending');
+      rootFolder = containerContext.parentFolder.createFolder(state.root.temporaryName);
+    }
+    state.root.id = String(rootFolder.getId() || '').trim();
+    writeHotspotFolderMigrationState_(properties, state, 'root_created');
+  }
+  if (findDirectChildFoldersByName_(
+    containerContext.parentFolder,
+    state.root.temporaryName,
+    String(rootFolder.getId() || '').trim()
+  ).length > 0) {
+    throw createHotspotFolderMigrationError_('同じ移行識別子のHotspot一時ルートが複数あります。', true);
+  }
+  validateMigrationRootFolder_(
+    rootFolder,
+    containerContext,
+    [HOTSPOT_FOLDER_NAME, state.root.temporaryName]
+  );
+  const rootId = String(rootFolder.getId() || '').trim();
+  let officialRootId = String(properties.getProperty(HOTSPOT_FOLDER_ID_KEY) || '').trim();
+  if (officialRootId && officialRootId !== rootId) {
+    throw createHotspotFolderMigrationError_('正式なHotspotルートIDが移行ジャーナルと一致しません。', true);
+  }
+  if (!officialRootId) {
+    writeHotspotFolderMigrationState_(properties, state, 'root_property_pending');
+    properties.setProperty(HOTSPOT_FOLDER_ID_KEY, rootId);
+    writeHotspotFolderMigrationState_(properties, state, 'root_property_saved');
+    officialRootId = rootId;
+  }
+  const rootName = String(rootFolder.getName() || '');
+  if (rootName === state.root.temporaryName) {
+    if (findDirectChildFoldersByName_(containerContext.parentFolder, HOTSPOT_FOLDER_NAME, rootId).length > 0) {
+      throw createHotspotFolderMigrationError_('移行先に別IDの同名Hotspotルートがあります。', true);
+    }
+    writeHotspotFolderMigrationState_(properties, state, 'root_rename_pending');
+    rootFolder.setName(HOTSPOT_FOLDER_NAME);
+    state.root.renamed = true;
+    writeHotspotFolderMigrationState_(properties, state, 'root_ready');
+  } else if (rootName === HOTSPOT_FOLDER_NAME) {
+    if (state.root.created) state.root.renamed = true;
+    writeHotspotFolderMigrationState_(properties, state, 'root_ready');
+  } else {
+    throw createHotspotFolderMigrationError_('移行中のHotspotルート名が一致しません。', true);
+  }
+
+  const photoFolder = migrateOrCreateHotspotChild_({
+    state: state.photo,
+    migrationState: state,
+    properties: properties,
+    rootFolder: rootFolder,
+    targetName: HOTSPOT_PHOTO_FOLDER_NAME,
+    label: 'photos',
+    phasePrefix: 'photo',
+    propertyKey: HOTSPOT_PHOTO_FOLDER_ID_KEY,
+    otherFolderId: state.audio.id,
+    containerContext: containerContext
+  });
+  const audioFolder = migrateOrCreateHotspotChild_({
+    state: state.audio,
+    migrationState: state,
+    properties: properties,
+    rootFolder: rootFolder,
+    targetName: HOTSPOT_AUDIO_FOLDER_NAME,
+    label: 'audio',
+    phasePrefix: 'audio',
+    propertyKey: HOTSPOT_AUDIO_FOLDER_ID_KEY,
+    otherFolderId: photoFolder.getId(),
+    containerContext: containerContext
+  });
+  const finalIds = [rootFolder.getId(), photoFolder.getId(), audioFolder.getId()].map(function(id) {
+    return String(id || '').trim();
+  });
+  if (finalIds.some(function(id) { return !id; }) || new Set(finalIds).size !== 3 ||
+      String(rootFolder.getName() || '') !== HOTSPOT_FOLDER_NAME ||
+      String(photoFolder.getName() || '') !== HOTSPOT_PHOTO_FOLDER_NAME ||
+      String(audioFolder.getName() || '') !== HOTSPOT_AUDIO_FOLDER_NAME ||
+      getFileParentFolderIds_(photoFolder).join(',') !== finalIds[0] ||
+      getFileParentFolderIds_(audioFolder).join(',') !== finalIds[0]) {
+    throw createHotspotFolderMigrationError_('Hotspot添付フォルダの最終構成を検証できません。', true);
+  }
+
+  writeHotspotFolderMigrationState_(properties, state, 'final_properties_pending');
+  const finalProperties = getHotspotFolderPropertyIds_(properties);
+  if (finalProperties.rootId !== finalIds[0] || finalProperties.photoId !== finalIds[1] ||
+      finalProperties.audioId !== finalIds[2]) {
+    throw createHotspotFolderMigrationError_('Hotspot添付フォルダの正式IDを確定できません。', true);
+  }
+  writeHotspotFolderMigrationState_(properties, state, 'final_properties_saved');
+
+  const structure = {
+    rootFolder: rootFolder,
+    photoFolder: photoFolder,
+    audioFolder: audioFolder,
+    warnings: state.configWarnings.slice()
+  };
+  if (!state.configSynced) {
+    writeHotspotFolderMigrationState_(properties, state, 'config_sync_pending');
+    const configSync = syncHotspotFolderUrlConfig_(finalIds[0], transaction.configSheet, structure);
+    if (!configSync.success) {
+      throw new Error(configSync.warning || 'configのHotspotフォルダURLを保存できませんでした。');
+    }
+    state.configWarnings = configSync.warnings || [];
+    state.configSynced = true;
+    structure.warnings = state.configWarnings.slice();
+    structure.configSync = configSync;
+    writeHotspotFolderMigrationState_(properties, state, 'config_synced');
+  } else {
+    const config = getAppConfig_();
+    if (String(config[HOTSPOT_FOLDER_URL_CONFIG_KEY] || '').trim() !== buildHotspotFolderUrl_(finalIds[0])) {
+      throw createHotspotFolderMigrationError_('移行済みconfigとHotspotルートIDが一致しません。', true);
+    }
+  }
+  properties.deleteProperty(HOTSPOT_FOLDER_MIGRATION_STATE_KEY);
+  return structure;
 }
 
 /**
- * 編集画面から正式な写真フォルダを開くためのURLだけを返す。
- * 認可・作成・正式ID検証をサーバー側で完結し、内部IDや権限詳細は失敗応答へ含めない。
- *
- * @param {{__editToken?:string}} payload
- * @returns {{success:boolean,url?:string,error?:string,partialSuccess?:boolean,warning?:string,warnings?:Array<string>}}
+ * ルート/photos/audioを正式ID・移行ジャーナル・限定的な旧構造復旧条件で検証し、
+ * 必要時は再開可能な同一トランザクションで作成・移行する。
+ * createIfMissing=true の呼び出し元はLockService内で実行する。
  */
+function getHotspotFolderStructure_(createIfMissing, configSheet) {
+  const properties = PropertiesService.getScriptProperties();
+  const propertyIds = getHotspotFolderPropertyIds_(properties);
+  const distinctIds = [propertyIds.rootId, propertyIds.photoId, propertyIds.audioId].filter(Boolean);
+  if (!createIfMissing && distinctIds.length === 0) {
+    return { rootFolder: null, photoFolder: null, audioFolder: null, warnings: [] };
+  }
+  const containerContext = getHotspotFolderContainerContext_();
+  if (!createIfMissing) {
+    const readOnly = inspectHotspotFolderStructure_(propertyIds, containerContext, false);
+    return {
+      rootFolder: readOnly.rootFolder,
+      photoFolder: readOnly.photoFolder,
+      audioFolder: readOnly.audioFolder,
+      warnings: []
+    };
+  }
+
+  const effectiveConfigSheet = configSheet || getOrCreateConfigSheet_();
+  let state = readHotspotFolderMigrationState_(properties);
+  if (!state) {
+    const inspected = inspectHotspotFolderStructure_(propertyIds, containerContext, true);
+    if (isCompleteHotspotFolderStructure_(propertyIds, inspected)) {
+      const completeStructure = {
+        rootFolder: inspected.rootFolder,
+        photoFolder: inspected.photoFolder,
+        audioFolder: inspected.audioFolder,
+        warnings: []
+      };
+      const configSync = syncHotspotFolderUrlConfig_(propertyIds.rootId, effectiveConfigSheet, completeStructure);
+      if (!configSync.success) throw new Error(configSync.warning || 'configのHotspotフォルダURLを保存できませんでした。');
+      completeStructure.warnings = configSync.warnings || [];
+      completeStructure.configSync = configSync;
+      return completeStructure;
+    }
+    try {
+      state = createHotspotFolderMigrationState_(properties, effectiveConfigSheet, containerContext);
+    } catch (error) {
+      if (error && error.hotspotFolderMigrationUnsafe) throw error;
+      throw new Error(
+        'Hotspot添付フォルダの移行ジャーナルを保存できませんでした。Drive構造は変更していません: ' +
+        String(error && error.message ? error.message : error)
+      );
+    }
+  }
+  const transaction = {
+    properties: properties,
+    state: state,
+    configSheet: effectiveConfigSheet,
+    containerContext: containerContext
+  };
+  if (state.mode === 'rollback') {
+    const pendingRollbackFailures = rollbackHotspotFolderTransaction_(transaction);
+    if (pendingRollbackFailures.length > 0) {
+      throw new Error('Hotspot添付フォルダのロールバックを再開できず、構造不整合が残りました。管理者による確認が必要です。');
+    }
+    return getHotspotFolderStructure_(true, effectiveConfigSheet);
+  }
+  try {
+    return resumeHotspotFolderMigration_(transaction);
+  } catch (error) {
+    if (error && (error.hotspotFolderMigrationUnsafe || state.configSynced)) {
+      throw new Error('Hotspot添付フォルダの移行ジャーナルとDrive構造が一致しません。既存データは変更せず、管理者による確認が必要です。');
+    }
+    const rollbackFailures = rollbackHotspotFolderTransaction_(transaction);
+    if (rollbackFailures.length > 0) {
+      throw new Error('Hotspot添付フォルダのロールバックに失敗し、構造不整合が残りました。管理者による確認が必要です。');
+    }
+    throw new Error(
+      'Hotspot添付フォルダ構成を保存・移行できませんでした: ' +
+      String(error && error.message ? error.message : error)
+    );
+  }
+}
+
+function getHotspotRootFolder_(createIfMissing) {
+  return getHotspotFolderStructure_(!!createIfMissing).rootFolder;
+}
+
+function getHotspotPhotoFolder_(createIfMissing) {
+  return getHotspotFolderStructure_(!!createIfMissing).photoFolder;
+}
+
+function getHotspotAudioFolder_(createIfMissing) {
+  return getHotspotFolderStructure_(!!createIfMissing).audioFolder;
+}
+
+/** 編集画面から共通Hotspotルートを開くためのURLだけを返す。 */
+function getHotspotFolderUrlForEdit(payload) {
+  let lock = null;
+  try {
+    assertEditToken_(payload);
+    lock = acquireLock_();
+    const structure = getHotspotFolderStructure_(true);
+    const result = { success: true, url: buildHotspotFolderUrl_(structure.rootFolder.getId()) };
+    if (structure.warnings && structure.warnings.length > 0) {
+      result.warnings = structure.warnings.slice();
+      result.warning = structure.warnings.join(' ');
+    }
+    return result;
+  } catch (e) {
+    console.error('Hotspotフォルダ取得エラー:', e && e.message ? e.message : e);
+    return { success: false, error: 'Hotspotフォルダを開けませんでした。管理者に設定を確認してください。' };
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
+
+/** 旧クライアント互換: 子フォルダURLを返すが正式configは共通ルートだけを使用する。 */
 function getHotspotPhotoFolderUrlForEdit(payload) {
   let lock = null;
   try {
     assertEditToken_(payload);
     lock = acquireLock_();
-    const folder = getHotspotPhotoFolder_(true);
-    const configSync = syncHotspotPhotoFolderUrlConfig_(folder.getId());
-    const result = { success: true, url: configSync.url };
-    if (!configSync.success) addPartialSuccessWarning_(result, configSync.warning);
-    return result;
+    const structure = getHotspotFolderStructure_(true);
+    return { success: true, url: buildHotspotFolderUrl_(structure.photoFolder.getId()) };
   } catch (e) {
     console.error('写真フォルダ取得エラー:', e && e.message ? e.message : e);
-    return {
-      success: false,
-      error: '写真フォルダを開けませんでした。管理者に設定を確認してください。'
-    };
+    return { success: false, error: '写真フォルダを開けませんでした。管理者に設定を確認してください。' };
   } finally {
     if (lock) lock.releaseLock();
   }
@@ -3658,11 +4647,11 @@ function getHotspotPhotoFolderUrlForEdit(payload) {
 
 /**
  * 検証済み添付を安全な一意名で正式フォルダへ保存する。
- * config同期失敗は添付作成を止めず、呼び出し元がpartial successとして通知する。
+ * 共通フォルダ構成とconfig同期が完了してから添付ファイルを作成する。
  */
 function createHotspotPhotoFile_(upload) {
-  const folder = getHotspotPhotoFolder_(true);
-  const configSync = syncHotspotPhotoFolderUrlConfig_(folder.getId());
+  const structure = getHotspotFolderStructure_(true);
+  const folder = structure.photoFolder;
   const timestampDigits = String(
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss') || ''
   ).replace(/[^0-9]/g, '').slice(0, 14) || String(new Date().getTime());
@@ -3674,7 +4663,7 @@ function createHotspotPhotoFile_(upload) {
   const blob = Utilities.newBlob(upload.bytes, upload.mimeType, safeName);
   return {
     file: folder.createFile(blob),
-    configSync: configSync
+    configSync: structure.configSync
   };
 }
 
@@ -3689,6 +4678,229 @@ function getManagedHotspotPhotoFile_(photoId) {
   if (!HOTSPOT_PHOTO_MIME_EXTENSIONS[mimeType]) return null;
   const parentIds = getFileParentFolderIds_(file);
   return parentIds.indexOf(String(folder.getId() || '').trim()) !== -1 ? file : null;
+}
+
+/** MP3の先頭（任意のID3v2タグ直後）に有効なMPEG Layer IIIフレームがあるかを返す。 */
+function hasHotspotMp3Frame_(bytes) {
+  const data = bytes || [];
+  const byteAt = function(index) { return Number(data[index]) & 0xff; };
+  let offset = 0;
+  if (data.length >= 10 &&
+      byteAt(0) === 0x49 && byteAt(1) === 0x44 && byteAt(2) === 0x33) {
+    const version = byteAt(3);
+    if (version < 2 || version > 4) return false;
+    for (let i = 6; i <= 9; i++) {
+      if ((byteAt(i) & 0x80) !== 0) return false;
+    }
+    const tagSize = (byteAt(6) << 21) | (byteAt(7) << 14) | (byteAt(8) << 7) | byteAt(9);
+    const hasFooter = version === 4 && (byteAt(5) & 0x10) !== 0;
+    offset = 10 + tagSize + (hasFooter ? 10 : 0);
+  }
+  if (offset + 4 > data.length) return false;
+
+  const first = byteAt(offset);
+  const second = byteAt(offset + 1);
+  const third = byteAt(offset + 2);
+  const fourth = byteAt(offset + 3);
+  const versionBits = (second >> 3) & 0x03;
+  const layerBits = (second >> 1) & 0x03;
+  const bitrateIndex = (third >> 4) & 0x0f;
+  const sampleRateIndex = (third >> 2) & 0x03;
+  const emphasis = fourth & 0x03;
+  return first === 0xff && (second & 0xe0) === 0xe0 &&
+    versionBits !== 0x01 && layerBits === 0x01 &&
+    bitrateIndex !== 0x00 && bitrateIndex !== 0x0f &&
+    sampleRateIndex !== 0x03 && emphasis !== 0x02;
+}
+
+/** 音声添付payloadを復号し、MP3・サイズ・時間・実バイトを一致検証する。 */
+function normalizeHotspotAudioUpload_(audioUpload) {
+  if (!audioUpload || typeof audioUpload !== 'object') {
+    throw new Error('音声アップロードデータが不正です。');
+  }
+  const mimeType = String(audioUpload.mimeType || '').trim().toLowerCase();
+  if (mimeType !== HOTSPOT_AUDIO_MIME_TYPE) {
+    throw new Error('音声はMP3（audio/mpeg）形式だけアップロードできます。');
+  }
+  const originalFileName = String(audioUpload.fileName || '').trim();
+  if (!originalFileName || originalFileName.length > 180 ||
+      /[\u0000-\u001f\u007f-\u009f\\/]/.test(originalFileName)) {
+    throw new Error('音声ファイル名が不正です。');
+  }
+  if (!/\.mp3$/i.test(originalFileName)) {
+    throw new Error('音声のMIMEと拡張子が一致しません。MP3を指定してください。');
+  }
+
+  const declaredSizeBytes = audioUpload.sizeBytes;
+  if (typeof declaredSizeBytes !== 'number' || !isFinite(declaredSizeBytes) ||
+      declaredSizeBytes <= 0 || Math.floor(declaredSizeBytes) !== declaredSizeBytes) {
+    throw new Error('音声のサイズが不正です。');
+  }
+  if (declaredSizeBytes > HOTSPOT_AUDIO_FINAL_MAX_BYTES) {
+    throw new Error('音声は4MB以下にしてください。');
+  }
+  const durationSeconds = audioUpload.durationSeconds;
+  if (typeof durationSeconds !== 'number' || !isFinite(durationSeconds) ||
+      durationSeconds < HOTSPOT_AUDIO_MIN_DURATION_SECONDS ||
+      durationSeconds > HOTSPOT_AUDIO_MAX_DURATION_SECONDS) {
+    throw new Error('音声の時間は0.5秒以上120秒以下にしてください。');
+  }
+
+  const base64 = String(audioUpload.base64 || '');
+  const maximumBase64Length = Math.ceil(HOTSPOT_AUDIO_FINAL_MAX_BYTES / 3) * 4 + 4;
+  if (!base64 || base64.length > maximumBase64Length || base64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(base64) || /=/.test(base64.slice(0, -2))) {
+    throw new Error('音声のBase64データが不正です。');
+  }
+  let bytes;
+  try {
+    bytes = Utilities.base64Decode(base64);
+  } catch (decodeError) {
+    throw new Error('音声のBase64データを復号できません。');
+  }
+  if (!bytes || bytes.length === 0 || bytes.length !== declaredSizeBytes) {
+    throw new Error('音声の申告サイズと実データのサイズが一致しません。');
+  }
+  if (bytes.length > HOTSPOT_AUDIO_FINAL_MAX_BYTES) {
+    throw new Error('音声は4MB以下にしてください。');
+  }
+  if (!hasHotspotMp3Frame_(bytes)) {
+    throw new Error('音声の実データに有効なMP3 Layer IIIフレームがありません。');
+  }
+  return {
+    bytes: bytes,
+    mimeType: mimeType,
+    extension: 'mp3',
+    originalFileName: originalFileName,
+    sizeBytes: bytes.length,
+    durationSeconds: durationSeconds
+  };
+}
+
+/** 編集画面から正式な音声フォルダを開くためのURLだけを返す。 */
+function getHotspotAudioFolderUrlForEdit(payload) {
+  let lock = null;
+  try {
+    assertEditToken_(payload);
+    lock = acquireLock_();
+    const structure = getHotspotFolderStructure_(true);
+    return { success: true, url: buildHotspotFolderUrl_(structure.audioFolder.getId()) };
+  } catch (e) {
+    console.error('音声フォルダ取得エラー:', e && e.message ? e.message : e);
+    return {
+      success: false,
+      error: '音声フォルダを開けませんでした。管理者に設定を確認してください。'
+    };
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
+
+function sanitizeHotspotAudioBaseName_(fileName) {
+  const withoutExtension = String(fileName || '').replace(/\.mp3$/i, '');
+  const safe = withoutExtension
+    .replace(/[\u0000-\u001f\u007f-\u009f\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9._\-\u3040-\u30ff\u3400-\u9fff]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_\.\-]+|[_\.\-]+$/g, '')
+    .slice(0, 60);
+  return safe || 'audio';
+}
+
+/** 検証済みMP3を安全な一意名で正式音声フォルダへ保存する。 */
+function createHotspotAudioFile_(upload) {
+  const structure = getHotspotFolderStructure_(true);
+  const folder = structure.audioFolder;
+  const timestampDigits = String(
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss') || ''
+  ).replace(/[^0-9]/g, '').slice(0, 14) || String(new Date().getTime());
+  const timestamp = timestampDigits.length >= 14
+    ? timestampDigits.slice(0, 8) + '_' + timestampDigits.slice(8, 14)
+    : timestampDigits;
+  const uniqueId = String(Utilities.getUuid() || '').replace(/[^A-Za-z0-9]/g, '') || String(new Date().getTime());
+  const safeName = 'hotspot_audio_' + timestamp + '_' + uniqueId + '_' +
+    sanitizeHotspotAudioBaseName_(upload.originalFileName) + '.mp3';
+  const blob = Utilities.newBlob(upload.bytes, HOTSPOT_AUDIO_MIME_TYPE, safeName);
+  return {
+    file: folder.createFile(blob),
+    configSync: structure.configSync
+  };
+}
+
+/** 正式音声フォルダ直下の未削除・上限内MP3ならDriveファイルを返す。 */
+function getManagedHotspotAudioFile_(audioId) {
+  const targetId = String(audioId || '').trim();
+  if (!targetId) return null;
+  const folder = getHotspotAudioFolder_(false);
+  if (!folder) return null;
+  const file = DriveApp.getFileById(targetId);
+  if (String(file.getMimeType() || '').trim().toLowerCase() !== HOTSPOT_AUDIO_MIME_TYPE) return null;
+  if (typeof file.isTrashed === 'function' && file.isTrashed()) return null;
+  const sizeBytes = Number(file.getSize());
+  if (!isFinite(sizeBytes) || sizeBytes <= 0 || sizeBytes > HOTSPOT_AUDIO_FINAL_MAX_BYTES) return null;
+  const parentIds = getFileParentFolderIds_(file);
+  return parentIds.indexOf(String(folder.getId() || '').trim()) !== -1 ? file : null;
+}
+
+/** 13列旧版または14列現行版だけを公開読取で許可し、未知列を音声IDとして誤読しない。 */
+function hasReadableInfoSheetSchema_(sheet) {
+  if (!sheet) return false;
+  const columns = sheet.getLastColumn();
+  if (columns < ID_COL_INDEX + 1 || columns > INFO_HEADERS.length) return false;
+  const header = sheet.getRange(1, 1, 1, columns).getValues()[0];
+  for (let i = 0; i < columns; i++) {
+    if (String(header[i] || '').trim() !== INFO_HEADERS[i]) return false;
+  }
+  return true;
+}
+
+/** 公開中のinfo関連付けと正式保存先が一致する音声だけをData URIで返す。 */
+function getHotspotAudioData(request) {
+  try {
+    const req = request && typeof request === 'object' ? request : {};
+    const fileId = String(req.fileId || '').trim();
+    const hotspotId = String(req.hotspotId || '').trim();
+    const audioId = String(req.audioId || '').trim();
+    if (!fileId || !hotspotId || !audioId) {
+      return { success: false, error: '音声の関連付け情報が不足しています。' };
+    }
+    const hotspotContext = getHotspotStorageContext_(fileId);
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(INFO_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() <= 1 || !hasReadableInfoSheetSchema_(sheet)) {
+      return { success: false, error: '音声は公開中のホットスポットに関連付けられていません。' };
+    }
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, INFO_HEADERS.length).getValues();
+    const allowedStorageIds = [String(hotspotContext.storageFileId || '')];
+    if (!hotspotContext.rootFolderId && allowedStorageIds.indexOf('') === -1) allowedStorageIds.push('');
+    const isAssociated = data.some(function(row) {
+      return allowedStorageIds.indexOf(String(row[1] || '').trim()) !== -1 &&
+        String(row[ID_COL_INDEX] || '').trim() === hotspotId &&
+        String(row[AUDIO_ID_COL_INDEX] || '').trim() === audioId;
+    });
+    if (!isAssociated) {
+      return { success: false, error: '音声は公開中のホットスポットに関連付けられていません。' };
+    }
+    const audioFile = getManagedHotspotAudioFile_(audioId);
+    if (!audioFile) {
+      return { success: false, error: '音声は公開可能な保存先にありません。' };
+    }
+    const blob = audioFile.getBlob();
+    const bytes = blob.getBytes();
+    if (!bytes || bytes.length === 0 || bytes.length > HOTSPOT_AUDIO_FINAL_MAX_BYTES ||
+        !hasHotspotMp3Frame_(bytes)) {
+      return { success: false, error: '音声ファイルを確認できません。' };
+    }
+    return {
+      success: true,
+      dataUri: 'data:' + HOTSPOT_AUDIO_MIME_TYPE + ';base64,' + Utilities.base64Encode(bytes),
+      mimeType: HOTSPOT_AUDIO_MIME_TYPE,
+      sizeBytes: bytes.length
+    };
+  } catch (e) {
+    console.error('getHotspotAudioData エラー:', e && e.message ? e.message : e);
+    return { success: false, error: '音声の取得に失敗しました。' };
+  }
 }
 
 /** 複数親の一覧キャッシュを重複なく無効化し、すべて成功したか返す。 */
@@ -3790,7 +5002,9 @@ function deleteInfoRowsForImage_(fileId, sheet) {
 function collectHotspotPhotoIdsForImage_(fileId, sheet) {
   const targetSheet = sheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(INFO_SHEET_NAME);
   if (!targetSheet) return [];
-  ensureInfoSheetSchema_(targetSheet);
+  if (!hasReadableInfoSheetSchema_(targetSheet)) {
+    throw new Error('infoシートに未知または想定外のヘッダーがあるため、添付写真を確認できません。');
+  }
   const lastRow = targetSheet.getLastRow();
   if (lastRow <= 1) return [];
   const targetId = String(fileId || '');
@@ -3804,6 +5018,28 @@ function collectHotspotPhotoIdsForImage_(fileId, sheet) {
     photoIds.push(photoId);
   });
   return photoIds;
+}
+
+/** シーン削除前に、そのinfo行が参照する音声IDを重複なく収集する。 */
+function collectHotspotAudioIdsForImage_(fileId, sheet) {
+  const targetSheet = sheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(INFO_SHEET_NAME);
+  if (!targetSheet) return [];
+  if (!hasReadableInfoSheetSchema_(targetSheet)) {
+    throw new Error('infoシートに未知または想定外のヘッダーがあるため、添付音声を確認できません。');
+  }
+  const lastRow = targetSheet.getLastRow();
+  if (lastRow <= 1) return [];
+  const targetId = String(fileId || '');
+  const seen = {};
+  const audioIds = [];
+  targetSheet.getRange(2, 1, lastRow - 1, INFO_HEADERS.length).getValues().forEach(function(row) {
+    if (String(row[1]) !== targetId) return;
+    const audioId = String(row[AUDIO_ID_COL_INDEX] || '').trim();
+    if (!audioId || seen[audioId]) return;
+    seen[audioId] = true;
+    audioIds.push(audioId);
+  });
+  return audioIds;
 }
 
 /** 明示削除時にだけ、対象ファイルIDのscenes行をすべて除去する。 */
@@ -3843,6 +5079,11 @@ function deleteImageFile(payload) {
     targetId = targetContext.fileId;
     const file = targetContext.file;
     const parentFolderIds = targetContext.parentFolderIds.slice();
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const infoSheet = ss.getSheetByName(INFO_SHEET_NAME);
+    // Driveを変更する前にinfoスキーマと整理候補を確定し、未知N列を音声IDとして誤読しない。
+    const attachmentCleanupCandidates = collectHotspotPhotoIdsForImage_(targetId, infoSheet);
+    const audioCleanupCandidates = collectHotspotAudioIdsForImage_(targetId, infoSheet);
     file.setTrashed(true);
     driveDeleted = true;
 
@@ -3851,13 +5092,7 @@ function deleteImageFile(payload) {
     let infoDeleted = false;
     let sceneDeleted = false;
     const warnings = [];
-    let attachmentCleanupCandidates = [];
-    let infoSheet = null;
-    let ss = null;
     try {
-      ss = SpreadsheetApp.getActiveSpreadsheet();
-      infoSheet = ss.getSheetByName(INFO_SHEET_NAME);
-      attachmentCleanupCandidates = collectHotspotPhotoIdsForImage_(targetId, infoSheet);
       deletedHotspots = deleteInfoRowsForImage_(targetId, infoSheet);
       infoDeleted = true;
     } catch (infoError) {
@@ -3882,10 +5117,21 @@ function deleteImageFile(payload) {
           );
         }
       });
+      audioCleanupCandidates.forEach(function(audioId) {
+        try {
+          cleanupOrphanedHotspotAudio_(audioId, infoSheet);
+        } catch (cleanupError) {
+          const warning = '関連ホットスポットは削除済みですが、孤立した添付音声の整理に失敗しました。';
+          warnings.push(warning);
+          console.error(
+            '[scene-mutation] fileId=' + targetId + ' stage=delete-hotspot-audio-cleanup:',
+            cleanupError && cleanupError.message ? cleanupError.message : cleanupError
+          );
+        }
+      });
     }
 
     try {
-      if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
       deletedScenes = deleteSceneRowsForFileId_(targetId, ss.getSheetByName(SCENES_SHEET_NAME));
       sceneDeleted = true;
     } catch (sceneError) {
@@ -4018,12 +5264,23 @@ function assertHotspotSceneTypeUnchanged_(data, currentSceneType) {
 }
 
 /** 写真・ジャンプ参照が同じ設定ルート内の登録画像を指すことを検証する。 */
-function validateHotspotRelatedIds_(data, storageContext, allowedExistingPhotoId) {
+function validateHotspotRelatedIds_(data, storageContext, allowedExistingPhotoId, allowedExistingAudioId) {
   const photoId = String(data && data.photoId || '').trim();
+  const audioIdWasSpecified = !!(data && Object.prototype.hasOwnProperty.call(data, 'audioId'));
+  const audioId = String(
+    audioIdWasSpecified ? (data.audioId || '') : (allowedExistingAudioId || '')
+  ).trim();
   const jumpSceneId = String(data && data.jumpSceneId || '').trim();
   const hasPhotoUpload = !!(data && data.photoUpload);
+  const hasAudioUpload = !!(data && data.audioUpload);
   if (photoId && hasPhotoUpload) {
     throw new Error('既存のphotoIdと写真アップロードは同時に指定できません。');
+  }
+  if (audioId && hasAudioUpload) {
+    throw new Error('既存のaudioIdと音声アップロードは同時に指定できません。');
+  }
+  if (jumpSceneId && (audioId || hasAudioUpload)) {
+    throw new Error('ジャンプ用ホットスポットには音声を添付できません。');
   }
   if (!storageContext.rootFolderId && jumpSceneId) {
     throw new Error('単一画像モードではジャンプ先を指定できません。');
@@ -4047,8 +5304,16 @@ function validateHotspotRelatedIds_(data, storageContext, allowedExistingPhotoId
       }
     }
   }
+  if (audioId) {
+    if (audioId !== String(allowedExistingAudioId || '').trim()) {
+      throw new Error('音声IDは現在の管理添付と一致しません。');
+    }
+    if (!getManagedHotspotAudioFile_(audioId)) {
+      throw new Error('現在の添付音声を正式な保存先で確認できません。');
+    }
+  }
   if (jumpSceneId) getEditableSceneContext_(jumpSceneId);
-  return { photoId: photoId, jumpSceneId: jumpSceneId };
+  return { photoId: photoId, audioId: audioId, jumpSceneId: jumpSceneId };
 }
 
 /** 保存・更新応答と実マーカー描画で共有する正規化ホットスポットを構築する。 */
@@ -4066,7 +5331,8 @@ function buildNormalizedHotspot_(fileId, hotspotId, fields) {
     markerColor: normalizeMarkerColor_(data.markerColor),
     markerIcon: normalizeMarkerIcon_(data.markerIcon),
     photoId: String(data.photoId || ''),
-    jumpSceneId: String(data.jumpSceneId || '')
+    jumpSceneId: String(data.jumpSceneId || ''),
+    audioId: String(data.audioId || '')
   };
 }
 
@@ -4096,6 +5362,29 @@ function cleanupOrphanedHotspotPhoto_(photoId, sheet) {
   return { cleaned: true, fileId: targetId };
 }
 
+/** infoに同じ音声IDの参照が残っているかを返す。 */
+function isHotspotAudioReferenced_(audioId, sheet) {
+  const targetId = String(audioId || '').trim();
+  if (!targetId || !sheet || sheet.getLastRow() <= 1) return false;
+  const values = sheet.getRange(2, AUDIO_ID_COL_INDEX + 1, sheet.getLastRow() - 1, 1).getValues();
+  return values.some(function(row) {
+    return String(row[0] || '').trim() === targetId;
+  });
+}
+
+/** 未参照かつ正式音声フォルダ直下の音声だけをゴミ箱へ移す。 */
+function cleanupOrphanedHotspotAudio_(audioId, sheet) {
+  const targetId = String(audioId || '').trim();
+  if (!targetId) return { cleaned: false, reason: 'blank' };
+  if (isHotspotAudioReferenced_(targetId, sheet)) {
+    return { cleaned: false, reason: 'referenced' };
+  }
+  const managedFile = getManagedHotspotAudioFile_(targetId);
+  if (!managedFile) return { cleaned: false, reason: 'unmanaged' };
+  managedFile.setTrashed(true);
+  return { cleaned: true, fileId: targetId };
+}
+
 /** 成功済み処理へ、破壊を伴わない後処理警告を重複なく追記する。 */
 function addPartialSuccessWarning_(result, warning) {
   const normalizedWarning = String(warning || '').trim();
@@ -4109,19 +5398,31 @@ function addPartialSuccessWarning_(result, warning) {
   return result;
 }
 
-/** info確定後の整理失敗をpartial successとして応答へ追記する。 */
-function addHotspotCleanupWarning_(result, error, action) {
-  const warning = action === 'delete'
-    ? 'ホットスポットは削除されましたが、古い添付写真の整理に失敗しました。'
-    : 'ホットスポットは保存されましたが、古い添付写真の整理に失敗しました。';
-  addPartialSuccessWarning_(result, warning);
-  console.error('ホットスポット添付写真整理エラー:', error && error.message ? error.message : error);
+/** 添付フォルダconfigの保持警告を、保存成功応答へ重複なく引き継ぐ。 */
+function addHotspotFolderConfigWarnings_(result, configSync) {
+  if (!configSync) return result;
+  if (!configSync.success) addPartialSuccessWarning_(result, configSync.warning);
+  (Array.isArray(configSync.warnings) ? configSync.warnings : []).forEach(function(warning) {
+    addPartialSuccessWarning_(result, warning);
+  });
   return result;
 }
 
-/** info保存前に作成した添付を補償削除する。 */
-function rollbackCreatedHotspotPhoto_(file) {
+/** info確定後の整理失敗をpartial successとして応答へ追記する。 */
+function addHotspotCleanupWarning_(result, error, action, attachmentType) {
+  const attachmentLabel = attachmentType === 'audio' ? '添付音声' : '添付写真';
+  const warning = action === 'delete'
+    ? 'ホットスポットは削除されましたが、古い' + attachmentLabel + 'の整理に失敗しました。'
+    : 'ホットスポットは保存されましたが、古い' + attachmentLabel + 'の整理に失敗しました。';
+  addPartialSuccessWarning_(result, warning);
+  console.error('ホットスポット' + attachmentLabel + '整理エラー:', error && error.message ? error.message : error);
+  return result;
+}
+
+/** info保存前に作成した添付を種別付きログで補償削除する。 */
+function rollbackCreatedHotspotAttachment_(file, attachmentLabel) {
   if (!file) return true;
+  const label = String(attachmentLabel || '添付ファイル');
   try {
     file.setTrashed(true);
     return true;
@@ -4129,11 +5430,27 @@ function rollbackCreatedHotspotPhoto_(file) {
     let fileId = '';
     try { fileId = String(file.getId() || ''); } catch (idError) { fileId = ''; }
     console.error(
-      'ホットスポット添付写真rollbackエラー fileId=' + fileId + ':',
+      'ホットスポット' + label + 'rollbackエラー fileId=' + fileId + ':',
       rollbackError.message
     );
     return false;
   }
+}
+
+function rollbackCreatedHotspotPhoto_(file) {
+  return rollbackCreatedHotspotAttachment_(file, '添付写真');
+}
+
+function rollbackCreatedHotspotAudio_(file) {
+  return rollbackCreatedHotspotAttachment_(file, '添付音声');
+}
+
+/** info保存前に作成した写真・音声をすべて補償削除し、全件成功したか返す。 */
+function rollbackCreatedHotspotAttachments_(photoFile, audioFile) {
+  let allRolledBack = true;
+  if (photoFile && !rollbackCreatedHotspotPhoto_(photoFile)) allRolledBack = false;
+  if (audioFile && !rollbackCreatedHotspotAudio_(audioFile)) allRolledBack = false;
+  return allRolledBack;
 }
 
 /**
@@ -4174,6 +5491,10 @@ function loadHotspots(request) {
     const ss    = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName(INFO_SHEET_NAME);
     if (!sheet) return { hotspots: [], northOffset: northOffset };
+    if (!hasReadableInfoSheetSchema_(sheet)) {
+      console.warn('loadHotspots: infoシートの未知ヘッダーを検出したため取得をスキップしました。');
+      return { hotspots: [], northOffset: northOffset };
+    }
 
     const lastRow = sheet.getLastRow();
     if (lastRow <= 1) return { hotspots: [], northOffset: northOffset };
@@ -4207,7 +5528,8 @@ function loadHotspots(request) {
           markerColor: normalizeMarkerColor_(row[8]),
           markerIcon:  normalizeMarkerIcon_(row[9]),
           photoId:     String(row[10] || ''),
-          jumpSceneId: String(row[11] || '')
+          jumpSceneId: String(row[11] || ''),
+          audioId:     String(row[AUDIO_ID_COL_INDEX] || '')
         };
       })
       .filter(function(hotspot) { return !!hotspot; });
@@ -4231,7 +5553,9 @@ function saveHotspot(data) {
   assertEditToken_(data);
   const lock = acquireLock_();
   let createdPhotoFile = null;
+  let createdAudioFile = null;
   let photoFolderConfigSync = null;
+  let audioFolderConfigSync = null;
   let infoSaved = false;
   try {
     data = data && typeof data === 'object' ? data : {};
@@ -4247,6 +5571,9 @@ function saveHotspot(data) {
     const relatedIds = validateHotspotRelatedIds_(data, storageContext);
     const normalizedUpload = data.photoUpload
       ? normalizeHotspotPhotoUpload_(data.photoUpload)
+      : null;
+    const normalizedAudioUpload = data.audioUpload
+      ? normalizeHotspotAudioUpload_(data.audioUpload)
       : null;
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -4275,6 +5602,14 @@ function saveHotspot(data) {
       photoId = String(createdPhotoFile.getId() || '').trim();
       if (!photoId) throw new Error('作成した添付写真のDrive IDを取得できませんでした。');
     }
+    let audioId = relatedIds.audioId;
+    if (normalizedAudioUpload) {
+      const createdAudio = createHotspotAudioFile_(normalizedAudioUpload);
+      createdAudioFile = createdAudio.file;
+      audioFolderConfigSync = createdAudio.configSync;
+      audioId = String(createdAudioFile.getId() || '').trim();
+      if (!audioId) throw new Error('作成した添付音声のDrive IDを取得できませんでした。');
+    }
     const normalizedHotspot = buildNormalizedHotspot_(storageContext.actualFileId, id, {
       label: label,
       description: description,
@@ -4285,7 +5620,8 @@ function saveHotspot(data) {
       markerColor: markerColor,
       markerIcon: markerIcon,
       photoId: photoId,
-      jumpSceneId: relatedIds.jumpSceneId
+      jumpSceneId: relatedIds.jumpSceneId,
+      audioId: audioId
     });
 
     sheet.appendRow([
@@ -4301,7 +5637,8 @@ function saveHotspot(data) {
       markerIcon,
       photoId,
       relatedIds.jumpSceneId,
-      id
+      id,
+      audioId
     ]);
     infoSaved = true;
 
@@ -4309,20 +5646,22 @@ function saveHotspot(data) {
       success: true,
       id: id,
       photoId: photoId,
+      audioId: audioId,
       hotspot: normalizedHotspot
     };
-    if (photoFolderConfigSync && !photoFolderConfigSync.success) {
-      addPartialSuccessWarning_(result, photoFolderConfigSync.warning);
-    }
+    addHotspotFolderConfigWarnings_(result, photoFolderConfigSync);
+    addHotspotFolderConfigWarnings_(result, audioFolderConfigSync);
     return result;
 
   } catch (e) {
-    const rollbackFailed = !!(createdPhotoFile && !infoSaved && !rollbackCreatedHotspotPhoto_(createdPhotoFile));
+    const hasCreatedFiles = !!(createdPhotoFile || createdAudioFile);
+    const rollbackFailed = hasCreatedFiles && !infoSaved &&
+      !rollbackCreatedHotspotAttachments_(createdPhotoFile, createdAudioFile);
     console.error('saveHotspot エラー:', e.message);
     const failure = { success: false, error: e.message };
     if (rollbackFailed) {
       failure.cleanupRequired = true;
-      failure.warning = '保存に失敗し、作成済み添付写真の取り消しにも失敗しました。管理者へ連絡してください。';
+      failure.warning = '保存に失敗し、作成済み添付ファイルの取り消しにも失敗しました。管理者へ連絡してください。';
     }
     return failure;
   } finally {
@@ -4366,6 +5705,7 @@ function deleteHotspot(payload) {
       if (String(data[i][ID_COL_INDEX]) === hotspotId &&
           String(data[i][1]) === storageContext.storageFileId) {
         const previousPhotoId = String(data[i][10] || '').trim();
+        const previousAudioId = String(data[i][AUDIO_ID_COL_INDEX] || '').trim();
         sheet.deleteRow(i + 2);
         const result = { success: true };
         if (previousPhotoId) {
@@ -4373,6 +5713,13 @@ function deleteHotspot(payload) {
             cleanupOrphanedHotspotPhoto_(previousPhotoId, sheet);
           } catch (cleanupError) {
             addHotspotCleanupWarning_(result, cleanupError, 'delete');
+          }
+        }
+        if (previousAudioId) {
+          try {
+            cleanupOrphanedHotspotAudio_(previousAudioId, sheet);
+          } catch (cleanupError) {
+            addHotspotCleanupWarning_(result, cleanupError, 'delete', 'audio');
           }
         }
         return result;
@@ -4399,7 +5746,9 @@ function updateHotspot(data, hotspotId) {
   assertEditToken_(data);
   const lock = acquireLock_();
   let createdPhotoFile = null;
+  let createdAudioFile = null;
   let photoFolderConfigSync = null;
+  let audioFolderConfigSync = null;
   let infoSaved = false;
   try {
     data = data && typeof data === 'object' ? data : {};
@@ -4442,9 +5791,13 @@ function updateHotspot(data, hotspotId) {
 
     const previousRow = allData[targetRowIndex - 2];
     const previousPhotoId = String(previousRow[10] || '').trim();
-    const relatedIds = validateHotspotRelatedIds_(data, storageContext, previousPhotoId);
+    const previousAudioId = String(previousRow[AUDIO_ID_COL_INDEX] || '').trim();
+    const relatedIds = validateHotspotRelatedIds_(data, storageContext, previousPhotoId, previousAudioId);
     const normalizedUpload = data.photoUpload
       ? normalizeHotspotPhotoUpload_(data.photoUpload)
+      : null;
+    const normalizedAudioUpload = data.audioUpload
+      ? normalizeHotspotAudioUpload_(data.audioUpload)
       : null;
 
     const label       = String(data.label || '').trim();
@@ -4461,6 +5814,14 @@ function updateHotspot(data, hotspotId) {
       photoId = String(createdPhotoFile.getId() || '').trim();
       if (!photoId) throw new Error('作成した添付写真のDrive IDを取得できませんでした。');
     }
+    let audioId = relatedIds.audioId;
+    if (normalizedAudioUpload) {
+      const createdAudio = createHotspotAudioFile_(normalizedAudioUpload);
+      createdAudioFile = createdAudio.file;
+      audioFolderConfigSync = createdAudio.configSync;
+      audioId = String(createdAudioFile.getId() || '').trim();
+      if (!audioId) throw new Error('作成した添付音声のDrive IDを取得できませんでした。');
+    }
     const normalizedHotspot = buildNormalizedHotspot_(storageContext.actualFileId, hotspotId, {
       label: label,
       description: description,
@@ -4471,7 +5832,8 @@ function updateHotspot(data, hotspotId) {
       markerColor: markerColor,
       markerIcon: markerIcon,
       photoId: photoId,
-      jumpSceneId: relatedIds.jumpSceneId
+      jumpSceneId: relatedIds.jumpSceneId,
+      audioId: audioId
     });
 
     sheet.getRange(targetRowIndex, 1, 1, INFO_HEADERS.length).setValues([[
@@ -4487,7 +5849,8 @@ function updateHotspot(data, hotspotId) {
       markerIcon,
       photoId,
       relatedIds.jumpSceneId,
-      hotspotId
+      hotspotId,
+      audioId
     ]]);
     infoSaved = true;
 
@@ -4495,11 +5858,11 @@ function updateHotspot(data, hotspotId) {
       success: true,
       id: String(hotspotId),
       photoId: photoId,
+      audioId: audioId,
       hotspot: normalizedHotspot
     };
-    if (photoFolderConfigSync && !photoFolderConfigSync.success) {
-      addPartialSuccessWarning_(result, photoFolderConfigSync.warning);
-    }
+    addHotspotFolderConfigWarnings_(result, photoFolderConfigSync);
+    addHotspotFolderConfigWarnings_(result, audioFolderConfigSync);
     if (previousPhotoId && previousPhotoId !== photoId) {
       try {
         cleanupOrphanedHotspotPhoto_(previousPhotoId, sheet);
@@ -4507,14 +5870,23 @@ function updateHotspot(data, hotspotId) {
         addHotspotCleanupWarning_(result, cleanupError);
       }
     }
+    if (previousAudioId && previousAudioId !== audioId) {
+      try {
+        cleanupOrphanedHotspotAudio_(previousAudioId, sheet);
+      } catch (cleanupError) {
+        addHotspotCleanupWarning_(result, cleanupError, '', 'audio');
+      }
+    }
     return result;
   } catch (e) {
-    const rollbackFailed = !!(createdPhotoFile && !infoSaved && !rollbackCreatedHotspotPhoto_(createdPhotoFile));
+    const hasCreatedFiles = !!(createdPhotoFile || createdAudioFile);
+    const rollbackFailed = hasCreatedFiles && !infoSaved &&
+      !rollbackCreatedHotspotAttachments_(createdPhotoFile, createdAudioFile);
     console.error('updateHotspot エラー:', e.message);
     const failure = { success: false, error: e.message };
     if (rollbackFailed) {
       failure.cleanupRequired = true;
-      failure.warning = '更新に失敗し、作成済み添付写真の取り消しにも失敗しました。管理者へ連絡してください。';
+      failure.warning = '更新に失敗し、作成済み添付ファイルの取り消しにも失敗しました。管理者へ連絡してください。';
     }
     return failure;
   } finally {
@@ -4615,7 +5987,7 @@ function migrateSheetIfNeeded_(sheet) {
   const lastRow = sheet.getLastRow();
   let idsAdded = 0;
   if (lastRow > 1) {
-    const idRange = sheet.getRange(2, targetColumns, lastRow - 1, 1);
+    const idRange = sheet.getRange(2, ID_COL_INDEX + 1, lastRow - 1, 1);
     const idValues = idRange.getValues();
     let needsUpdate = false;
     for (let i = 0; i < idValues.length; i++) {
@@ -4664,6 +6036,7 @@ function applyInfoSheetSchema_(sheet) {
   sheet.setColumnWidth(11, 220);
   sheet.setColumnWidth(12, 220);
   sheet.setColumnWidth(13, 280);
+  sheet.setColumnWidth(14, 280);
   sheet.setFrozenRows(1);
 }
 
@@ -5504,7 +6877,8 @@ function importDataFromStudentSheet_() {
         DEFAULT_MARKER_ICON,
         photoId,
         jumpId,
-        Utilities.getUuid()
+        Utilities.getUuid(),
+        ''
       ]);
       targetIdxs.push(i);
     });
