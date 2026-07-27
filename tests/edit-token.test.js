@@ -160,6 +160,11 @@ function loadCode(
           evaluate() {
             context.__createdTemplate = this;
             return {
+              metaTags: [],
+              addMetaTag(name, content) {
+                this.metaTags.push({ name, content });
+                return this;
+              },
               setTitle(title) {
                 this.title = title;
                 return this;
@@ -274,6 +279,16 @@ function getFunctionBody(source, functionName) {
   }
   throw new Error(`Could not parse ${functionName}`);
 }
+
+test('doGet adds the mobile viewport meta tag to the GAS HtmlOutput', () => {
+  const context = loadCode();
+
+  const output = context.doGet({ parameter: { mode: 'public' } });
+
+  assert.deepEqual(output.metaTags, [
+    { name: 'viewport', content: 'width=device-width, initial-scale=1' }
+  ]);
+});
 
 test('doGet does not issue an edit token for public view', () => {
   const context = loadCode();

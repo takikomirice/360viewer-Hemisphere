@@ -670,7 +670,7 @@ function loadCode({
     HtmlService: {
       XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
       createHtmlOutput() { return { setWidth() { return this; }, setHeight() { return this; } }; },
-      createTemplateFromFile() { return { evaluate() { return { setTitle() { return this; }, setXFrameOptionsMode() { return this; } }; } }; }
+      createTemplateFromFile() { return { evaluate() { return { addMetaTag() { return this; }, setTitle() { return this; }, setXFrameOptionsMode() { return this; } }; } }; }
     }
   };
   vm.createContext(context);

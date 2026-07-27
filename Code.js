@@ -3169,6 +3169,7 @@ function doGet(e) {
 
   return template
     .evaluate()
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setTitle('360°Viewer - Hemisphere')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
