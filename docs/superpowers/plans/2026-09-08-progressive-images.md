@@ -18,8 +18,10 @@
 - [x] Verify generation reuse and failures without changing the live GAS project or source image sharing.
 - [x] Record measured results and limitations in `docs/progressive-images-experiment.md`.
 - [x] Run appropriate tests and independent review. Node404/404, revised measurement and concurrency review passed.
-- [ ] Commit and push only source/docs on `improve/quality-audit-20260908`.
+- [x] Commit and push only source/docs on `improve/quality-audit-20260908` (30af7b6).
 
 ## Next integration boundary
 
 After the experiment, select and test an authenticated/public delivery contract, implement managed Drive thumbnail writes and startup queue idempotency, then integrate the viewer and resizable sidebar. These are not implied complete by local timing results.
+
+2026-09-09: Saved both experimental WebP thumbnails to the designated Drive thumbnail folder using the existing clasp authorization. Verified parent, byte count, and MD5 through API read-back, and confirmed both files in the Drive UI. Automatic startup generation and persistence remain pending integration.
