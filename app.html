@@ -1883,7 +1883,7 @@ function renderShareQrCode(url) {
     var svg = document.createElementNS(svgNs, 'svg');
     svg.setAttribute('viewBox', '0 0 ' + viewSize + ' ' + viewSize);
     svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'public共有URLのQRコード');
+    svg.setAttribute('aria-label', '閲覧用リンクのQRコード');
     svg.setAttribute('shape-rendering', 'crispEdges');
 
     var background = document.createElementNS(svgNs, 'rect');

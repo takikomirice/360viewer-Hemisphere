@@ -1418,18 +1418,18 @@ function normalizeSceneNameForSave_(requestedName, originalFileName, mimeType) {
  * 未登録、重複、ルート外、親不一致、画像以外は拒否する。
  *
  * @param {string} fileId
- * @param {{scenesSheet?:GoogleAppsScript.Spreadsheet.Sheet,snapshot?:Object}=} options
+ * @param {{scenesSheet?:GoogleAppsScript.Spreadsheet.Sheet,snapshot?:Object,appConfig?:Object}=} options サーバー内で取得済みの設定・シートのみ。
  * @returns {{fileId:string,rootFolderId:string,scenesSheet:Object,snapshot:Object,scene:Object,file:Object,parentFolderIds:Array<string>}}
  */
 function getEditableSceneContext_(fileId, options) {
   const targetId = String(fileId || '').trim();
   if (!targetId) throw new Error('ファイルIDが指定されていません。');
 
-  const config = getAppConfig_();
+  const opts = options || {};
+  const config = opts.appConfig || getAppConfig_();
   const rootFolderId = extractDriveFolderId_(config[IMAGE_DRIVE_URL_CONFIG_KEY] || '') || '';
   if (!rootFolderId) throw new Error('IMAGE_DRIVE_URLに有効なルートフォルダが設定されていません。');
 
-  const opts = options || {};
   const scenesSheet = opts.scenesSheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCENES_SHEET_NAME);
   if (!scenesSheet) throw new Error('scenesシートに対象画像が登録されていません。');
   const snapshot = opts.snapshot || readSceneRows_(scenesSheet);
@@ -2615,13 +2615,15 @@ function getNorthOffsetAccessContext_(fileId) {
  *
  * @param {string} fileId
  * @param {GoogleAppsScript.Drive.File=} file
+ * @param {{fileId:string,allowed:boolean,scene:Object,file:Object}=} validatedAccess 同じ呼出し内でサーバーが認可済みの対象のみ。
  * @returns {number|null}
  */
-function getOrExtractNorthOffset_(fileId, file) {
+function getOrExtractNorthOffset_(fileId, file, validatedAccess) {
   const targetId = String(fileId || '').trim();
   if (!targetId) return null;
 
-  const access = getNorthOffsetAccessContext_(targetId);
+  const access = validatedAccess && validatedAccess.fileId === targetId
+    ? validatedAccess : getNorthOffsetAccessContext_(targetId);
   if (!access.allowed) return null;
 
   // scenes行がある場合はその状態を正とする。manual/noneは非JPEGでもBlobを読まず返し、
@@ -3578,7 +3580,7 @@ function getReadableImageContext_(fileId) {
   const config = getAppConfig_();
   const configuredUrl = config[IMAGE_DRIVE_URL_CONFIG_KEY] || '';
   const rootFolderId = extractDriveFolderId_(configuredUrl) || '';
-  if (rootFolderId) return getEditableSceneContext_(targetId);
+  if (rootFolderId) return getEditableSceneContext_(targetId, { appConfig: config });
 
   const configuredFileId = extractDriveFileId_(configuredUrl) || '';
   if (!configuredFileId || configuredFileId !== targetId) {
@@ -5275,7 +5277,7 @@ function getHotspotStorageContext_(storageFileId) {
 
   if (rootFolderId) {
     if (!storageId) throw new Error('対象シーンIDが指定されていません。');
-    const editable = getEditableSceneContext_(storageId);
+    const editable = getEditableSceneContext_(storageId, { appConfig: config });
     return {
       storageFileId: storageId,
       actualFileId: editable.fileId,
@@ -5559,7 +5561,15 @@ function loadHotspots(request) {
   var northOffset = null;
   if (fileId) {
     try {
-      northOffset = getOrExtractNorthOffset_(fileId);
+      // フォルダ内の画像は上でDriveの実親・scenes登録・対象IDの一致まで検証済み。
+      // 単一画像はscenesに別途保存された方位設定も確認するため従来経路を使う。
+      const validatedNorthAccess = accessContext.rootFolderId ? {
+        fileId: accessContext.actualFileId,
+        allowed: normalizeSceneType_(accessContext.scene && accessContext.scene.type) === SCENE_TYPE_360,
+        scene: accessContext.scene,
+        file: accessContext.file
+      } : null;
+      northOffset = getOrExtractNorthOffset_(fileId, accessContext.file, validatedNorthAccess);
     } catch (metaErr) {
       console.warn('loadHotspots: northOffset 取得スキップ:', metaErr.message);
     }

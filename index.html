@@ -624,7 +624,7 @@
           <label class="hae-file-card" for="hae-audio-file" aria-describedby="hae-input-limits">
             <svg aria-hidden="true"><use href="#hae-icon-audio"></use></svg>
             <span class="hae-file-card-formats">M4A / MP3 / WAV</span>
-            <span id="hae-input-limits" class="hae-file-card-limits">5min / 50MB recommended<br>10min / 200MB max</span>
+            <span id="hae-input-limits" class="hae-file-card-limits">推奨：5分・50MBまで<br>上限：10分・200MB</span>
           </label>
           <input id="hae-audio-file" class="hae-visually-hidden" type="file" accept="audio/mp4,audio/mpeg,audio/wav,.m4a,.mp3,.wav">
         </section>
@@ -835,7 +835,7 @@
           </span>
           <span>URL</span>
         </label>
-        <label class="share-icon-option" title="iframeコードをコピー">
+        <label class="share-icon-option" title="Webサイトへの埋め込みコードをコピー">
           <input type="radio" name="share-format" value="iframe" onchange="updateShareOutput()">
           <span class="share-format-icon" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -843,9 +843,9 @@
               <polyline points="8 6 2 12 8 18"/>
             </svg>
           </span>
-          <span>iframe</span>
+          <span>埋め込み</span>
         </label>
-        <label class="share-icon-option" title="public URLのQRコードを表示">
+        <label class="share-icon-option" title="閲覧用リンクのQRコードを表示">
           <input type="radio" name="share-format" value="qr" onchange="updateShareOutput()">
           <span class="share-format-icon" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
@@ -858,7 +858,7 @@
     </div>
 
     <div class="embed-section">
-      <div class="share-option-title">画像配信</div>
+      <div class="share-option-title">画像の表示方法</div>
       <div class="share-segment share-compact-segment">
         <label class="share-compact-option" title="画像を直接読み込みます。共有設定によっては表示できない場合があります。">
           <input type="radio" name="share-delivery" value="direct" onchange="updateShareOutput()">
@@ -881,20 +881,20 @@
     <div class="embed-section">
       <div class="share-option-title">共有対象</div>
       <div class="share-segment share-compact-segment">
-        <label class="share-compact-option" title="sceneを含めず、ホームまたは先頭画像から開きます。">
+        <label class="share-compact-option" title="ホームに設定された画像から開きます。">
           <input type="radio" name="share-target" value="home" checked onchange="updateShareOutput()">
           <span class="share-choice-main">ホーム</span>
-          <span class="share-choice-sub">sceneなし</span>
+          <span class="share-choice-sub">最初の画像</span>
         </label>
-        <label class="share-compact-option" title="現在のシーンIDを共有URLに含めます。">
+        <label class="share-compact-option" title="いま表示している画像から開きます。">
           <input type="radio" name="share-target" value="scene" onchange="updateShareOutput()">
           <span class="share-choice-main">シーン</span>
-          <span class="share-choice-sub">scene</span>
+          <span class="share-choice-sub">この画像</span>
         </label>
-        <label class="share-compact-option" title="現在のシーンと、取得できる場合はyaw/pitchを含めます。">
+        <label class="share-compact-option" title="いま見ている画像と向きで開きます。">
           <input type="radio" name="share-target" value="view" onchange="updateShareOutput()">
           <span class="share-choice-main">視点</span>
-          <span class="share-choice-sub">scene + yaw/pitch</span>
+          <span class="share-choice-sub">この向き</span>
         </label>
       </div>
     </div>
@@ -902,11 +902,11 @@
     <div class="embed-section">
       <div class="embed-section-label">
         <span id="share-output-label" class="embed-badge embed-badge-public">共有URL</span>
-        <span class="embed-section-desc">常に public 用。editKey は含めません。</span>
+        <span class="embed-section-desc">閲覧用のリンクです。編集権限は含みません。</span>
       </div>
       <div id="share-qr-panel" class="share-qr-panel" hidden>
         <div id="share-qr-code" class="share-qr-code" aria-label="共有URLのQRコード"></div>
-        <p id="share-qr-note" class="share-qr-note">このQRは public URL です。editKey は含みません。</p>
+        <p id="share-qr-note" class="share-qr-note">カメラで読み取ると閲覧画面が開きます。</p>
         <button class="embed-copy-btn share-qr-copy-btn" onclick="copyShareOutput()" title="URLをコピー">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>

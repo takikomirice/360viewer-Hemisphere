@@ -3764,6 +3764,32 @@ function reviewInfoRow(fileId, label, id, options = {}) {
   ];
 }
 
+test('public hotspot load reuses validated folder context for heading without repeating Drive reads', () => {
+  const rootId = 'read-once-root-folder-123';
+  const sceneId = 'read-once-scene-file-123';
+  const file = createDriveFile({ id: sceneId, name: 'Scene.jpg' });
+  const context = loadCode({
+    sheets: {
+      config: createFolderConfigSheet(rootId),
+      scenes: createSheet('scenes', [EXPECTED_SCENE_HEADERS, reviewSceneRow(sceneId, 'Scene.jpg', rootId, { northOffset: 45, northOffsetSource: 'manual' })]),
+      info: createSheet('info', [INFO_HEADERS, reviewInfoRow(sceneId, '公開情報', 'read-once-hotspot')])
+    },
+    driveFolders: { [rootId]: createDriveFolder({ id: rootId, files: [file] }) }
+  });
+  const originalGetFile = context.DriveApp.getFileById;
+  let driveReads = 0;
+  const originalGetConfig = context.getAppConfig_;
+  let configReads = 0;
+  context.getAppConfig_ = function () { configReads++; return originalGetConfig(); };
+  context.DriveApp.getFileById = function (id) { driveReads++; return originalGetFile(id); };
+  const result = context.loadHotspots(sceneId);
+  assert.equal(result.hotspots[0].label, '公開情報');
+  assert.equal(result.northOffset, 45);
+  assert.equal(driveReads, 1);
+  assert.equal(configReads, 1);
+  assert.equal(file.__blobReads, 0);
+});
+
 test('public hotspot and photo reads stay inside configured, associated image IDs', () => {
   const rootId = 'review-public-root-folder';
   const outsideFolderId = 'review-public-outside-folder';
