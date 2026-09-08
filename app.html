@@ -986,6 +986,8 @@ var initialSceneId  = '';     // URLパラメータ scene の初期表示シー�
 var initialYaw      = null;   // URLパラメータ yaw の初期視点
 var initialPitch    = null;   // URLパラメータ pitch の初期視点
 var isGyroActive    = false;  // ジャイロ（DeviceOrientation）ON/OFF状態
+var gyroRequestGeneration = 0;
+var gyroPermissionPending = false;
 var appBaseUrl      = '';     // WebアプリのベースURL（共有URL生成用）
 var pendingPitch    = null;   // クリック地点のPitch（保存待ち）
 // 編集モード: ドラッグとクリックの判別用（ドラッグ後のclickでホットスポットを開かない）
@@ -1021,6 +1023,7 @@ var sceneSettingsReturnFocusId = null; // モーダル終了後にフォーカ�
 var isSavingSceneSettings = false; // 設定保存の二重送信防止
 var sceneSettingsRequestGeneration = 0; // 古い設定取得応答を破棄する世代番号
 var sceneLoadGeneration = 0; // 同一IDの再読込も含め古い表示応答を破棄する世代番号
+var appStartupPerformance = { startedAt: scenePerformanceNow_(), configStart: null, configEnd: null, finished: false };
 var sceneDisplayReady = false; // 現在のシーン画像が操作可能な状態まで読み込まれたか
 var sceneReorderState = {
   draggedId: '',
@@ -2051,12 +2054,16 @@ window.addEventListener('load', function () {
     syncDriveFolderButtons();
     maybeShowMobilePublicHint();
 
+    appStartupPerformance.configStart = scenePerformanceNow_();
     google.script.run
-      .withSuccessHandler(onConfigLoaded)
+      .withSuccessHandler(function (config) {
+        appStartupPerformance.configEnd = scenePerformanceNow_();
+        onConfigLoaded(config);
+      })
       .withFailureHandler(function () {
         showLoadError('設定の読み込みに失敗しました。');
       })
-      .getConfig(appMode, true);
+      .getConfig(appMode, !isPublicViewingMode());
   });
 });
 
@@ -3116,6 +3123,11 @@ function openSceneContextMenu(evt, img) {
       ? '編集モードで利用できます'
       : (!isRootSceneItem(img) ? 'サブフォルダの画像はホームに設定できません' : '');
   }
+  var deleteButton = menu.querySelector('[data-action="delete"]');
+  if (deleteButton) {
+    deleteButton.disabled = !isEditMode;
+    deleteButton.title = !isEditMode ? '編集モードで利用できます' : '';
+  }
   sceneContextTargetId = img.id;
   menu.classList.add('visible');
 
@@ -3307,6 +3319,51 @@ function onHotspotEditClick() {
   openPopup(cx, cy, target);
 }
 
+function openDeleteConfirmation(message, onConfirm) {
+  if (document.getElementById('delete-confirmation')) return;
+  var returnFocus = document.activeElement;
+  var dialog = document.createElement('dialog');
+  dialog.id = 'delete-confirmation';
+  dialog.className = 'delete-confirmation';
+  dialog.setAttribute('role', 'alertdialog');
+  dialog.setAttribute('aria-labelledby', 'delete-confirmation-title');
+  dialog.setAttribute('aria-describedby', 'delete-confirmation-message');
+  var title = document.createElement('h2');
+  title.id = 'delete-confirmation-title';
+  title.textContent = '削除の確認';
+  var description = document.createElement('p');
+  description.id = 'delete-confirmation-message';
+  description.textContent = message;
+  var actions = document.createElement('div');
+  actions.className = 'delete-confirmation-actions';
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'キャンセル';
+  var confirm = document.createElement('button');
+  confirm.type = 'button';
+  confirm.className = 'delete-confirmation-submit';
+  confirm.textContent = '削除する';
+  actions.append(cancel, confirm);
+  dialog.append(title, description, actions);
+  var settled = false;
+  function finish(accepted) {
+    if (settled) return;
+    settled = true;
+    dialog.close();
+    dialog.remove();
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+    if (accepted) onConfirm();
+  }
+  cancel.addEventListener('click', function () { finish(false); });
+  confirm.addEventListener('click', function () { finish(true); });
+  dialog.addEventListener('cancel', function (evt) { evt.preventDefault(); finish(false); });
+  dialog.addEventListener('keydown', function (evt) { evt.stopPropagation(); });
+  dialog.addEventListener('click', function (evt) { evt.stopPropagation(); });
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  cancel.focus();
+}
+
 function onHotspotDeleteClick() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('delete-other-hotspot')) {
     closeHotspotContextMenu();
@@ -3330,7 +3387,15 @@ function onHotspotDeleteClick() {
     showToast('このホットスポットの更新を処理中です。完了までお待ちください。', 'error');
     return;
   }
-  if (!window.confirm('「' + String(target.label || 'ホットスポット') + '」を削除しますか？\n説明・リンクと添付の関連付けも削除されます。')) return;
+  if (!isEditMode) return;
+  var confirmedSceneId = currentFileId;
+  var confirmedSceneGeneration = sceneLoadGeneration;
+  openDeleteConfirmation('「' + String(target.label || 'ホットスポット') + '」を削除しますか？\n説明・リンクと添付の関連付けも削除されます。', function () {
+  if (!canEdit || !isEditMode || currentFileId !== confirmedSceneId || sceneLoadGeneration !== confirmedSceneGeneration ||
+      !canStartHotspotMutation() || hasPendingHotspotMutationForTarget(target.id)) {
+    showToast('状態が変わったため削除を中止しました。対象を確認してもう一度操作してください。', 'warning');
+    return;
+  }
   var mutationRequest = createHotspotMutationRequest(currentFileId || '', 'delete', target.id);
 
   google.script.run
@@ -3367,6 +3432,7 @@ function onHotspotDeleteClick() {
       id: target.id,
       fileId: mutationRequest.fileId
     }));
+  });
 }
 
 function onHotspotMoveClick() {
@@ -3390,14 +3456,16 @@ function onHotspotMoveClick() {
 
 function requestSceneDelete(img) {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('delete-scene')) return false;
-  if (!canEdit) return;
+  if (!canEdit || !isEditMode || !img || !img.id) return;
   var sceneName = String((img && img.name) || '');
-  var ok = window.confirm(
+  openDeleteConfirmation(
     '「' + sceneName + '」を削除しますか？\n' +
     '削除した写真はGoogleドライブのゴミ箱に移動され、\n' +
-    'このシーンに紐づくホットスポットも削除されます。'
-  );
-  if (!ok) return;
+    'このシーンに紐づくホットスポットも削除されます。', function () {
+  if (!canEdit || !isEditMode || !getSceneImageById(img.id)) {
+    showToast('状態が変わったため削除を中止しました。', 'warning');
+    return;
+  }
 
   google.script.run
     .withSuccessHandler(function (result) {
@@ -3420,6 +3488,7 @@ function requestSceneDelete(img) {
     .deleteImageFile(withEditToken({
       fileId: img.id
     }));
+  });
 }
 
 function applySceneDeleteLocally(fileId) {
@@ -3982,6 +4051,15 @@ function finishScenePerformanceRecord(record, status) {
   record.status = String(status || 'loaded');
   record.marks.total = finishedAt;
   record.duration = finishedAt - record.marks.sceneStart;
+  if (!appStartupPerformance.finished) {
+    appStartupPerformance.finished = true;
+    console.info('[app-perf]', JSON.stringify({
+      status: record.status,
+      duration: finishedAt - appStartupPerformance.startedAt,
+      configDuration: appStartupPerformance.configEnd == null || appStartupPerformance.configStart == null
+        ? null : appStartupPerformance.configEnd - appStartupPerformance.configStart
+    }));
+  }
   if (activeScenePerformanceRecord === record) activeScenePerformanceRecord = null;
   var relativeMarks = {};
   Object.keys(record.marks).forEach(function (name) {
@@ -4616,7 +4694,8 @@ function syncSceneActionButtons() {
   syncSceneActionButton_('fullscreen-btn', canUseScene && !isEditMode);
   syncSceneActionButton_('btn-home', canUseScene && !!homeImageId);
   syncSceneActionButton_('quality-toggle-btn', canUseScene);
-  syncSceneActionButton_('gyro-toggle-btn', canUseScene && !is2DMode && !isEditMode && typeof DeviceOrientationEvent !== 'undefined');
+  syncSceneActionButton_('gyro-toggle-btn', canUseScene && !is2DMode && !isEditMode && isGyroSupported());
+  updateGyroBtn();
 }
 
 function setSceneDisplayReady(ready) {
@@ -4897,16 +4976,25 @@ function updateGyroBtn() {
   if (!btn) return;
   btn.classList.toggle('gyro-active', isGyroActive);
   btn.title = isGyroActive ? 'ジャイロOFF' : 'ジャイロON';
+  if (gyroPermissionPending) btn.title = 'ジャイロの起動を確認中';
+  btn.disabled = btn.hidden || gyroPermissionPending;
+  btn.setAttribute('aria-busy', gyroPermissionPending ? 'true' : 'false');
   btn.setAttribute('aria-pressed', isGyroActive ? 'true' : 'false');
 }
 
 function stopGyroIfActive(reason) {
-  if (!isGyroActive) return;
+  gyroRequestGeneration++;
+  gyroPermissionPending = false;
   if (viewer) {
     try { viewer.stopOrientation(); } catch (e) { /* ignore */ }
   }
   isGyroActive = false;
   updateGyroBtn();
+}
+
+function isGyroSupported() {
+  return !!(typeof DeviceOrientationEvent !== 'undefined' && viewer &&
+    typeof viewer.isOrientationSupported === 'function' && viewer.isOrientationSupported());
 }
 
 /**
@@ -4916,38 +5004,77 @@ function stopGyroIfActive(reason) {
  */
 function toggleGyro() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('toggle-gyro')) return false;
-  if (!sceneDisplayReady || is2DMode || isEditMode || typeof DeviceOrientationEvent === 'undefined') return false;
+  if (!sceneDisplayReady || is2DMode || isEditMode || !isGyroSupported() || gyroPermissionPending) return false;
   if (isGyroActive) {
     // ---- OFF ----
     stopGyroIfActive('toggle');
     return;
   }
 
-  // ---- ON ----
-  function startGyro() {
-    if (!viewer) return;
-    try {
-      viewer.startOrientation();
+  var targetViewer = viewer;
+  var targetSceneGeneration = sceneLoadGeneration;
+  var requestGeneration = ++gyroRequestGeneration;
+  gyroPermissionPending = true;
+  updateGyroBtn();
+  function isCurrentRequest() {
+    return requestGeneration === gyroRequestGeneration && viewer === targetViewer &&
+      targetSceneGeneration === sceneLoadGeneration && sceneDisplayReady && !is2DMode && !isEditMode;
+  }
+  function failStart(message) {
+    if (!isCurrentRequest()) return;
+    gyroPermissionPending = false;
+    isGyroActive = false;
+    updateGyroBtn();
+    showToast(message, 'error');
+  }
+  function checkStarted(attempt) {
+    if (!isCurrentRequest()) {
+      try { targetViewer.stopOrientation(); } catch (e) { /* destroyed viewer */ }
+      return;
+    }
+    // Pannellum may finish its own permission promise after startOrientation returns.
+    if (typeof targetViewer.isOrientationActive === 'function' && targetViewer.isOrientationActive()) {
+      gyroPermissionPending = false;
       isGyroActive = true;
       updateGyroBtn();
+    } else if (attempt < 20) {
+      setTimeout(function () { checkStarted(attempt + 1); }, 100);
+    } else {
+      targetViewer.stopOrientation();
+      failStart('ジャイロを開始できませんでした。端末の対応と許可設定をご確認ください。');
+    }
+  }
+  // ---- ON ----
+  function startGyro() {
+    if (!isCurrentRequest()) return;
+    try {
+      targetViewer.startOrientation();
+      checkStarted(0);
     } catch (e) {
-      showToast('ジャイロの起動に失敗しました', 'error');
+      failStart('ジャイロの起動に失敗しました');
     }
   }
 
   // iOS 13+ Safari: requestPermission が必要
   if (typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission()
+    var permissionRequest;
+    try {
+      permissionRequest = DeviceOrientationEvent.requestPermission();
+    } catch (error) {
+      failStart('ジャイロの許可リクエストに失敗しました');
+      return;
+    }
+    Promise.resolve(permissionRequest)
       .then(function (permission) {
         if (permission === 'granted') {
           startGyro();
         } else {
-          showToast('ジャイロの許可が得られませんでした', 'error');
+          failStart('ジャイロの許可が得られませんでした');
         }
       })
       .catch(function () {
-        showToast('ジャイロの許可リクエストに失敗しました', 'error');
+        failStart('ジャイロの許可リクエストに失敗しました');
       });
   } else {
     // Android / デスクトップ等: 許可不要でそのまま開始
@@ -7121,6 +7248,7 @@ function toggleMode(options) {
       return toggleMode(nextOptions);
     });
   }
+  stopGyroIfActive('mode');
   isEditMode = !isEditMode;
   document.body.classList.toggle('edit-mode-active', isEditMode);
   if (!isEditMode) {

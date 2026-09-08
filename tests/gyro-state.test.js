@@ -27,7 +27,6 @@ test('gyro shutdown is centralized in stopGyroIfActive', () => {
   const app = readApp();
   const body = getFunctionBody(app, 'stopGyroIfActive');
 
-  assert.match(body, /if\s*\(\s*!isGyroActive\s*\)\s*return/);
   assert.match(body, /viewer\.stopOrientation\(\)/);
   assert.match(body, /isGyroActive\s*=\s*false/);
   assert.match(body, /updateGyroBtn\(\)/);

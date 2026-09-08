@@ -18,6 +18,35 @@ test('default delivery automatically recovers when a Drive direct image is unava
   expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length)).toBe(1);
 });
 
+for (const mode of ['public', 'edit']) {
+  test(`startup ${mode} uses the appropriate listing freshness and refresh always synchronizes`, async ({ page }) => {
+    await page.goto(`/?mode=${mode}&sceneType=360`);
+    await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+    expect(await page.evaluate(() => __HARNESS_CALLS__.find(c => c.method === 'getConfig').args[1])).toBe(mode === 'edit');
+    await page.getByRole('button', { name: 'シーン一覧を更新', exact: true }).click();
+    expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'getConfig').at(-1).args[1])).toBe(true);
+  });
+}
+
+test('opt-in startup timing includes config and records the first display only', async ({ page }) => {
+  const logs = [];
+  page.on('console', message => { if (message.text().startsWith('[app-perf]')) logs.push(message.text()); });
+  await page.goto('/?mode=public&sceneType=360&perf=1');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  expect(logs).toHaveLength(1);
+  const record = JSON.parse(logs[0].slice('[app-perf] '.length));
+  expect(record.status).toBe('loaded');
+  expect(record.configDuration).toBeGreaterThanOrEqual(0);
+  expect(record.duration).toBeGreaterThanOrEqual(record.configDuration);
+  expect(logs[0]).not.toMatch(/https:|fixture-scene|editToken/);
+  await page.locator('.scene-item-name').nth(1).click();
+  await expect(page.locator('#loading')).toBeHidden();
+  expect(logs).toHaveLength(1);
+  await page.goto('/?mode=public&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  expect(logs).toHaveLength(1);
+});
+
 test('compatible quality is sent to GAS and opt-in transfer diagnostics omit URLs and file IDs', async ({ page }) => {
   const logs = [];
   page.on('console', message => { if (message.text().startsWith('[image-delivery]')) logs.push(message.text()); });
@@ -156,15 +185,39 @@ test('editing a marker by keyboard offers a cancellable delete and sends only a 
   const marker = page.getByRole('button', { name: '確認対象を開く', exact: true });
   await marker.press('Enter');
   await expect(page.locator('#hs-ctx-edit-btn')).toBeFocused();
-  page.once('dialog', async dialog => { expect(dialog.message()).toContain('確認対象'); await dialog.dismiss(); });
   await page.locator('#hs-ctx-delete-btn').click();
+  const confirmation = page.getByRole('alertdialog', { name: '削除の確認', exact: true });
+  await expect(confirmation).toContainText('確認対象');
+  await expect(confirmation.getByRole('button', { name: 'キャンセル', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
   expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'deleteHotspot').length)).toBe(0);
   await expect(marker).toBeFocused();
   await marker.press('Space');
-  page.once('dialog', dialog => dialog.accept());
   await page.locator('#hs-ctx-delete-btn').click();
+  await confirmation.getByRole('button', { name: '削除する', exact: true }).click();
   await expect.poll(() => page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'deleteHotspot').length)).toBe(1);
   await expect(marker).toHaveCount(0);
+});
+
+test('scene deletion requires edit mode and its confirmation can be cancelled on a narrow screen', async ({ page }) => {
+  await page.goto('/?mode=edit&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  const actions = page.locator('.scene-menu-button').first();
+  await actions.press('Enter');
+  await expect(page.getByRole('button', { name: '写真を削除', exact: true })).toBeDisabled();
+  await page.keyboard.press('Escape');
+  await page.locator('#mode-toggle').click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await actions.press('Enter');
+  await page.getByRole('button', { name: '写真を削除', exact: true }).click();
+  const confirmation = page.getByRole('alertdialog', { name: '削除の確認', exact: true });
+  await expect(confirmation).toBeVisible();
+  const bounds = await confirmation.boundingBox();
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  await confirmation.getByRole('button', { name: 'キャンセル', exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+  expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'deleteImageFile').length)).toBe(0);
 });
 
 test('2D viewing hides the inactive gyro control', async ({ page }) => {
@@ -172,6 +225,80 @@ test('2D viewing hides the inactive gyro control', async ({ page }) => {
   await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
   await expect(page.locator('#gyro-toggle-btn')).toBeHidden();
   await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
+});
+
+test('gyro is unavailable when the viewer does not support orientation despite a browser API', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => {
+    viewer.isOrientationSupported = () => false;
+    syncSceneActionButtons();
+  });
+  await expect(page.locator('#gyro-toggle-btn')).toBeHidden();
+  await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
+});
+
+test('gyro stays off when orientation startup does not activate the viewer', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => {
+    viewer.isOrientationSupported = () => true;
+    viewer.isOrientationActive = () => false;
+    viewer.startOrientation = () => {};
+    syncSceneActionButtons();
+  });
+  await page.locator('#gyro-toggle-btn').click();
+  await expect(page.locator('#gyro-toggle-btn')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#gyro-toggle-btn')).toBeEnabled({ timeout: 5000 });
+});
+
+test('gyro reflects delayed viewer activation and stops when entering edit mode', async ({ page }) => {
+  await page.goto('/?mode=edit&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => {
+    let active = false;
+    viewer.isOrientationSupported = () => true;
+    viewer.isOrientationActive = () => active;
+    viewer.startOrientation = () => { setTimeout(() => { active = true; }, 120); };
+    viewer.stopOrientation = () => { active = false; };
+    syncSceneActionButtons();
+  });
+  const gyro = page.locator('#gyro-toggle-btn');
+  await gyro.click();
+  await expect(gyro).toHaveAttribute('aria-pressed', 'true');
+  await expect(gyro).toBeEnabled();
+  await page.locator('#mode-toggle').click();
+  await expect(gyro).toBeHidden();
+  await expect(gyro).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => viewer.isOrientationActive())).toBe(false);
+});
+
+test('late gyro permission cannot activate a changed scene and duplicate requests are suppressed', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => {
+    window.__gyroCalls = { permission: 0, start: 0 };
+    DeviceOrientationEvent.requestPermission = () => {
+      __gyroCalls.permission++;
+      return new Promise(resolve => { window.__resolveGyroPermission = resolve; });
+    };
+    viewer.isOrientationSupported = () => true;
+    viewer.isOrientationActive = () => false;
+    viewer.startOrientation = () => { __gyroCalls.start++; };
+    syncSceneActionButtons();
+    toggleGyro();
+    toggleGyro();
+  });
+  expect(await page.evaluate(() => __gyroCalls.permission)).toBe(1);
+  await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
+  await page.evaluate(async () => {
+    stopGyroIfActive('load-scene');
+    sceneLoadGeneration++;
+    __resolveGyroPermission('granted');
+    await Promise.resolve();
+  });
+  expect(await page.evaluate(() => __gyroCalls.start)).toBe(0);
+  await expect(page.locator('#gyro-toggle-btn')).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('quiz attachments render, support photo enlargement, and discard delayed media after close', async ({ page }) => {

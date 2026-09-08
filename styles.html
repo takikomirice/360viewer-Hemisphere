@@ -1,4 +1,25 @@
-  <style>
+<style>
+  .delete-confirmation {
+    width: min(420px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    box-sizing: border-box;
+    padding: 24px;
+    border: 1px solid var(--theme-border, #666);
+    border-radius: 16px;
+    background: var(--theme-surface, #202127);
+    color: var(--theme-text, #fff);
+    box-shadow: 0 16px 56px #0008;
+  }
+  .delete-confirmation::backdrop { background: #0009; }
+  .delete-confirmation h2 { font-size: 1.1rem; margin: 0 0 16px; }
+  .delete-confirmation p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  .delete-confirmation-actions { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+  .delete-confirmation button {
+    min-height: 44px; padding: 8px 16px; border: 1px solid currentColor;
+    border-radius: 8px; background: transparent; color: inherit; cursor: pointer;
+  }
+  .delete-confirmation button:focus-visible { outline: 3px solid #65a7ff; outline-offset: 3px; }
+  .delete-confirmation .delete-confirmation-submit { background: #b42332; color: #fff; border-color: #b42332; }
     :root {
       --app-safe-top: env(safe-area-inset-top, 0px);
       --app-safe-right: env(safe-area-inset-right, 0px);
