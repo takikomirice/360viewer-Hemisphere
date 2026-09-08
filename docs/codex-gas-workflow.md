@@ -4,6 +4,10 @@
 認証にはインストール済みの `clasp` のログインを使う。
 認証ファイルやアクセストークンをリポジトリへコピーしない。
 
+- 作業ブランチ: `improve/quality-audit-20260908`
+- 検証用Webアプリ: https://script.google.com/macros/s/AKfycbzZaFfkHQJELtoeZAYVZxVWQGg_vS8oAdU0htYqvSO_AG9VkvU2pOUFAPVgIaQAZmTF/exec
+- 編集用URLはスプレッドシートのconfigにある `EDIT_URL` を利用する。編集キーを含むためGitや公開レポートには記載しない。
+
 ## 通常の更新
 
 1. `git status --short` と `git branch --show-current` で作業状態を確認する。

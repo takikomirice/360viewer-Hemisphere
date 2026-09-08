@@ -981,7 +981,7 @@ var isEditMode      = false;  // 現在編集モードかどうか
 var appMode         = String((document.body && document.body.getAttribute('data-app-mode')) || ''); // URLパラメータ: 'public' | 'internal' | ''
 var editToken       = String(window.__EDIT_TOKEN__ || '');
 var canEdit         = !!editToken;
-var deliveryMode    = 'direct'; // 画像配信方式: 'direct' | 'auto' | 'base64'
+var deliveryMode    = 'auto'; // 画像配信方式: 'direct' | 'auto' | 'base64'
 var initialSceneId  = '';     // URLパラメータ scene の初期表示シーンID
 var initialYaw      = null;   // URLパラメータ yaw の初期視点
 var initialPitch    = null;   // URLパラメータ pitch の初期視点
@@ -1003,6 +1003,12 @@ var previousSceneId = null;   // ジャンプ前のシーンID（振り返り視
 var preloadedScenes = new Set(); // プリロード済みシーンIDのセット（先読みキャッシュ管理）
 var isSwitching     = false;  // シーン切替中フラグ（二重クリック防止）
 var imageQualityMode = 'fast'; // 画質モード: 'fast'(=w4096) | 'high'(=s0)
+// 互換表示の再転送を抑制。永続ストレージには保存せず、容量と保持時間を制限する。
+var BASE64_IMAGE_CACHE_MAX_ENTRIES = 3;
+var BASE64_IMAGE_CACHE_MAX_CHARS = 32 * 1024 * 1024;
+var BASE64_IMAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+var base64ImageCache = new Map();
+var base64ImageRequests = new Map();
 var loadPollInterval = null;  // Pannellum loadイベントのポーリングインターバル
 var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
 var hotspotFolderOpenPending = false; // 共通Hotspotフォルダ取得APIの応答待ちかどうか
@@ -1118,6 +1124,7 @@ var hotspotAudioAttachmentState = {
 };
 var infoPopupGeneration = 0;
 var activeInfoPopupReturnFocus = null;
+var activeQuizReturnFocus = null;
 var hotspotAudioCache = {};
 var hotspotAudioCacheOrder = [];
 var hotspotAudioInFlight = {};
@@ -1279,7 +1286,7 @@ function withEditToken(payload) {
 
 function normalizeDeliveryMode(value) {
   value = String(value || '').trim().toLowerCase();
-  return (value === 'auto' || value === 'base64' || value === 'direct') ? value : 'direct';
+  return (value === 'auto' || value === 'base64' || value === 'direct') ? value : 'auto';
 }
 
 function isPublicViewingMode() {
@@ -1971,14 +1978,31 @@ window.addEventListener('load', function () {
     var card     = document.getElementById('quiz-card');
     var closeBtn = document.getElementById('quiz-modal-close');
 
-    function closeQuizModal() {
-      overlay.classList.add('hidden');
-    }
-
     // カードクリックでフリップ（裏面のリンクは除外）
     card.addEventListener('click', function (evt) {
       if (evt.target.closest('#quiz-card-link')) return; // リンクはそのまま遷移
-      card.classList.toggle('is-flipped');
+      toggleQuizAnswer();
+    });
+    document.getElementById('quiz-flip-button').addEventListener('click', toggleQuizAnswer);
+    overlay.addEventListener('keydown', function (evt) {
+      if (evt.key === 'Escape') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        closeQuizModal();
+      } else if (evt.key === 'Tab') {
+        var controls = Array.from(overlay.querySelectorAll('button, a[href]')).filter(function (el) {
+          return !el.closest('[inert], .hidden') && !el.disabled;
+        });
+        var first = controls[0];
+        var last = controls[controls.length - 1];
+        if (evt.shiftKey && document.activeElement === first) {
+          evt.preventDefault();
+          last.focus();
+        } else if (!evt.shiftKey && document.activeElement === last) {
+          evt.preventDefault();
+          first.focus();
+        }
+      }
     });
 
     // ×ボタンで閉じる
@@ -2039,6 +2063,7 @@ window.addEventListener('pagehide', teardownHotspotFormForPageExit);
 window.addEventListener('beforeunload', teardownHotspotFormForPageExit);
 
 function teardownHotspotFormForPageExit() {
+  closeQuizModal({ restoreFocus: false });
   closePhotoLightbox({ restoreFocus: false });
   closeActiveInfoPopup({ restoreFocus: false });
   disposeHotspotAudioAttachmentState({ restoreFocus: false });
@@ -2055,6 +2080,7 @@ function teardownHotspotFormForPageExit() {
  * 設定取得後: フォルダモードと単一画像モードを振り分ける
  */
 function loadSingleImageScene(config) {
+  closeQuizModal({ restoreFocus: false });
   var sceneStartedAt = scenePerformanceNow_();
   var loadGeneration = ++sceneLoadGeneration;
   currentFileId = null;
@@ -2117,7 +2143,10 @@ function loadSingleImageScene(config) {
     if (autoFallbackController) autoFallbackController.cancel();
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'error');
-    showLoadError(message);
+    showLoadError(message, deliveryMode === 'direct' && config.fileId ? function () {
+      deliveryMode = 'base64';
+      loadSingleImageScene(config);
+    } : null);
   }
 
   function beginSingleImageBase64Fallback() {
@@ -2232,7 +2261,7 @@ function loadSingleImageScene(config) {
       if (autoFallbackController) {
         autoFallbackController.startFallback('direct-display-failed');
       } else {
-        showSingleImageDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+        showSingleImageDeliveryError('画像を読み込めませんでした。互換表示で再試行するか、画像の共有設定を確認してください。');
       }
     });
   });
@@ -2770,6 +2799,7 @@ function setSceneRefreshButtonState(isLoading) {
 function refreshSceneList() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('refresh-scene-list')) return false;
   if (isRefreshingSceneList || !allImages) return;
+  clearBase64ImageCache();
   cancelHotspotMove('一覧更新のため移動をキャンセルしました。', { silent: true });
 
   isRefreshingSceneList = true;
@@ -3921,14 +3951,14 @@ function finishScenePerformanceRecord(record, status) {
   Object.keys(record.marks).forEach(function (name) {
     relativeMarks[name] = record.marks[name] - record.marks.sceneStart;
   });
-  console.info('[scene-perf]', {
+  console.info('[scene-perf]', JSON.stringify({
     generation: record.generation,
     delivery: record.delivery,
     type: record.type,
     status: record.status,
     duration: record.duration,
     marks: relativeMarks
-  });
+  }));
 }
 
 function preloadSceneImage(imageUrl, shouldHandle, performanceRecord, timeoutMs) {
@@ -4014,7 +4044,51 @@ function fallbackToBase64(fileId, onSuccess, onFailure) {
 }
 
 function loadBase64ImageForScene(fileId, onSuccess, onFailure) {
-  fallbackToBase64(fileId, onSuccess, onFailure);
+  var key = String(fileId || '') + ':' + imageQualityMode;
+  var now = Date.now();
+  base64ImageCache.forEach(function (entry, entryKey) {
+    if (entry.expiresAt <= now) base64ImageCache.delete(entryKey);
+  });
+  var cached = base64ImageCache.get(key);
+  if (cached) {
+    base64ImageCache.delete(key);
+    base64ImageCache.set(key, cached);
+    onSuccess(cached.imageUrl);
+    return;
+  }
+  var pending = base64ImageRequests.get(key);
+  if (pending) {
+    pending.push({ success: onSuccess, failure: onFailure });
+    return;
+  }
+  pending = [{ success: onSuccess, failure: onFailure }];
+  base64ImageRequests.set(key, pending);
+  function finish(imageUrl, error) {
+    // 一覧更新後に到着した旧通信は新しいキャッシュや通信を上書きしない。
+    if (base64ImageRequests.get(key) === pending) {
+      base64ImageRequests.delete(key);
+      if (imageUrl && imageUrl.length <= BASE64_IMAGE_CACHE_MAX_CHARS) {
+        base64ImageCache.set(key, { imageUrl: imageUrl, expiresAt: Date.now() + BASE64_IMAGE_CACHE_TTL_MS });
+        var totalChars = 0;
+        base64ImageCache.forEach(function (entry) { totalChars += entry.imageUrl.length; });
+        while (base64ImageCache.size > BASE64_IMAGE_CACHE_MAX_ENTRIES || totalChars > BASE64_IMAGE_CACHE_MAX_CHARS) {
+          var oldestKey = base64ImageCache.keys().next().value;
+          totalChars -= base64ImageCache.get(oldestKey).imageUrl.length;
+          base64ImageCache.delete(oldestKey);
+        }
+      }
+    }
+    pending.forEach(function (callback) {
+      if (imageUrl) callback.success(imageUrl);
+      else callback.failure(error);
+    });
+  }
+  fallbackToBase64(fileId, function (imageUrl) { finish(imageUrl, null); }, function (error) { finish(null, error); });
+}
+
+function clearBase64ImageCache() {
+  base64ImageCache.clear();
+  base64ImageRequests.clear();
 }
 
 function getHotspotCacheKey(fileId) {
@@ -4108,6 +4182,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     return false;
   }
   var sceneStartedAt = scenePerformanceNow_();
+  closeQuizModal({ restoreFocus: false });
   closePhotoLightbox({ restoreFocus: false });
   stopGyroIfActive('load-scene');
   cancelHotspotMove('シーンが変更されたため移動をキャンセルしました。', { silent: true });
@@ -4231,7 +4306,10 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'error');
     clearSceneTransitionOverlay();
-    showLoadError(message);
+    showLoadError(message, deliveryMode === 'direct' ? function () {
+      deliveryMode = 'base64';
+      loadScene(imgData, preferredYaw, preferredPitch);
+    } : null);
   }
 
   function beginBase64Fallback() {
@@ -4397,7 +4475,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
       if (autoFallbackController) {
         autoFallbackController.startFallback('direct-display-failed');
       } else {
-        showDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+        showDeliveryError('画像を読み込めませんでした。互換表示で再試行するか、画像の共有設定を確認してください。');
       }
     });
   });
@@ -4533,7 +4611,7 @@ function createPannellumViewerConfig(imageUrl, spots, northOffset, initialYaw, i
     panorama:        imageUrl,
     crossOrigin:    'anonymous',
     autoLoad:        true,
-    autoRotate:     -1.5,
+    autoRotate:     0,
     showControls:    false,
     hotSpots:        pannellumSpots
   };
@@ -6243,8 +6321,11 @@ function onMarkerClick(evt, args) {
       linkEl.classList.add('hidden');
     }
 
-    quizCard.classList.remove('is-flipped');
+    closeActiveInfoPopup({ restoreFocus: false });
+    activeQuizReturnFocus = evt && evt.currentTarget && evt.currentTarget.focus ? evt.currentTarget : document.activeElement;
+    setQuizAnswerVisible(false);
     quizOverlay.classList.remove('hidden');
+    document.getElementById('quiz-flip-button').focus();
     return;
   }
 
@@ -6470,10 +6551,16 @@ function prefetchHotspotAudio(args) {
 }
 
 function bindHotspotAudioPrefetch(container, args) {
-  if (!container || !args || !args.audioId || args.jumpSceneId) return;
+  if (!container || !args) return;
   container.tabIndex = 0;
   container.setAttribute('role', 'button');
   container.setAttribute('aria-label', String(args.label || 'ホットスポット') + 'を開く');
+  container.addEventListener('keydown', function (event) {
+    if (event.target !== container || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    container.click();
+  });
+  if (!args.audioId || args.jumpSceneId) return;
   var hoverTimer = null;
   function cancelHoverPrefetch() {
     if (hoverTimer === null) return;
@@ -7636,9 +7723,12 @@ function showToast(message, type) {
 // =============================================
 //  ローディングエラー表示
 // =============================================
-function showLoadError(message) {
+function showLoadError(message, compatibleRetry) {
   setSceneDisplayReady(false);
   var loading = document.getElementById('loading');
+  var transition = document.getElementById('scene-transition-overlay');
+  if (transition) transition.classList.remove('active');
+  loading.classList.remove('hidden');
   loading.innerHTML =
     '<p style="color:#ef4444;font-size:14px;text-align:center;padding:0 20px">' +
     escapeHtml(message) + '<br><br>' +
@@ -7646,6 +7736,45 @@ function showLoadError(message) {
     'style="background:#fbbf24;border:none;border-radius:8px;padding:8px 20px;' +
     'font-size:13px;font-weight:600;color:#78350f;cursor:pointer">' +
     '再読み込み</button></p>';
+  if (typeof compatibleRetry === 'function') {
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'compatible-retry-button';
+    retry.textContent = '互換表示で再試行';
+    retry.addEventListener('click', function () {
+      if (retry.disabled) return;
+      retry.disabled = true;
+      compatibleRetry();
+    });
+    loading.appendChild(retry);
+  }
+}
+
+function setQuizAnswerVisible(visible) {
+  var card = document.getElementById('quiz-card');
+  var front = card.querySelector('.quiz-card-front');
+  var back = card.querySelector('.quiz-card-back');
+  card.classList.toggle('is-flipped', visible);
+  front.inert = visible;
+  back.inert = !visible;
+  front.setAttribute('aria-hidden', String(visible));
+  back.setAttribute('aria-hidden', String(!visible));
+  var button = document.getElementById('quiz-flip-button');
+  button.textContent = visible ? '問題に戻る' : '答えを見る';
+  button.setAttribute('aria-expanded', String(visible));
+}
+
+function toggleQuizAnswer() {
+  setQuizAnswerVisible(!document.getElementById('quiz-card').classList.contains('is-flipped'));
+}
+
+function closeQuizModal(options) {
+  var overlay = document.getElementById('quiz-modal-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  overlay.classList.add('hidden');
+  var returnFocus = activeQuizReturnFocus;
+  activeQuizReturnFocus = null;
+  if ((!options || options.restoreFocus !== false) && returnFocus && returnFocus.isConnected) returnFocus.focus();
 }
 
 // =============================================
@@ -9011,7 +9140,7 @@ function getShareOptionsFromModal() {
   return {
     format: getCheckedRadioValue('share-format', 'url'),
     baseUrl: baseUrl,
-    delivery: getCheckedRadioValue('share-delivery', 'direct'),
+    delivery: getCheckedRadioValue('share-delivery', 'auto'),
     sceneId: currentView.sceneId,
     yaw: currentView.yaw,
     pitch: currentView.pitch
@@ -9040,7 +9169,7 @@ function openShareModal() {
   cancelHotspotMove('共有画面を開いたため移動をキャンセルしました。', { silent: true });
   stopGyroIfActive('share');
   setCheckedRadioValue('share-format', 'url');
-  setCheckedRadioValue('share-delivery', 'direct');
+  setCheckedRadioValue('share-delivery', 'auto');
   setCheckedRadioValue('share-target', 'home');
   updateShareOutput();
   document.getElementById('embed-modal-backdrop').classList.add('visible');

@@ -791,22 +791,23 @@
 <!-- =============================================
      クイズ（はてな）モーダル
 ============================================= -->
-<div id="quiz-modal-overlay" class="hidden">
+<div id="quiz-modal-overlay" class="hidden" role="dialog" aria-modal="true" aria-label="クイズ">
   <div class="quiz-card-container">
     <div class="quiz-card" id="quiz-card">
       <div class="quiz-card-front">
         <h3 id="quiz-card-title"></h3>
         <p id="quiz-card-question"></p>
-        <span class="flip-hint">クリックして答えを見る ↻</span>
+        <span class="flip-hint">カードを押して答えを見る ↻</span>
       </div>
-      <div class="quiz-card-back">
+      <div class="quiz-card-back" aria-hidden="true" inert>
         <h3>こたえ</h3>
         <p id="quiz-card-answer"></p>
         <a id="quiz-card-link" href="#" target="_blank" rel="noopener noreferrer" class="hidden">さらに詳しく</a>
       </div>
     </div>
+    <button id="quiz-flip-button" type="button" aria-controls="quiz-card" aria-expanded="false">答えを見る</button>
   </div>
-  <button id="quiz-modal-close">×</button>
+  <button id="quiz-modal-close" type="button" aria-label="クイズを閉じる">×</button>
 </div>
 
 <!-- 共有モーダル -->
@@ -859,20 +860,20 @@
     <div class="embed-section">
       <div class="share-option-title">画像配信</div>
       <div class="share-segment share-compact-segment">
-        <label class="share-compact-option" title="Drive直リンクで表示します。最速の通常モードです。">
-          <input type="radio" name="share-delivery" value="direct" checked onchange="updateShareOutput()">
-          <span class="share-choice-main">通常</span>
-          <span class="share-choice-sub">最速</span>
+        <label class="share-compact-option" title="画像を直接読み込みます。共有設定によっては表示できない場合があります。">
+          <input type="radio" name="share-delivery" value="direct" onchange="updateShareOutput()">
+          <span class="share-choice-main">直接表示</span>
+          <span class="share-choice-sub">高速</span>
         </label>
-        <label class="share-compact-option" title="直リンクで失敗したときだけBase64 fallbackを試します。">
-          <input type="radio" name="share-delivery" value="auto" onchange="updateShareOutput()">
-          <span class="share-choice-main">互換</span>
-          <span class="share-choice-sub">失敗時Base64</span>
+        <label class="share-compact-option" title="直接読み込めない場合は、互換表示に自動で切り替えます。">
+          <input type="radio" name="share-delivery" value="auto" checked onchange="updateShareOutput()">
+          <span class="share-choice-main">自動</span>
+          <span class="share-choice-sub">推奨</span>
         </label>
-        <label class="share-compact-option" title="最初からBase64 Data URIを使う最終手段です。">
+        <label class="share-compact-option" title="最初から互換表示を使います。初回の読み込みには時間がかかります。">
           <input type="radio" name="share-delivery" value="base64" onchange="updateShareOutput()">
-          <span class="share-choice-main">Base64</span>
-          <span class="share-choice-sub">最終手段</span>
+          <span class="share-choice-main">互換表示</span>
+          <span class="share-choice-sub">固定</span>
         </label>
       </div>
     </div>

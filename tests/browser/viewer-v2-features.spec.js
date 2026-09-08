@@ -939,6 +939,8 @@ test('new scene generation discards older image and GAS completions', async ({ p
 
 test('base64 generation discards older GAS image and hotspot responses before 2D display', async ({ page }) => {
   await openHarness(page, { mode: 'edit', sceneType: '2D', delivery: 'base64', base64Delay: 20, hotspotDelay: 20 });
+  // Force two network completions so this still exercises stale-response rejection.
+  await page.evaluate(() => clearBase64ImageCache());
   const initial = await page.evaluate(() => ({
     viewerCreations: window.__HARNESS_VIEWER_CREATIONS__.length,
     base64Calls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getImageDataUri').length
@@ -1012,4 +1014,8 @@ test('performance records are absent unless perf=1 and contain no URLs or scene 
   expect(serialized).not.toContain('googleusercontent');
   expect(serialized).not.toContain('data:image');
   expect(performanceLogs).toHaveLength(1);
+  const loggedRecord = JSON.parse(performanceLogs[0].slice('[scene-perf] '.length));
+  expect(loggedRecord.status).toBe('loaded');
+  expect(loggedRecord.duration).toBeGreaterThan(0);
+  expect(loggedRecord.marks.hotspotsEnd).toBeGreaterThanOrEqual(0);
 });

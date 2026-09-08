@@ -45,13 +45,13 @@ test('delivery mode normalization allows only direct, auto, and base64', () => {
     normalizeDeliveryMode('invalid')
   ];`, context);
 
-  assert.deepEqual(Array.from(context.result), ['direct', 'auto', 'base64', 'direct', 'direct', 'direct']);
+  assert.deepEqual(Array.from(context.result), ['direct', 'auto', 'base64', 'auto', 'auto', 'auto']);
 });
 
-test('client reads delivery URL parameter and defaults to direct', () => {
+test('client reads delivery URL parameter and defaults to auto', () => {
   const app = readApp();
 
-  assert.match(app, /var deliveryMode\s*=\s*'direct'\s*;/);
+  assert.match(app, /var deliveryMode\s*=\s*'auto'\s*;/);
   assert.match(app, /loc\.parameter\s*&&\s*loc\.parameter\.delivery/);
   assert.match(app, /deliveryMode\s*=\s*normalizeDeliveryMode\(dParam\)/);
 });
