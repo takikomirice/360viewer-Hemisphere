@@ -4,6 +4,7 @@
   "private": true,
   "description": "Local browser harness and responsive layout checks for 360Viewer Hemisphere",
   "scripts": {
+    "verify:gas": "node scripts/verify-gas-source.js",
     "preview:ui": "node tests/browser/harness-server.js",
     "test:browser": "playwright test",
     "vendor:sync": "node scripts/sync-audio-vendor.js",

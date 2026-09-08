@@ -7,3 +7,4 @@ output/playwright/
 output/quality-audit/
 playwright-report/
 test-results/
+debug.log
