@@ -300,6 +300,24 @@ test('doGet does not issue an edit token for public view', () => {
   assert.deepEqual(context.__cachePuts, []);
 });
 
+test('view-only HTML generation skips edit-key storage reads', () => {
+  for (const parameter of [
+    { mode: 'public', editKey: 'class-key' },
+    { mode: 'internal', editKey: 'class-key' },
+    { mode: 'unknown', editKey: 'class-key' },
+    {},
+    { mode: 'edit' }
+  ]) {
+    const context = loadCode({}, { EDIT_KEY: 'class-key' });
+    context.getAcceptedEditKeys_ = () => { throw new Error('Unexpected edit-key storage read'); };
+    const output = context.doGet({ parameter });
+    assert.ok(output);
+    assert.equal(context.__createdTemplate.editToken, '');
+    assert.equal(context.__uuidCalls, 0);
+    assert.deepEqual(context.__cachePuts, []);
+  }
+});
+
 test('doGet does not issue an edit token for internal view', () => {
   const context = loadCode();
 

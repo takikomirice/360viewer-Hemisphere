@@ -3155,7 +3155,8 @@ function doGet(e) {
 
   template.initialMode = mode === 'public' || mode === 'internal' || mode === 'edit' ? mode : '';
   template.editToken = '';
-  const acceptedEditKeys = getAcceptedEditKeys_();
+  // 閲覧HTMLでは認証用のシート・プロパティ取得を行わない。
+  const acceptedEditKeys = mode === 'edit' && requestedEditKey ? getAcceptedEditKeys_() : [];
   const configuredEditKey = acceptedEditKeys.length > 0 ? acceptedEditKeys[0] : '';
   const matchedEditKey = acceptedEditKeys.indexOf(requestedEditKey) !== -1 ? requestedEditKey : '';
 
