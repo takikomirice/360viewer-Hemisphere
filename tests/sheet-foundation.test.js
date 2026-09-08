@@ -946,6 +946,23 @@ test('info migration keeps unknown schemas untouched and aligns known five-colum
   assert.equal(legacy.__rows[1][13], '');
 });
 
+test('ordinary info writes preserve current layout while repairing missing hotspot IDs', () => {
+  const info = createSheet('info', [INFO_HEADERS,
+    ['2026-09-08', 'scene-a', 'Keep', '', '', 1, 2, 'circle', 'blue', 'info', '', '', 'keep-id', ''],
+    ['2026-09-08', 'scene-a', 'Repair', '', '', 3, 4, 'circle', 'blue', 'info', '', '', '', '']
+  ]);
+  const context = loadCode({ sheets: { info } });
+  const result = context.ensureInfoSheetSchema_(info);
+  assert.equal(result.idsAdded, 1);
+  assert.equal(info.__rows[1][12], 'keep-id');
+  assert.equal(info.__rows[2][12], 'uuid-1');
+  assert.equal(info.__columnWidthCalls.length, 0);
+  assert.equal(info.__setValuesCalls.some(call => call.row === 1), false);
+  // Explicit setup still restores the standard sheet layout.
+  context.migrateSheetIfNeeded_(info);
+  assert.equal(info.__columnWidthCalls.length, INFO_HEADERS.length);
+});
+
 test('info migration appends audio ID after the existing M-column hotspot ID without moving or replacing it', () => {
   const previousHeaders = INFO_HEADERS.slice(0, 13);
   const info = createSheet('info', [

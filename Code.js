@@ -5994,8 +5994,9 @@ function updateHotspot(data, hotspotId) {
  * ID 列が空の既存行には UUID を自動付与する。
  *
  * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {{preserveCurrentLayout?:boolean}=} options 通常保存では現行スキーマの書式を再設定しない。
  */
-function migrateSheetIfNeeded_(sheet) {
+function migrateSheetIfNeeded_(sheet, options) {
   const originalColumns = sheet.getLastColumn();
   const targetColumns = INFO_HEADERS.length;
   if (originalColumns === 0) {
@@ -6091,7 +6092,11 @@ function migrateSheetIfNeeded_(sheet) {
     }
   }
 
-  applyInfoSheetSchema_(sheet);
+  const schemaAlreadyCurrent = originalColumns === targetColumns &&
+    originalHeader.every(function(value, index) { return value === INFO_HEADERS[index]; });
+  if (!(options && options.preserveCurrentLayout && schemaAlreadyCurrent)) {
+    applyInfoSheetSchema_(sheet);
+  }
   return { migrated: migrated, idsAdded: idsAdded };
 }
 
@@ -6102,7 +6107,7 @@ function migrateSheetIfNeeded_(sheet) {
  * @returns {{migrated:boolean,idsAdded?:number}}
  */
 function ensureInfoSheetSchema_(sheet) {
-  const result = migrateSheetIfNeeded_(sheet);
+  const result = migrateSheetIfNeeded_(sheet, { preserveCurrentLayout: true });
   if (result && result.warning) throw new Error(result.warning);
   return result;
 }
