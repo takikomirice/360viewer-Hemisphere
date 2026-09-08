@@ -3384,9 +3384,10 @@ function getConfigFromFolder_(folderId, options) {
  *
  * @param {string} folderId
  * @param {string} rootFolderId
+ * @param {Object<string,Array<string>>=} parentIdsByFolder 同じ読取検証内のみの親一覧。Drive更新をまたいで再利用しない。
  * @returns {boolean}
  */
-function isDriveFolderWithinRoot_(folderId, rootFolderId) {
+function isDriveFolderWithinRoot_(folderId, rootFolderId, parentIdsByFolder) {
   const targetId = String(folderId || '').trim();
   const rootId = String(rootFolderId || '').trim();
   if (!targetId || !rootId) return false;
@@ -3401,10 +3402,18 @@ function isDriveFolderWithinRoot_(folderId, rootFolderId) {
     visited[currentId] = true;
     inspected += 1;
 
-    const folder = DriveApp.getFolderById(currentId);
-    const parents = folder.getParents();
-    while (parents.hasNext()) {
-      const parentId = String(parents.next().getId() || '').trim();
+    let parentIds;
+    if (parentIdsByFolder && Object.prototype.hasOwnProperty.call(parentIdsByFolder, currentId)) {
+      parentIds = parentIdsByFolder[currentId];
+    } else {
+      const folder = DriveApp.getFolderById(currentId);
+      const parents = folder.getParents();
+      parentIds = [];
+      while (parents.hasNext()) parentIds.push(String(parents.next().getId() || '').trim());
+      if (parentIdsByFolder) parentIdsByFolder[currentId] = parentIds;
+    }
+    for (let i = 0; i < parentIds.length; i++) {
+      const parentId = parentIds[i];
       if (parentId === rootId) return true;
       if (parentId && !visited[parentId]) pendingIds.push(parentId);
     }
@@ -4015,7 +4024,7 @@ function validateMigrationRootFolder_(folder, containerContext, allowedNames) {
     throw createHotspotFolderMigrationError_('移行中のHotspotルート名がジャーナルと一致しません。', true);
   }
   if (containerContext.configuredImageRootId &&
-      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId, containerContext.readOnlyParentIds)) {
     throw createHotspotFolderMigrationError_('移行中のHotspotルートはIMAGE_DRIVE_URL配下に配置できません。', true);
   }
 }
@@ -4095,6 +4104,9 @@ function recoverUntrackedHotspotChild_(rootFolder, targetName, kind, otherOffici
 }
 
 function inspectHotspotFolderStructure_(propertyIds, containerContext, allowInterruptedRecovery) {
+  // この関数は復旧候補の調査も含め読取のみ。呼出し元へ返さない複製で共有し、
+  // 実際の作成・移行や次の呼出しでは、移動後の親を必ず読み直す。
+  containerContext = Object.assign({}, containerContext, { readOnlyParentIds: Object.create(null) });
   const distinctIds = [propertyIds.rootId, propertyIds.photoId, propertyIds.audioId].filter(Boolean);
   if (new Set(distinctIds).size !== distinctIds.length) {
     throw new Error('Hotspotルート、photos、audioにはすべて異なる正式IDが必要です。');
@@ -4368,7 +4380,7 @@ function validateHotspotChildForRead_(folder, rootFolder, containerContext, labe
     throw new Error('正式な' + label + 'フォルダの親フォルダが不正です。');
   }
   if (containerContext.configuredImageRootId &&
-      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId, containerContext.readOnlyParentIds)) {
     throw new Error('正式な' + label + 'フォルダはIMAGE_DRIVE_URL配下に配置できません。');
   }
   return folder;

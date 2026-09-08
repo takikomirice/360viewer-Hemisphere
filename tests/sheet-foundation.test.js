@@ -4870,6 +4870,28 @@ test('an already complete normal structure performs zero Drive mutations on late
   assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
 });
 
+test('read-only attachment inspection shares ancestor reads only within one lookup', () => {
+  const fixture = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const created = fixture.context.getHotspotFolderStructure_(true);
+  const originalGetFolder = fixture.context.DriveApp.getFolderById;
+  let projectReads = 0;
+  fixture.context.DriveApp.getFolderById = function (id) {
+    if (id === fixture.containerParent.getId()) projectReads++;
+    return originalGetFolder(id);
+  };
+  const operationsBefore = fixture.operations.slice();
+  const first = fixture.context.getHotspotFolderStructure_(false);
+  assert.equal(first.audioFolder.getId(), created.audioFolder.getId());
+  assert.equal(projectReads, 2); // Container eligibility, then the shared attachment ancestry walk.
+  fixture.context.getHotspotFolderStructure_(false);
+  assert.equal(projectReads, 4);
+  fixture.context.getHotspotFolderStructure_(true);
+  assert.equal(projectReads, 6); // Write preflight is also read-only until inspection returns.
+  assert.deepEqual(fixture.operations, operationsBefore);
+  fixture.containerParent.__setParents([fixture.imageRoot]);
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(false), /IMAGE_DRIVE_URL/);
+});
+
 test('read-only folder lookup never resumes or mutates an active migration journal', () => {
   const fixture = createInterruptedRootMigrationSnapshot('root_created');
   const journalBefore = fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE;
