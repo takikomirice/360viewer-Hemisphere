@@ -2639,7 +2639,7 @@ function getOrExtractNorthOffset_(fileId, file) {
   const targetFile = file || access.file || DriveApp.getFileById(targetId);
   if (targetFile.getMimeType() !== 'image/jpeg') return null;
 
-  const northOffset = toFiniteNumber_(extractHeadingFromBlob_(targetFile.getBlob()));
+  const northOffset = toFiniteNumber_(extractHeadingFromBlob_(getImageHeadingBlob_(targetFile)));
   try {
     updateExistingSceneNorthOffset_(targetId, northOffset, northOffset == null ? 'none' : 'xmp');
   } catch (cacheError) {
@@ -3463,6 +3463,82 @@ function fileToDataUri_(file) {
   return 'data:' + blob.getContentType() + ';base64,' + base64;
 }
 
+/** JPEGのSOFから寸法を読む。画像本文を文字列化せず、切れたデータは拒否する。 */
+function readJpegDimensions_(bytes) {
+  function byte(index) { return bytes[index] & 255; }
+  if (!bytes || bytes.length < 4 || byte(0) !== 255 || byte(1) !== 216) return null;
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (byte(offset) !== 255) return null;
+    while (byte(offset) === 255) offset++;
+    const marker = byte(offset++);
+    if (marker === 217 || marker === 218) return null;
+    if (marker === 1 || (marker >= 208 && marker <= 215)) continue;
+    const length = (byte(offset) << 8) + byte(offset + 1);
+    if (length < 2 || offset + length > bytes.length) return null;
+    if ([192,193,194,195,197,198,199,201,202,203,205,206,207].indexOf(marker) !== -1) {
+      if (length < 8) return null;
+      return { width: (byte(offset + 5) << 8) + byte(offset + 6), height: (byte(offset + 3) << 8) + byte(offset + 4) };
+    }
+    offset += length;
+  }
+  return null;
+}
+
+/**
+ * Driveが生成するプレビューを認証付きで取得する。サイズ指定はベストエフォート。
+ * Google側の変更・小さいサムネイル・比率違い・取得失敗は原寸画像へフォールバックする。
+ * thumbnailLinkとOAuthトークンはクライアントへ返さない。
+ */
+function getFastImageDataUri_(file) {
+  try {
+    const metadata = Drive.Files.get(file.getId(), { fields: 'thumbnailLink,imageMediaMetadata(width,height,rotation),size' });
+    const source = metadata.imageMediaMetadata || {};
+    const width = Number(source.width), height = Number(source.height);
+    const link = String(metadata.thumbnailLink || '');
+    if (!(width > 4096 && height > 0) || Number(source.rotation || 0) !== 0) return null;
+    if (!/^https:\/\/lh[0-9]+\.googleusercontent\.com\//.test(link) || !/=s\d+$/.test(link)) return null;
+    const response = UrlFetchApp.fetch(link.replace(/=s\d+$/, '=w4096'), {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) return null;
+    const blob = response.getBlob();
+    if (String(blob.getContentType()).split(';')[0] !== 'image/jpeg') return null;
+    const bytes = blob.getBytes();
+    if (bytes.length > 3 * 1024 * 1024 || bytes.length >= Number(metadata.size)) return null;
+    const dimensions = readJpegDimensions_(bytes);
+    if (!dimensions || dimensions.width < 2048 || dimensions.width > 4096 ||
+        Math.abs(dimensions.height - dimensions.width * height / width) > 2) return null;
+    return 'data:image/jpeg;base64,' + Utilities.base64Encode(bytes);
+  } catch (error) {
+    console.warn('縮小画像を取得できなかったため原寸画像を使用します。');
+    return null;
+  }
+}
+
+/** 呼出元で認可済みのJPEGから、方位抽出に必要な先頭128KiBだけを取得する。 */
+function getImageHeadingBlob_(file) {
+  try {
+    const response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(file.getId()) + '?alt=media', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), Range: 'bytes=0-131071' },
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() === 206) {
+      const headers = response.getHeaders();
+      const range = String(headers['Content-Range'] || headers['content-range'] || '').match(/^bytes 0-(\d+)\/\d+$/);
+      const blob = response.getBlob();
+      const length = blob.getBytes().length;
+      if (range && length > 0 && length <= 131072 && Number(range[1]) + 1 === length) return blob;
+    }
+  } catch (error) {
+    console.warn('画像の部分取得を利用できなかったため従来方式で方位を取得します。');
+  }
+  return file.getBlob();
+}
+
 /**
  * GoogleドライブのURLからファイルIDを抽出する内部ユーティリティ。
  *
@@ -3526,12 +3602,13 @@ function getReadableImageContext_(fileId) {
  * @param {string} [mode] 'public' の場合は Base64 Data URI を返す。それ以外は lh3 直リンクを返す。
  * @returns {{ success: boolean, imageUrl?: string, error?: string }}
  */
-function getImageDataUri(fileId, mode) {
+function getImageDataUri(fileId, mode, quality) {
   try {
     const context = getReadableImageContext_(fileId);
     const file = context.file;
     if (mode === 'public') {
-      return { success: true, imageUrl: fileToDataUri_(file) };
+      const preview = quality === 'fast' ? getFastImageDataUri_(file) : null;
+      return { success: true, imageUrl: preview || fileToDataUri_(file), quality: preview ? 'fast' : 'original' };
     }
     return { success: true, imageUrl: 'https://lh3.googleusercontent.com/d/' + context.fileId + '=s0' };
   } catch (e) {

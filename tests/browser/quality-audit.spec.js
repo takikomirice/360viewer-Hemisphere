@@ -18,6 +18,18 @@ test('default delivery automatically recovers when a Drive direct image is unava
   expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length)).toBe(1);
 });
 
+test('compatible quality is sent to GAS and opt-in transfer diagnostics omit URLs and file IDs', async ({ page }) => {
+  const logs = [];
+  page.on('console', message => { if (message.text().startsWith('[image-delivery]')) logs.push(message.text()); });
+  await page.goto('/?mode=public&sceneType=360&delivery=base64&quality=high&perf=1');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  const args = await page.evaluate(() => __HARNESS_CALLS__.find(c => c.method === 'getImageDataUri').args);
+  expect(args[2]).toBe('high');
+  expect(logs).toHaveLength(1);
+  expect(logs[0]).not.toMatch(/data:|https:|fixture-scene/);
+  expect(JSON.parse(logs[0].slice('[image-delivery] '.length))).toMatchObject({ requestedQuality: 'high', characters: expect.any(Number) });
+});
+
 test('quiz answer and close work by keyboard without leaking focus or the hidden answer link', async ({ page }) => {
   await page.goto('/?mode=public&sceneType=360');
   await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
@@ -111,4 +123,78 @@ test('compatible image cache expires, evicts least recently used entries and res
     return { afterEviction, afterExpiry, total: __HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length, retained: base64ImageCache.size };
   });
   expect(result).toEqual({ afterEviction: 4, afterExpiry: 5, total: 7, retained: 0 });
+});
+
+test('scene and folder navigation use keyboard buttons and scene actions restore focus', async ({ page }) => {
+  await page.goto('/?mode=edit&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  const scene = page.locator('.scene-item').nth(1);
+  const sceneId = await scene.getAttribute('data-id');
+  await scene.locator('.scene-item-name').press('Enter');
+  await expect(scene).toHaveClass(/active/);
+  await page.waitForFunction(id => currentFileId === id && !isSwitching, sceneId);
+  await page.locator('#mode-toggle').click();
+  const actions = scene.getByRole('button', { name: /の操作$/ });
+  await actions.press('Enter');
+  await expect(page.locator('#scene-context-menu button:enabled').first()).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(actions).toBeFocused();
+  const folder = page.locator('.scene-folder-item').first();
+  await expect(folder).toHaveAttribute('role', 'button');
+  await folder.press('Space');
+  await expect.poll(() => page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'navigateToFolder').length)).toBe(1);
+});
+
+test('editing a marker by keyboard offers a cancellable delete and sends only a confirmed delete', async ({ page }) => {
+  await page.goto('/?mode=edit&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => {
+    const hotspot = { id: 'delete-test', fileId: currentFileId, _pannellumId: 'delete-test', markerIcon: 'info', label: '確認対象', description: '保持するデータ' };
+    viewer.addHotSpot({ id: hotspot.id, pitch: 0, yaw: 0, cssClass: 'hs-marker', createTooltipFunc: buildMarkerElement, createTooltipArgs: hotspot, clickHandlerFunc: onMarkerClick, clickHandlerArgs: hotspot });
+  });
+  await page.locator('#mode-toggle').click();
+  const marker = page.getByRole('button', { name: '確認対象を開く', exact: true });
+  await marker.press('Enter');
+  await expect(page.locator('#hs-ctx-edit-btn')).toBeFocused();
+  page.once('dialog', async dialog => { expect(dialog.message()).toContain('確認対象'); await dialog.dismiss(); });
+  await page.locator('#hs-ctx-delete-btn').click();
+  expect(await page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'deleteHotspot').length)).toBe(0);
+  await expect(marker).toBeFocused();
+  await marker.press('Space');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#hs-ctx-delete-btn').click();
+  await expect.poll(() => page.evaluate(() => __HARNESS_CALLS__.filter(c => c.method === 'deleteHotspot').length)).toBe(1);
+  await expect(marker).toHaveCount(0);
+});
+
+test('2D viewing hides the inactive gyro control', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=2D');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await expect(page.locator('#gyro-toggle-btn')).toBeHidden();
+  await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
+});
+
+test('quiz attachments render, support photo enlargement, and discard delayed media after close', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?mode=public&sceneType=360');
+  await page.waitForFunction(() => document.body.dataset.harnessReady === 'true');
+  await page.evaluate(() => onMarkerClick({ clientX: 190, clientY: 220 }, { id: 'media-quiz', fileId: currentFileId, markerIcon: 'quiz', label: '写真のクイズ', description: '何が見えますか？|校舎', photoId: 'quiz-photo', audioId: 'quiz-audio' }));
+  const quiz = page.getByRole('dialog', { name: 'クイズ', exact: true });
+  await expect(quiz.getByRole('button', { name: '写真を拡大表示', exact: true })).toBeVisible();
+  await expect(quiz.locator('audio')).toHaveAttribute('src', /^data:audio\//);
+  await quiz.getByRole('button', { name: '写真を拡大表示', exact: true }).click();
+  await expect(page.locator('#photo-lightbox')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(quiz).toBeVisible();
+  await page.getByRole('button', { name: 'クイズを閉じる' }).click();
+  await expect(page.locator('#active-info-popup')).toHaveCount(0);
+  await page.evaluate(() => {
+    __HARNESS_BEHAVIOR__.getHotspotAudioData = { delay: 120 };
+    __HARNESS_BEHAVIOR__.getHotspotPhotoDataUri = { delay: 120 };
+    onMarkerClick({ clientX: 190, clientY: 220 }, { id: 'late-quiz', fileId: currentFileId, markerIcon: 'quiz', label: '遅いクイズ', description: '質問|答え', photoId: 'late-photo', audioId: 'late-audio' });
+    closeQuizModal();
+  });
+  await page.waitForTimeout(180);
+  await expect(page.locator('#active-info-popup')).toHaveCount(0);
+  await expect(quiz).toBeHidden();
 });

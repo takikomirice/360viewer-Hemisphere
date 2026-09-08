@@ -1235,8 +1235,7 @@ for (const viewport of viewports) {
           '#open-hotspot-folder-btn',
           '#scene-list .scene-item',
           '#btn-home',
-          '#quality-toggle-btn',
-          '#gyro-toggle-btn'
+          '#quality-toggle-btn'
         ];
         for (const selector of landscapeTapTargets) {
           const target = page.locator(selector).first();
@@ -1248,6 +1247,8 @@ for (const viewport of viewports) {
         }
         await expect(page.locator('#fullscreen-btn')).toBeHidden();
         await expect(page.locator('#fullscreen-btn')).toBeDisabled();
+        await expect(page.locator('#gyro-toggle-btn')).toBeHidden();
+        await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
       }
 
       if (viewport.width <= 600) {

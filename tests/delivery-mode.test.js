@@ -127,7 +127,7 @@ test('delivery=base64 uses Base64 before starting the viewer', () => {
   assert.match(loadSceneBody, /base64Preparation\s*=\s*startBase64ImagePreparation\(imgData\.id/);
   assert.match(loadSceneBody, /Promise\.all\(\[hotspotPreparation,\s*base64Preparation\]\)/);
   assert.match(loadSceneBody, /displayPreparedImage\(prepared\[1\]\.imageUrl,\s*prepared\[0\],\s*'base64'/);
-  assert.match(fallbackBody, /\.getImageDataUri\(fileId, 'public'\)/);
+  assert.match(fallbackBody, /\.getImageDataUri\(fileId, 'public', requestedQuality\)/);
 });
 
 test('delivery=auto starts with direct URL and uses Base64 only from fallback', () => {
@@ -141,7 +141,7 @@ test('delivery=auto starts with direct URL and uses Base64 only from fallback', 
   assert.match(loadSceneBody, /Promise\.all\(\[hotspotPreparation,\s*directImagePreparation\]\)[\s\S]{0,500}?prepared\[1\]\.status/);
   assert.match(loadSceneBody, /function beginBase64Fallback[\s\S]*?startBase64ImagePreparation\(imgData\.id/);
   assert.match(loadSceneBody, /displayPreparedImage\(directImageUrl,\s*prepared\[0\],\s*'direct',[\s\S]{0,240}?autoFallbackController\.startFallback\('direct-display-failed'\)/);
-  assert.match(fallbackBody, /\.getImageDataUri\(fileId, 'public'\)/);
+  assert.match(fallbackBody, /\.getImageDataUri\(fileId, 'public', requestedQuality\)/);
 });
 
 test('loadHotspots routes northOffset through authorization and existing-scene cache helpers', () => {
@@ -175,5 +175,5 @@ test('single-image hotspot loading sends the configured file ID without changing
 test('getImageDataUri remains available for Base64 fallback', () => {
   const code = readCode();
 
-  assert.match(code, /function getImageDataUri\(fileId, mode\)/);
+  assert.match(code, /function getImageDataUri\(fileId, mode, quality\)/);
 });

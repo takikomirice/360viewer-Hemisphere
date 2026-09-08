@@ -1162,6 +1162,7 @@ test('deleting during an unsent move preview cancels and cleans the move before 
     deleteHotspot() { deleteCalls += 1; }
   };
   const context = {
+    window: { confirm() { return true; } },
     canEdit: true,
     suppressNextPanoramaClick: false,
     setTimeout() {},

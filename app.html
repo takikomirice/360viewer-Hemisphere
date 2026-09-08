@@ -1014,6 +1014,7 @@ var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
 var hotspotFolderOpenPending = false; // 共通Hotspotフォルダ取得APIの応答待ちかどうか
 var sidebarCollapsed = false; // サイドバー折りたたみ状態
 var sceneContextTargetId = null; // 右クリック対象のシーンID
+var sceneContextReturnFocus = null;
 var sceneSettingsTargetId = null; // 設定モーダル対象のシーンID
 var sceneSettingsOriginal = null; // 設定保存前の正規化済みシーン
 var sceneSettingsReturnFocusId = null; // モーダル終了後にフォーカスを戻すシーンID
@@ -1990,7 +1991,7 @@ window.addEventListener('load', function () {
         evt.stopPropagation();
         closeQuizModal();
       } else if (evt.key === 'Tab') {
-        var controls = Array.from(overlay.querySelectorAll('button, a[href]')).filter(function (el) {
+        var controls = Array.from(overlay.querySelectorAll('button, a[href], audio[controls]')).filter(function (el) {
           return !el.closest('[inert], .hidden') && !el.disabled;
         });
         var first = controls[0];
@@ -2654,6 +2655,13 @@ function buildSceneSidebar(images) {
       // ---- サブフォルダアイテム ----
       var folderEl = document.createElement('div');
       folderEl.className = 'scene-folder-item';
+      folderEl.tabIndex = 0;
+      folderEl.setAttribute('role', 'button');
+      folderEl.addEventListener('keydown', function (evt) {
+        if (evt.key !== 'Enter' && evt.key !== ' ') return;
+        evt.preventDefault();
+        folderEl.click();
+      });
       folderEl.dataset.folderId = img.id;
       folderEl.innerHTML =
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
@@ -2670,7 +2678,7 @@ function buildSceneSidebar(images) {
       var item = document.createElement('div');
       item.className = 'scene-item';
       item.dataset.id = img.id;
-      item.tabIndex = 0;
+      item.tabIndex = -1;
       item.innerHTML =
         (canEdit
           ? '<button type="button" class="scene-drag-handle" draggable="true" aria-label="シーンを並び替える" aria-disabled="false" title="ドラッグして並び替え">' +
@@ -2681,7 +2689,17 @@ function buildSceneSidebar(images) {
         '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>' +
         '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' +
         '</svg>' +
-        '<span class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</span>';
+        '<button type="button" class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</button>';
+      if (canEdit) {
+        var menuButton = document.createElement('button');
+        menuButton.type = 'button';
+        menuButton.className = 'scene-menu-button';
+        menuButton.textContent = '⋮';
+        menuButton.setAttribute('aria-label', getSceneDisplayName(img) + 'の操作');
+        menuButton.setAttribute('aria-haspopup', 'true');
+        menuButton.addEventListener('click', function (evt) { openSceneContextMenu(evt, img); });
+        item.appendChild(menuButton);
+      }
       var dragHandle = item.querySelector('.scene-drag-handle');
       if (dragHandle) {
         ['click', 'mousedown', 'pointerdown', 'contextmenu'].forEach(function (eventName) {
@@ -2782,6 +2800,8 @@ function syncActiveSceneItem(activeId) {
   var items = document.querySelectorAll('.scene-item');
   items.forEach(function (el) {
     el.classList.toggle('active', !!activeId && el.dataset.id === activeId);
+    var selectButton = el.querySelector('.scene-item-name');
+    if (selectButton) selectButton.setAttribute('aria-current', el.classList.contains('active') ? 'true' : 'false');
   });
   var toggle = document.getElementById('mobile-scene-sheet-toggle');
   if (toggle && isPublicViewingMode() && isSmallViewport()) {
@@ -3083,6 +3103,7 @@ function openSceneContextMenu(evt, img) {
   evt.stopPropagation();
 
   var menu = document.getElementById('scene-context-menu');
+  sceneContextReturnFocus = evt.currentTarget || document.activeElement;
   var settingsButton = menu.querySelector('[data-action="settings"]');
   if (settingsButton) {
     settingsButton.disabled = !isEditMode;
@@ -3100,18 +3121,25 @@ function openSceneContextMenu(evt, img) {
 
   var menuWidth = menu.offsetWidth || 168;
   var menuHeight = menu.offsetHeight || 212;
-  var x = Math.min(evt.clientX, window.innerWidth - menuWidth - 10);
-  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  var anchor = sceneContextReturnFocus && sceneContextReturnFocus.getBoundingClientRect
+    ? sceneContextReturnFocus.getBoundingClientRect() : { right: 10, bottom: 70 };
+  var x = Math.min(evt.clientX || anchor.right, window.innerWidth - menuWidth - 10);
+  var y = Math.min(evt.clientY || anchor.bottom, window.innerHeight - menuHeight - 10);
   menu.style.left = Math.max(10, x) + 'px';
   menu.style.top = Math.max(70, y) + 'px';
+  var firstAction = menu.querySelector('button:not(:disabled)');
+  if (firstAction) firstAction.focus();
 }
 
 function closeSceneContextMenu() {
   var menu = document.getElementById('scene-context-menu');
+  var restoreFocus = menu.contains(document.activeElement) && sceneContextReturnFocus;
   menu.classList.remove('visible');
   menu.style.left = '';
   menu.style.top = '';
   sceneContextTargetId = null;
+  sceneContextReturnFocus = null;
+  if (restoreFocus && restoreFocus.isConnected) restoreFocus.focus();
 }
 
 function onSceneContextMenuClick(evt) {
@@ -3228,22 +3256,29 @@ function openHotspotContextMenu(evt, args, sourceElement) {
 
   var menuWidth  = menu.offsetWidth  || 152;
   var menuHeight = menu.offsetHeight || 88;
-  var x = Math.min(evt.clientX, window.innerWidth  - menuWidth  - 10);
-  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  var anchor = hotspotContextTargetElement && hotspotContextTargetElement.getBoundingClientRect
+    ? hotspotContextTargetElement.getBoundingClientRect() : { right: 10, bottom: 70 };
+  var x = Math.min(evt.clientX || anchor.right, window.innerWidth  - menuWidth  - 10);
+  var y = Math.min(evt.clientY || anchor.bottom, window.innerHeight - menuHeight - 10);
   menu.style.left = Math.max(10, x) + 'px';
   menu.style.top  = Math.max(70, y) + 'px';
+  var firstAction = menu.querySelector('button:not(:disabled)');
+  if (firstAction) firstAction.focus();
 }
 
 function closeHotspotContextMenu() {
+  var returnFocus = hotspotContextTargetElement;
   if (hotspotContextTargetElement && hotspotContextTargetElement.classList) {
     hotspotContextTargetElement.classList.remove('hs-marker-selected');
   }
   var menu = document.getElementById('hotspot-context-menu');
+  var restoreFocus = menu.contains(document.activeElement);
   menu.classList.remove('visible');
   menu.style.left = '';
   menu.style.top  = '';
   hotspotContextTarget = null;
   hotspotContextTargetElement = null;
+  if (restoreFocus && returnFocus && returnFocus.isConnected) returnFocus.focus();
 }
 
 function onHotspotEditClick() {
@@ -3295,6 +3330,7 @@ function onHotspotDeleteClick() {
     showToast('このホットスポットの更新を処理中です。完了までお待ちください。', 'error');
     return;
   }
+  if (!window.confirm('「' + String(target.label || 'ホットスポット') + '」を削除しますか？\n説明・リンクと添付の関連付けも削除されます。')) return;
   var mutationRequest = createHotspotMutationRequest(currentFileId || '', 'delete', target.id);
 
   google.script.run
@@ -3482,7 +3518,7 @@ function focusSceneListItem(fileId) {
   var items = document.querySelectorAll('.scene-item');
   for (var i = 0; i < items.length; i++) {
     if (String(items[i].dataset.id || '') === String(fileId)) {
-      items[i].focus();
+      (items[i].querySelector('.scene-item-name') || items[i]).focus();
       return;
     }
   }
@@ -4029,9 +4065,15 @@ function startHotspotPreparation(fileId, northFileId, shouldHandle, performanceR
 }
 
 function fallbackToBase64(fileId, onSuccess, onFailure) {
+  var requestedQuality = imageQualityMode;
   google.script.run
     .withSuccessHandler(function (res) {
       if (res && res.success && res.imageUrl) {
+        if (scenePerformanceEnabled) console.info('[image-delivery]', JSON.stringify({
+          requestedQuality: requestedQuality,
+          servedQuality: res.quality === 'fast' || res.quality === 'original' ? res.quality : 'unknown',
+          characters: res.imageUrl.length
+        }));
         onSuccess(res.imageUrl);
       } else {
         onFailure((res && res.error) || 'Base64画像を取得できませんでした。');
@@ -4040,7 +4082,7 @@ function fallbackToBase64(fileId, onSuccess, onFailure) {
     .withFailureHandler(function () {
       onFailure('Base64画像の取得中に通信エラーが発生しました。');
     })
-    .getImageDataUri(fileId, 'public');
+    .getImageDataUri(fileId, 'public', requestedQuality);
 }
 
 function loadBase64ImageForScene(fileId, onSuccess, onFailure) {
@@ -4574,7 +4616,7 @@ function syncSceneActionButtons() {
   syncSceneActionButton_('fullscreen-btn', canUseScene && !isEditMode);
   syncSceneActionButton_('btn-home', canUseScene && !!homeImageId);
   syncSceneActionButton_('quality-toggle-btn', canUseScene);
-  syncSceneActionButton_('gyro-toggle-btn', canUseScene);
+  syncSceneActionButton_('gyro-toggle-btn', canUseScene && !is2DMode && !isEditMode && typeof DeviceOrientationEvent !== 'undefined');
 }
 
 function setSceneDisplayReady(ready) {
@@ -4874,6 +4916,7 @@ function stopGyroIfActive(reason) {
  */
 function toggleGyro() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('toggle-gyro')) return false;
+  if (!sceneDisplayReady || is2DMode || isEditMode || typeof DeviceOrientationEvent === 'undefined') return false;
   if (isGyroActive) {
     // ---- OFF ----
     stopGyroIfActive('toggle');
@@ -6284,6 +6327,7 @@ function buildMarkerElement(container, args) {
 // =============================================
 function onMarkerClick(evt, args) {
   if (isEditMode) return; // 編集モード中は無効
+  closeQuizModal({ restoreFocus: false });
 
   // ジャンプ機能: jumpSceneId が設定されていればシーン移動
   if (args && args.jumpSceneId) {
@@ -6325,6 +6369,7 @@ function onMarkerClick(evt, args) {
     activeQuizReturnFocus = evt && evt.currentTarget && evt.currentTarget.focus ? evt.currentTarget : document.activeElement;
     setQuizAnswerVisible(false);
     quizOverlay.classList.remove('hidden');
+    renderQuizAttachments(args);
     document.getElementById('quiz-flip-button').focus();
     return;
   }
@@ -6555,6 +6600,11 @@ function bindHotspotAudioPrefetch(container, args) {
   container.tabIndex = 0;
   container.setAttribute('role', 'button');
   container.setAttribute('aria-label', String(args.label || 'ホットスポット') + 'を開く');
+  container.addEventListener('click', function (event) {
+    if (!canEdit || !isEditMode) return;
+    event.stopPropagation();
+    openHotspotContextMenu(event, args, container);
+  });
   container.addEventListener('keydown', function (event) {
     if (event.target !== container || (event.key !== 'Enter' && event.key !== ' ')) return;
     event.preventDefault();
@@ -7768,9 +7818,41 @@ function toggleQuizAnswer() {
   setQuizAnswerVisible(!document.getElementById('quiz-card').classList.contains('is-flipped'));
 }
 
+function renderQuizAttachments(args) {
+  if (!args.photoId && !args.audioId) return;
+  var media = document.createElement('div');
+  media.id = 'active-info-popup';
+  media.className = 'quiz-attachments';
+  media.__infoPopupGeneration = infoPopupGeneration;
+  media.dataset.fileId = String(args.fileId || currentFileId || '');
+  media.dataset.hotspotId = String(args.id || '');
+  media.dataset.audioId = String(args.audioId || '');
+  if (args.photoId) {
+    var photo = document.createElement('div');
+    photo.id = 'popup-photo-area';
+    photo.className = 'info-popup-photo-placeholder';
+    photo.textContent = '写真を読み込んでいます...';
+    media.appendChild(photo);
+  }
+  if (args.audioId) {
+    var audioArea = document.createElement('div');
+    audioArea.id = 'popup-audio-area';
+    audioArea.className = 'info-popup-audio is-loading';
+    audioArea.innerHTML = '<audio controls preload="none" aria-disabled="true" aria-label="クイズの音声"></audio>' +
+      '<span class="info-popup-audio-status" role="status">音声を準備しています…</span>';
+    media.appendChild(audioArea);
+  }
+  var flip = document.getElementById('quiz-flip-button');
+  flip.parentNode.insertBefore(media, flip);
+  if (args.photoId) renderPhotoInPopup(media, args);
+  if (args.audioId) loadHotspotAudioForPopup(media, args);
+}
+
 function closeQuizModal(options) {
   var overlay = document.getElementById('quiz-modal-overlay');
   if (!overlay || overlay.classList.contains('hidden')) return;
+  closeActiveInfoPopup({ restoreFocus: false });
+  closePhotoLightbox({ restoreFocus: false });
   overlay.classList.add('hidden');
   var returnFocus = activeQuizReturnFocus;
   activeQuizReturnFocus = null;
