@@ -105,6 +105,8 @@ In fast quality mode, hovering or focusing a scene prefetches one image and, in 
 
 Fast single-image delivery now encodes the same JPEG bytes locally in GAS V8 to reduce conversion time without changing image quality. The lab can compare the old and new conversion methods and report server-stage durations; this comparison needs no prepared derivatives. See [profiling and measurement notes](docs/image-delivery-profile.md).
 
+Theme switching remains available while a scene loads. After the first scene is displayed, applicable fullscreen, home, quality, and gyro buttons stay in place but remain disabled until the next image is ready, including after a loading failure. A successful retry enables them again. Controls that do not apply to the current mode remain hidden.
+
 ### View Mode (for students)
 
 - Drag to navigate the 360° view (2D flat maps support scroll and zoom)

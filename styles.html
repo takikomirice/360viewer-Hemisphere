@@ -2377,6 +2377,13 @@
       -webkit-backdrop-filter: blur(2px);
     }
     #gyro-toggle-btn.visible { display: flex; }
+    #fullscreen-btn:disabled,
+    #btn-home:disabled,
+    #quality-toggle-btn:disabled,
+    #gyro-toggle-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
     #gyro-toggle-btn:hover { background: rgba(0,0,0,0.52); }
     #gyro-toggle-btn svg {
       width: 18px; height: 18px;
@@ -2471,7 +2478,8 @@
       align-items: center;
       justify-content: center;
       gap: 14px;
-      z-index: 999;
+      /* Keep loading above the image and below the persistent UI (z-index: 100). */
+      z-index: 94;
       transition: left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .loading-ring {
@@ -2496,7 +2504,7 @@
       background: #000;
       opacity: 0;
       pointer-events: none;
-      z-index: 500;
+      z-index: 93;
       transition: left 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease;
     }
     #scene-transition-overlay.active {

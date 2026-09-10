@@ -1035,6 +1035,8 @@ var sceneSettingsRequestGeneration = 0; // 古い設定取得応答を破棄す�
 var sceneLoadGeneration = 0; // 同一IDの再読込も含め古い表示応答を破棄する世代番号
 var appStartupPerformance = { startedAt: scenePerformanceNow_(), configStart: null, configEnd: null, finished: false };
 var sceneDisplayReady = false; // 現在のシーン画像が操作可能な状態まで読み込まれたか
+var sceneControlsAvailable = false; // 初回表示後は切替・失敗中も操作ボタンの配置を保つ
+var sceneGyroAvailable = false; // ビューア再生成中も直前に確認した対応状況を保つ
 var sceneReorderState = {
   draggedId: '',
   originalItems: null,
@@ -4523,6 +4525,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
 
   // scenes の明示種別を優先し、旧データだけファイル名へフォールバック
   is2DMode = sceneIs2D;
+  syncSceneActionButtons();
 
   // GASコールが返ってこない場合のタイムアウト（30秒）
   var sceneLoadTimer = setTimeout(function () {
@@ -4787,6 +4790,8 @@ function showSceneLoading() {
 }
 
 function showSceneEmptyState(message) {
+  sceneControlsAvailable = false;
+  sceneGyroAvailable = false;
   setSceneDisplayReady(false);
   var loading = document.getElementById('loading');
   var sidebar = document.getElementById('scene-sidebar');
@@ -4846,29 +4851,31 @@ function setHotspotFolderButtonBusy(busy) {
   syncDriveFolderButtons();
 }
 
-function syncSceneActionButton_(id, visible) {
+function syncSceneActionButton_(id, visible, enabled) {
   var button = document.getElementById(id);
   if (!button) return;
   visible = !!visible;
   button.classList.toggle('visible', visible);
   button.hidden = !visible;
-  button.disabled = !visible;
+  button.disabled = !visible || !enabled;
   button.setAttribute('aria-hidden', visible ? 'false' : 'true');
-  button.tabIndex = visible ? 0 : -1;
+  button.tabIndex = visible && enabled ? 0 : -1;
 }
 
 /** シーン読込状態と編集状態から、画像上の操作ボタンを一括同期する。 */
 function syncSceneActionButtons() {
   var canUseScene = !!sceneDisplayReady;
-  syncSceneActionButton_('fullscreen-btn', canUseScene && !isEditMode);
-  syncSceneActionButton_('btn-home', canUseScene && !!homeImageId);
-  syncSceneActionButton_('quality-toggle-btn', canUseScene);
-  syncSceneActionButton_('gyro-toggle-btn', canUseScene && !is2DMode && !isEditMode && isGyroSupported());
+  if (canUseScene) sceneGyroAvailable = isGyroSupported();
+  syncSceneActionButton_('fullscreen-btn', sceneControlsAvailable && !isEditMode, canUseScene && !isEditMode);
+  syncSceneActionButton_('btn-home', sceneControlsAvailable && !!homeImageId, canUseScene);
+  syncSceneActionButton_('quality-toggle-btn', sceneControlsAvailable, canUseScene);
+  syncSceneActionButton_('gyro-toggle-btn', sceneControlsAvailable && !is2DMode && !isEditMode && sceneGyroAvailable, canUseScene);
   updateGyroBtn();
 }
 
 function setSceneDisplayReady(ready) {
   sceneDisplayReady = !!ready;
+  if (sceneDisplayReady) sceneControlsAvailable = true;
   syncSceneActionButtons();
 }
 
@@ -5146,7 +5153,7 @@ function updateGyroBtn() {
   btn.classList.toggle('gyro-active', isGyroActive);
   btn.title = isGyroActive ? 'ジャイロOFF' : 'ジャイロON';
   if (gyroPermissionPending) btn.title = 'ジャイロの起動を確認中';
-  btn.disabled = btn.hidden || gyroPermissionPending;
+  btn.disabled = btn.hidden || !sceneDisplayReady || gyroPermissionPending;
   btn.setAttribute('aria-busy', gyroPermissionPending ? 'true' : 'false');
   btn.setAttribute('aria-pressed', isGyroActive ? 'true' : 'false');
 }
