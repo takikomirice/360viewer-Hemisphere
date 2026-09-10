@@ -3845,11 +3845,10 @@
 .hae-modal-header h2 { margin:0; font-size:1rem; }
 .hae-modal-body { min-height:0; overflow:auto; overscroll-behavior:contain; }
 .hae-modal-action:disabled { cursor:not-allowed; opacity:.55; }
-html[data-theme="dark"] .hemisphere-audio-editor-dialog { --hae-bg:#111827; --hae-surface:#1f2937; --hae-text:#f3f4f6; --hae-muted:#cbd5e1; --hae-line:#475569; --hae-accent:#38bdf8; --hae-accent-soft:#164e63; --hae-focus:#f59e0b; --hae-warning:#fbbf24; --hae-warning-bg:#422006; color-scheme:dark; }
 html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-wave-panel,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-detail-waveform,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-full-controls,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-range-controls { background:#172033; }
 html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-time-input:focus,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-time-input:hover { background:#273449; color:var(--hae-text); }
 @media (max-width:700px) { .hemisphere-audio-editor-dialog { width:100vw; max-width:none; height:100dvh; max-height:none; border:0; border-radius:0; } .hae-modal-header { padding-left:max(12px,env(safe-area-inset-left)); padding-right:max(12px,env(safe-area-inset-right)); } }
-.hemisphere-audio-editor-dialog { --hae-bg:#f3f6f8; --hae-surface:#fff; --hae-text:#24313d; --hae-muted:#607080; --hae-line:#d5dee5; --hae-accent:#176a8d; --hae-accent-soft:#dcedf4; --hae-focus:#ba4f00; --hae-warning:#8a4b00; --hae-warning-bg:#fff4df; }
+.hemisphere-audio-editor-dialog { --hae-bg:var(--theme-surface-subtle); --hae-surface:var(--theme-surface); --hae-text:var(--theme-text); --hae-muted:var(--theme-text-muted); --hae-line:var(--theme-border); --hae-accent:var(--theme-accent); --hae-accent-soft:var(--theme-accent-soft); --hae-focus:var(--theme-focus-ring); --hae-warning:var(--theme-edit-text); --hae-warning-bg:var(--theme-edit-background); }
 .hemisphere-audio-editor-dialog, .hemisphere-audio-editor-dialog * { box-sizing:border-box; }
 .hemisphere-audio-editor-dialog [hidden] { display:none !important; }
 .hemisphere-audio-editor-dialog { margin:0; background:var(--hae-bg); color:var(--hae-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
@@ -3895,6 +3894,29 @@ html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button,html[da
 @media (prefers-reduced-motion:reduce) { .hemisphere-audio-editor-dialog *,.hemisphere-audio-editor-dialog *::before,.hemisphere-audio-editor-dialog *::after { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
 
 .hemisphere-audio-editor-dialog { margin:auto; }
+/* Use the same surfaces and controls as the surrounding Hemisphere form. */
+.hemisphere-audio-editor-dialog .hae-icon-button,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button {
+  border-radius:10px; background:var(--theme-button-background); color:var(--theme-text);
+  transition:background .15s, border-color .15s;
+}
+.hemisphere-audio-editor-dialog .hae-icon-button:hover:not(:disabled) { background:var(--theme-surface-hover); border-color:var(--theme-border-strong); }
+.hemisphere-audio-editor-dialog .hae-icon-button-primary,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button-primary { background:#2563EB; border-color:#2563EB; color:#fff; }
+.hemisphere-audio-editor-dialog .hae-icon-button-primary:hover:not(:disabled) { background:#1D4ED8; border-color:#1D4ED8; }
+.hemisphere-audio-editor-dialog .hae-text-button { display:inline-flex; width:auto; padding:0 12px; gap:7px; align-items:center; justify-content:center; font-size:.85rem; font-weight:600; }
+.hemisphere-audio-editor-dialog .hae-wave-panel,
+.hemisphere-audio-editor-dialog .hae-detail-waveform,
+.hemisphere-audio-editor-dialog .hae-full-controls,
+.hemisphere-audio-editor-dialog .hae-range-controls,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-wave-panel,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-detail-waveform,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-full-controls,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-range-controls { background:var(--theme-surface-subtle); }
+.hemisphere-audio-editor-dialog .hae-preset-group label { color:var(--theme-text-muted); }
+.hemisphere-audio-editor-dialog .hae-segment-input:checked + label { color:var(--theme-text); }
+.hemisphere-audio-editor-dialog .hae-warning,
+.hemisphere-audio-editor-dialog .hae-encode-message { color:var(--theme-edit-text); }
     /* HEMISPHERE_AUDIO_EDITOR_STYLES_END */
     /* Photo cards: the caption sits on the image, as in the reference tour. */
     #scene-list .scene-item {

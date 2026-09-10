@@ -529,7 +529,8 @@
         </div>
         <div class="form-group" id="audio-attachment-group">
           <span class="form-label">音声（任意・1件まで）</span>
-          <button id="hotspot-audio-open-editor-btn" class="hotspot-audio-open-editor" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">音声を選んで編集</button>
+          <button id="hotspot-audio-open-editor-btn" class="hotspot-audio-open-editor" type="button" onclick="chooseHotspotAudioFile(event.currentTarget)">音声を選んで編集</button>
+          <input id="hotspot-audio-source-file" type="file" accept="audio/mp4,audio/mpeg,audio/wav,.m4a,.mp3,.wav" hidden>
           <div id="hotspot-audio-attachment-card" class="hotspot-audio-attachment-card" hidden>
             <audio id="hotspot-audio-preview" class="hotspot-audio-preview" controls preload="none" aria-label="添付する音声の確認再生" hidden></audio>
             <div class="hotspot-audio-details">
@@ -537,7 +538,7 @@
               <span id="hotspot-audio-file-meta" class="hotspot-audio-file-meta"></span>
             </div>
             <div class="hotspot-audio-actions">
-              <button id="hotspot-audio-change-btn" class="hotspot-audio-action" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">変更</button>
+              <button id="hotspot-audio-change-btn" class="hotspot-audio-action" type="button" onclick="chooseHotspotAudioFile(event.currentTarget)">変更</button>
               <button id="hotspot-audio-remove-btn" class="hotspot-audio-action danger" type="button" onclick="toggleHotspotAudioRemoval()">解除</button>
             </div>
           </div>
@@ -660,7 +661,7 @@
             </section>
             <aside class="hae-range-controls" data-hae-range-controls aria-label="切り出し範囲の操作">
               <div class="hae-range-primary"><div class="hae-time-row" aria-label="選択時間"><span><svg aria-hidden="true"><use href="#hae-icon-start"></use></svg><input class="hae-time-input" data-hae-start-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="開始時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-end"></use></svg><input class="hae-time-input" data-hae-end-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="終了時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-span"></use></svg><input class="hae-time-input" data-hae-duration type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="選択時間" aria-describedby="hae-time-instructions"></span></div>
-                <div class="hae-operation-bar" aria-label="範囲編集操作"><button class="hae-icon-button" type="button" data-hae-play="selection" aria-label="選択範囲を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button><button class="hae-icon-button hae-icon-button-primary" type="button" data-hae-confirm aria-label="この範囲をMP3にする"><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg></button><button class="hae-icon-button" type="button" data-hae-cancel aria-label="キャンセルして音声を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
+                <div class="hae-operation-bar" aria-label="範囲編集操作"><button class="hae-icon-button" type="button" data-hae-play="selection" aria-label="選択範囲を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button><button class="hae-icon-button hae-icon-button-primary hae-text-button" type="button" data-hae-confirm aria-label="この範囲をMP3にする"><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg><span>音声を作成</span></button><button class="hae-icon-button" type="button" data-hae-cancel aria-label="キャンセルして音声を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
               </div>
               <section class="hae-loudness-panel" data-hae-loudness-panel aria-label="音量調整">
                 <div class="hae-loudness-top"><label class="hae-auto-switch"><input type="checkbox" data-hae-loudness-enabled aria-label="自動音量調整" checked><span class="hae-auto-track" aria-hidden="true">AUTO</span></label><span class="hae-loudness-status" data-hae-loudness-status aria-live="polite"></span></div>

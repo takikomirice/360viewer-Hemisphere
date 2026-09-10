@@ -8925,7 +8925,36 @@ function syncHotspotAudioAttachButton() {
   if (button.disabled !== shouldDisable) button.disabled = shouldDisable;
 }
 
-function openHotspotAudioEditor(trigger) {
+function chooseHotspotAudioFile(trigger) {
+  if (!canEdit || !isEditMode || !isHotspotFormSessionActive() || currentPopupMode !== 'info') return false;
+  var state = hotspotAudioAttachmentState;
+  if (state.base64Converting || state.vendorLoading || state.editorOpen) return false;
+  var input = document.getElementById('hotspot-audio-source-file');
+  if (!input) return false;
+  var generation = state.generation;
+  var sceneId = String(hotspotFormSessionState.startSceneId || '');
+  input.value = '';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    input.value = '';
+    input.onchange = null;
+    input.oncancel = null;
+    if (!file || generation !== state.generation || !isHotspotFormSessionActive() ||
+        String(hotspotFormSessionState.startSceneId || '') !== sceneId) return;
+    openHotspotAudioEditor(trigger, file);
+  };
+  input.oncancel = function () {
+    input.value = '';
+    input.onchange = null;
+    input.oncancel = null;
+    if (generation === state.generation && trigger && trigger.isConnected) trigger.focus();
+  };
+  // Keep this synchronous with the user's click so the native picker is permitted.
+  input.click();
+  return true;
+}
+
+function openHotspotAudioEditor(trigger, selectedFile) {
   if (!canEdit || !isEditMode || !isHotspotFormSessionActive() || currentPopupMode !== 'info') return false;
   var state = hotspotAudioAttachmentState;
   if (state.base64Converting) return false;
@@ -8959,7 +8988,7 @@ function openHotspotAudioEditor(trigger) {
       }
       releaseOpeningAttempt();
       editorSetupStarted = true;
-      return showHotspotAudioEditor(trigger);
+      return showHotspotAudioEditor(trigger, selectedFile);
     })
     .catch(function () {
       var releasedOpeningAttempt = releaseOpeningAttempt();
@@ -8978,7 +9007,7 @@ function openHotspotAudioEditor(trigger) {
   return openingPromise;
 }
 
-function showHotspotAudioEditor(trigger) {
+function showHotspotAudioEditor(trigger, selectedFile) {
   var dialog = document.getElementById('hotspot-audio-editor-dialog');
   var editor = window.HemisphereAudioEditor;
   if (!dialog || !editor || typeof editor.init !== 'function') {
@@ -9037,8 +9066,16 @@ function showHotspotAudioEditor(trigger) {
     state.resultObserver = null;
     throw error;
   }
-  var fileInput = dialog.querySelector('#hae-audio-file');
-  if (fileInput) setTimeout(function () { fileInput.focus(); }, 0);
+  if (selectedFile) {
+    Promise.resolve(editor.loadFile(selectedFile)).then(function () {
+      if (!state.editorOpen || generation !== state.generation) return;
+      var target = dialog.querySelector('[data-hae-start-time]');
+      if (target && target.getClientRects().length) target.focus();
+    });
+  } else {
+    var fileInput = dialog.querySelector('#hae-audio-file');
+    if (fileInput) setTimeout(function () { fileInput.focus(); }, 0);
+  }
   return true;
 }
 
