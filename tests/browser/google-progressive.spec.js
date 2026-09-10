@@ -22,6 +22,7 @@ async function openLab(page,failTiles=false) {
     window.google={script:{run:new Proxy({}, {get(_,method){
       if(method==='withSuccessHandler')return success=>({withFailureHandler:failure=>new Proxy({}, {get(_,name){return (...args)=>setTimeout(()=>{
         if(name==='getConfig')return success({images:[{id:'scene',name:'比較写真'}]});
+        if(name==='getImageDeliveryProfile')return success({success:true,imageUrl:full,quality:'fast',timings:{encodingMs:args[1]===true?900:70,totalMs:1000}});
         if(name==='getSceneTileBatch'){window.__tileRequests++;return success({success:!failTiles&&!window.__failNextTiles,error:'tile failed',tiles:args[0].tiles.map(index=>({index,imageUrl:tile})),failed:[]});}
         success({success:true,checksum:'a'.repeat(32),width:1024,height:512,imageUrl:name==='getImageDataUri'||args[1]==='full'?full:preview});
       },name==='getSceneTileBatch'||args[1]==='full'?1200:50);}})});
@@ -46,6 +47,18 @@ for(const method of ['single','full','tiles'])test(`real Pannellum 2.5.6 renders
   await page.locator('#cold').uncheck();await page.locator('#start').click();
   await expect(page.locator('#start')).toBeEnabled();
   const rows=JSON.parse(await page.locator('#results').textContent());expect(rows[1].cacheHits).toBeGreaterThan(0);expect(rows[1].rpcCount).toBe(0);
+});
+
+test('encoding comparison alternates implementations, clears cache and displays server durations',async({page})=>{
+  await openLab(page);await page.locator('#encoding').click();
+  await expect(page.locator('#encoding')).toBeEnabled({timeout:15000});
+  const rows=JSON.parse(await page.locator('#results').textContent());
+  expect(rows.map(row=>row.method)).toEqual(['profile-native','profile','profile','profile-native','profile-native','profile']);
+  for(const row of rows){
+    expect(row.status).toBe('complete');expect(row.rpcCount).toBe(1);expect(row.cacheHits).toBe(0);
+    expect(row.serverTimings.encodingMs).toBe(row.method==='profile-native'?900:70);
+  }
+  await expect(page.locator('#view canvas')).toBeVisible();
 });
 test('tile failure keeps the preview available and allows retry',async({page})=>{
   await openLab(page,true);await page.locator('#method').selectOption('tiles');await page.locator('#start').click();

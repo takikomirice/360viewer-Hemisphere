@@ -101,7 +101,9 @@ The scene list uses photo cards with centered white names on a translucent botto
 
 After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
 
-In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains its existing delivery behavior. See the [setup and measurement notes](docs/google-progressive-delivery.md).
+In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains single-image delivery. See the [setup and measurement notes](docs/google-progressive-delivery.md).
+
+Fast single-image delivery now encodes the same JPEG bytes locally in GAS V8 to reduce conversion time without changing image quality. The lab can compare the old and new conversion methods and report server-stage durations; this comparison needs no prepared derivatives. See [profiling and measurement notes](docs/image-delivery-profile.md).
 
 ### View Mode (for students)
 

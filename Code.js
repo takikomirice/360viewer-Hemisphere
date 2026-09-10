@@ -1433,6 +1433,7 @@ function getEditableSceneContext_(fileId, options) {
   const scenesSheet = opts.scenesSheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCENES_SHEET_NAME);
   if (!scenesSheet) throw new Error('scenesシートに対象画像が登録されていません。');
   const snapshot = opts.snapshot || readSceneRows_(scenesSheet);
+  if (opts.profile) opts.profile.mark('sceneRowsMs');
   if ((snapshot.duplicateFileIds || []).indexOf(targetId) !== -1) {
     throw new Error('scenesシートに対象ファイルIDの重複があります。先に重複を解消してください。');
   }
@@ -1445,6 +1446,7 @@ function getEditableSceneContext_(fileId, options) {
   }
 
   const file = DriveApp.getFileById(targetId);
+  if (opts.profile) opts.profile.mark('registeredParentMs');
   if (String(file.getId() || '').trim() !== targetId) {
     throw new Error('DriveファイルIDがscenesの登録内容と一致しません。');
   }
@@ -1453,6 +1455,7 @@ function getEditableSceneContext_(fileId, options) {
   }
 
   const parentFolderIds = getFileParentFolderIds_(file);
+  if (opts.profile) opts.profile.mark('fileMetadataMs');
   if (parentFolderIds.indexOf(sceneParentFolderId) === -1) {
     throw new Error('Drive上の親フォルダとscenesの親フォルダが一致しません。一覧を同期してください。');
   }
@@ -1463,6 +1466,7 @@ function getEditableSceneContext_(fileId, options) {
     throw new Error('対象Driveファイルは設定済みルートフォルダの配下ではありません。');
   }
 
+  if (opts.profile) opts.profile.mark('actualParentMs');
   return {
     fileId: targetId,
     rootFolderId: rootFolderId,
@@ -3502,9 +3506,10 @@ function readJpegDimensions_(bytes) {
  * Google側の変更・小さいサムネイル・比率違い・取得失敗は原寸画像へフォールバックする。
  * thumbnailLinkとOAuthトークンはクライアントへ返さない。
  */
-function getFastImageDataUri_(file) {
+function getFastImageDataUri_(file, profile) {
   try {
     const metadata = Drive.Files.get(file.getId(), { fields: 'thumbnailLink,imageMediaMetadata(width,height,rotation),size' });
+    if (profile) profile.mark('previewMetadataMs');
     const source = metadata.imageMediaMetadata || {};
     const width = Number(source.width), height = Number(source.height);
     const link = String(metadata.thumbnailLink || '');
@@ -3519,11 +3524,15 @@ function getFastImageDataUri_(file) {
     const blob = response.getBlob();
     if (String(blob.getContentType()).split(';')[0] !== 'image/jpeg') return null;
     const bytes = blob.getBytes();
+    if (profile) profile.mark('previewFetchMs');
     if (bytes.length > 3 * 1024 * 1024 || bytes.length >= Number(metadata.size)) return null;
     const dimensions = readJpegDimensions_(bytes);
     if (!dimensions || dimensions.width < 2048 || dimensions.width > 4096 ||
         Math.abs(dimensions.height - dimensions.width * height / width) > 2) return null;
-    return 'data:image/jpeg;base64,' + Utilities.base64Encode(bytes);
+    const result = 'data:image/jpeg;base64,' + (profile && profile.nativeEncoding
+      ? Utilities.base64Encode(bytes) : encodeImageBytes_(bytes));
+    if (profile) profile.mark('encodingMs');
+    return result;
   } catch (error) {
     console.warn('縮小画像を取得できなかったため原寸画像を使用します。');
     return null;
@@ -3583,14 +3592,15 @@ function extractDriveFolderId_(url) {
  * @param {string} fileId
  * @returns {{fileId:string,file:Object,scene?:Object|null,rootFolderId:string}}
  */
-function getReadableImageContext_(fileId) {
+function getReadableImageContext_(fileId, profile) {
   const targetId = String(fileId || '').trim();
   if (!targetId) throw new Error('ファイルIDが指定されていません。');
 
   const config = getAppConfig_();
+  if (profile) profile.mark('configMs');
   const configuredUrl = config[IMAGE_DRIVE_URL_CONFIG_KEY] || '';
   const rootFolderId = extractDriveFolderId_(configuredUrl) || '';
-  if (rootFolderId) return getEditableSceneContext_(targetId, { appConfig: config });
+  if (rootFolderId) return getEditableSceneContext_(targetId, { appConfig: config, profile: profile });
 
   const configuredFileId = extractDriveFileId_(configuredUrl) || '';
   if (!configuredFileId || configuredFileId !== targetId) {
@@ -3623,6 +3633,22 @@ function getSceneThumbnailFolder_(createIfMissing) {
   const folder = folders.next();
   if (folders.hasNext()) throw new Error('サムネイルフォルダが重複しています。');
   return folder;
+}
+
+/** Encode bounded preview bytes locally, avoiding the Utilities service's large-array conversion. */
+function encodeImageBytes_(bytes) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const chunks = [];
+  let chunk = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i] & 255, b = bytes[i + 1] & 255, c = bytes[i + 2] & 255;
+    chunk += alphabet[a >> 2] + alphabet[((a & 3) << 4) | (b >> 4)] +
+      (i + 1 < bytes.length ? alphabet[((b & 15) << 2) | (c >> 6)] : '=') +
+      (i + 2 < bytes.length ? alphabet[c & 63] : '=');
+    if (chunk.length >= 32768) { chunks.push(chunk); chunk = ''; }
+  }
+  chunks.push(chunk);
+  return chunks.join('');
 }
 
 /** Authorize every read, including cache hits. Never return a signed Drive URL. */
@@ -3759,6 +3785,25 @@ function prepareSceneThumbnail(payload) {
     assertEditToken_(payload);
     return readSceneThumbnail_(payload.fileId, true);
   } catch (error) { return { success: false, error: 'サムネイルを準備できませんでした。' }; }
+}
+
+/** Read-only diagnostics; returns durations, never tokens or signed Drive URLs. */
+function getImageDeliveryProfile(fileId, nativeEncoding) {
+  const started = Date.now(), timings = {};
+  let previous = started;
+  const profile = { nativeEncoding: nativeEncoding === true, mark: function(name) { const now = Date.now(); timings[name] = now - previous; previous = now; } };
+  try {
+    const context = getReadableImageContext_(fileId, profile);
+    timings.authorizationMs = Date.now() - started;
+    previous = Date.now();
+    const preview = getFastImageDataUri_(context.file, profile);
+    const imageUrl = preview || fileToDataUri_(context.file);
+    if (!preview) profile.mark('originalFallbackMs');
+    timings.totalMs = Date.now() - started;
+    return { success: true, imageUrl: imageUrl, quality: preview ? 'fast' : 'original', timings: timings };
+  } catch (error) {
+    return { success: false, error: '画像の取得に失敗しました。' };
+  }
 }
 
 function getImageDataUri(fileId, mode, quality) {
