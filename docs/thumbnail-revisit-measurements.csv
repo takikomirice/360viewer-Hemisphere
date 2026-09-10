@@ -1,0 +1,10 @@
+kind,trial,condition,scene,first_ready_ms,total_ms,direct_count,gas_count,loaded_count
+thumbnails,1,gas,all-16,8425,68542,0,16,16
+thumbnails,2,direct,all-16,4292,6894,16,0,16
+thumbnails,3,gas,all-16,10096,80253,0,16,16
+thumbnails,4,direct,all-16,4939,7651,16,0,16
+thumbnails,5,final-default,all-16,4120,6759,16,0,16
+selection,1,before,B,,2839.4,,,
+selection,2,before,A-return,,1488.3,,,
+selection,1,after,B,,163.3,,,
+selection,2,after,A-return,,335.8,,,

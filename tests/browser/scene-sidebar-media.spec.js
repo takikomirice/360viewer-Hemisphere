@@ -87,13 +87,13 @@ test('mobile viewer retains its scene sheet and does not expose desktop resizing
   await expect.poll(() => page.locator('#panorama').evaluate(n => Math.round(n.getBoundingClientRect().width))).toBe(390);
 });
 
-test('intent prefetch is reused on selection without another image RPC', async ({ page }) => {
-  await page.goto('/?mode=public&sceneType=360');
+test('intent prefetch keeps direct delivery on selection without an image GAS call', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360&imageDelay=10');
   await expect(page.locator('#loading')).toBeHidden();
   const next = page.locator('.scene-item-name').nth(1);
   await next.hover();
-  await expect.poll(() => page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__HARNESS_IMAGE_REQUESTS__.length)).toBeGreaterThanOrEqual(2);
   await next.click();
   await expect(page.locator('#loading')).toBeHidden();
-  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length)).toBe(1);
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getImageDataUri').length)).toBe(0);
 });

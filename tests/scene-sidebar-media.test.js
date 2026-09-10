@@ -38,12 +38,12 @@ test('auto delivery immediately uses a warm or in-flight image but never overrid
   assert.equal(c.getSceneDeliveryMode('c'), 'auto');
 });
 
-test('intent prefetch runs one image at a time and skips active scenes, high quality and data saver', () => {
+test('explicit Base64 intent prefetch runs one image at a time and skips active scenes and data saver', () => {
   let timer, complete;
   const requested = [];
   const c = load(['scheduleSceneImagePrefetch'], {
     scenePrefetchTimer: null, scenePrefetchActive: false, scenePrefetchGeneration: 0,
-    deliveryMode: 'auto', imageQualityMode: 'fast', currentFileId: 'current', isSwitching: false,
+    deliveryMode: 'base64', imageQualityMode: 'fast', currentFileId: 'current', isSwitching: false,
     navigator: { connection: {} }, isPublicViewingMode: () => true, isEditMode: false,
     loadHotspotsCached: (id, success) => { requested.push('hotspots:' + id); success({ hotspots: [] }); },
     clearTimeout() {}, setTimeout: fn => { timer = fn; return 1; },
@@ -62,9 +62,10 @@ test('intent prefetch runs one image at a time and skips active scenes, high qua
 test('thumbnail queue caps simultaneous requests, displays arrivals, and ignores stale folder callbacks', () => {
   const requests = [], shown = [];
   const nodes = [1,2,3,4].map(id => ({ dataset: { fileId: String(id) }, isConnected: true, classList: { add() {}, remove() {} }, set src(v) { shown.push([id,v]); } }));
-  const c = load(['startSceneThumbnailQueue'], {
+  const c = load(['requestSceneThumbnail', 'startSceneThumbnailQueue'], {
     sceneThumbnailGeneration: 0, sceneThumbnailTimer: null, sceneThumbnailCache: new Map(), sceneThumbnailActive: 0, sceneThumbnailResume: null,
     isSwitching: false, sceneDisplayReady: true, canEdit: false, scenePrefetchActive: false,
+    sceneThumbnailDirectEnabled: false, scenePerformanceEnabled: false,
     document: { querySelectorAll: () => nodes },
     setTimeout: fn => { fn(); return 1; }, clearTimeout() {},
     google: { script: { run: { withSuccessHandler(success) { return { withFailureHandler(failure) { return { getSceneThumbnail(id) { requests.push({id, success, failure}); } }; } }; } } } }

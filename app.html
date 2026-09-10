@@ -1020,6 +1020,7 @@ var sceneSidebarResizeInitialized = false;
 var sceneThumbnailGeneration = 0;
 var sceneThumbnailTimer = null;
 var sceneThumbnailCache = new Map();
+var sceneThumbnailDirectEnabled = true; // thumbnailDelivery=gas で従来方式と比較可能
 var sceneThumbnailActive = 0;
 var sceneThumbnailResume = null;
 var scenePrefetchTimer = null;
@@ -1167,6 +1168,15 @@ var photoLightboxState = {
   stageClickStartedOnImage: false
 };
 var hotspotCacheByFileId = {};
+var hotspotCacheExpiresByFileId = {};
+var hotspotRequestsByFileId = {};
+var HOTSPOT_CACHE_TTL_MS = 5 * 60 * 1000;
+var HOTSPOT_CACHE_MAX_ENTRIES = 50;
+var sceneMetadataPrefetchEnabled = true; // metadataPrefetch=0 で比較用に無効化
+var sceneMetadataPrefetchGeneration = 0;
+var sceneMetadataPrefetchTimer = null;
+var sceneMetadataPrefetchActive = 0;
+var sceneMetadataPrefetchResume = null;
 var activeJumpTooltip    = null;  // 表示中のジャンプツールチップ要素
 var DEFAULT_MARKER_SHAPE = 'circle';
 var DEFAULT_MARKER_COLOR = 'blue';
@@ -2042,6 +2052,8 @@ window.addEventListener('load', function () {
     var dParam = (loc.parameter && loc.parameter.delivery) || '';
     deliveryMode = normalizeDeliveryMode(dParam);
     scenePerformanceEnabled = String((loc.parameter && loc.parameter.perf) || '') === '1';
+    sceneMetadataPrefetchEnabled = String((loc.parameter && loc.parameter.metadataPrefetch) || '') !== '0';
+    sceneThumbnailDirectEnabled = String((loc.parameter && loc.parameter.thumbnailDelivery) || '') !== 'gas';
     initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
     initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
     initialPitch = parseNumberParam(loc.parameter && loc.parameter.pitch);
@@ -2708,12 +2720,42 @@ function initSceneSidebarResize() {
   window.addEventListener('resize', function () { applySceneSidebarWidth(sceneSidebarPreferredWidth, false); });
 }
 
-/** At most two background RPCs; scene changes pause new work and folder changes invalidate callbacks. */
+/** Public images can skip GAS; private images retain the authorized server path. */
+function requestSceneThumbnail(fileId, complete) {
+  function viaGas() {
+    var request = google.script.run.withSuccessHandler(function (result) {
+      complete(result && result.success && /^data:image\/jpeg;base64,/.test(result.imageUrl || '') ? result.imageUrl : null, 'gas');
+    }).withFailureHandler(function () { complete(null, 'gas'); });
+    if (canEdit) request.prepareSceneThumbnail(withEditToken({ fileId: fileId }));
+    else request.getSceneThumbnail(fileId);
+  }
+  // Editors keep preparing the stored derivative used by the private fallback.
+  if (!sceneThumbnailDirectEnabled || canEdit) { viaGas(); return; }
+  var url = 'https://lh3.googleusercontent.com/d/' + encodeURIComponent(fileId) + '=w320';
+  var image = new Image(), settled = false;
+  var timer = setTimeout(function () { finish(false); }, 2500);
+  function finish(success) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    image.onload = image.onerror = null;
+    if (success) complete(url, 'direct');
+    else viaGas();
+  }
+  image.onload = function () { finish(true); };
+  image.onerror = function () { finish(false); };
+  image.crossOrigin = 'anonymous';
+  image.src = url;
+}
+
+/** At most two background reads; scene changes pause new work and folder changes invalidate callbacks. */
 function startSceneThumbnailQueue() {
   var generation = ++sceneThumbnailGeneration;
   clearTimeout(sceneThumbnailTimer);
   var nodes = Array.prototype.slice.call(document.querySelectorAll('.scene-thumbnail'));
   var next = 0;
+  var started = Date.now(), completed = 0;
+  var stats = { generation: generation, total: nodes.length, loaded: 0, failed: 0, direct: 0, gas: 0, cache: 0, firstReady: null };
   sceneThumbnailResume = pump;
   function pump() {
     if (generation !== sceneThumbnailGeneration) return;
@@ -2727,10 +2769,9 @@ function startSceneThumbnailQueue() {
   function start(node) {
     var key = node.dataset.fileId;
     var cached = sceneThumbnailCache.get(key);
-    if (cached) { node.src = cached; node.classList.add('loaded'); return; }
     sceneThumbnailActive++;
     var settled = false;
-    function finish(result) {
+    function finish(url, source) {
       if (settled) return;
       settled = true;
       sceneThumbnailActive--;
@@ -2738,17 +2779,26 @@ function startSceneThumbnailQueue() {
         if (sceneThumbnailResume) sceneThumbnailResume();
         return;
       }
-      if (node.isConnected && result && result.success && /^data:image\/jpeg;base64,/.test(result.imageUrl || '')) {
-        sceneThumbnailCache.set(key, result.imageUrl);
+      if (node.isConnected && url) {
+        sceneThumbnailCache.set(key, url);
         while (sceneThumbnailCache.size > 100) sceneThumbnailCache.delete(sceneThumbnailCache.keys().next().value);
-        node.src = result.imageUrl;
+        node.crossOrigin = 'anonymous';
+        node.src = url;
         node.classList.add('loaded');
+        stats.loaded++;
+        if (stats.firstReady === null) stats.firstReady = Date.now() - started;
+      } else {
+        stats.failed++;
+      }
+      stats[source]++;
+      if (++completed === nodes.length && scenePerformanceEnabled) {
+        stats.duration = Date.now() - started;
+        console.info('[thumbnail-perf]', JSON.stringify(stats));
       }
       pump();
     }
-    var request = google.script.run.withSuccessHandler(finish).withFailureHandler(function () { finish(null); });
-    if (canEdit) request.prepareSceneThumbnail(withEditToken({ fileId: key }));
-    else request.getSceneThumbnail(key);
+    if (cached) finish(cached, 'cache');
+    else requestSceneThumbnail(key, finish);
   }
   sceneThumbnailTimer = setTimeout(pump, 350);
 }
@@ -2880,6 +2930,7 @@ function buildSceneSidebar(images) {
   sidebar.classList.remove('hidden');
   initSceneSidebarResize();
   startSceneThumbnailQueue();
+  startSceneMetadataPrefetchQueue(images);
   panorama.classList.add('with-sidebar');
   document.getElementById('flat-map-container').classList.add('with-sidebar');
   if (isPublicViewingMode() && isSmallViewport()) {
@@ -2970,6 +3021,8 @@ function refreshSceneList() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('refresh-scene-list')) return false;
   if (isRefreshingSceneList || !allImages) return;
   clearBase64ImageCache();
+  clearHotspotCache();
+  startSceneMetadataPrefetchQueue([]);
   cancelHotspotMove('一覧更新のため移動をキャンセルしました。', { silent: true });
 
   isRefreshingSceneList = true;
@@ -3847,7 +3900,7 @@ function onSceneSettingsBackdropClick(evt) {
 function reloadCurrentSceneAfterSettings(previousScene, nextScene) {
   if (!nextScene || String(nextScene.id || nextScene.fileId || '') !== String(currentFileId || '')) return;
   var fileId = String(nextScene.id || nextScene.fileId || '');
-  delete hotspotCacheByFileId[fileId];
+  clearHotspotCache(fileId);
   preloadedScenes.delete(fileId);
 
   var previousType = getExplicitSceneType(previousScene || {});
@@ -4214,6 +4267,8 @@ function finishScenePerformanceRecord(record, status) {
     type: record.type,
     status: record.status,
     duration: record.duration,
+    hotspotSource: record.hotspotSource || 'network',
+    metadataPrefetch: sceneMetadataPrefetchEnabled,
     marks: relativeMarks
   }));
 }
@@ -4269,8 +4324,9 @@ function startHotspotPreparation(fileId, northFileId, shouldHandle, performanceR
   markScenePerformanceRecord(performanceRecord, 'hotspotsStart');
   return new Promise(function (resolve) {
     var canHandle = typeof shouldHandle === 'function' ? shouldHandle : function () { return true; };
-    loadHotspotsCached(fileId, function (result) {
+    loadHotspotsCached(fileId, function (result, source) {
       if (!canHandle()) return;
+      if (performanceRecord) performanceRecord.hotspotSource = source;
       markScenePerformanceRecord(performanceRecord, 'hotspotsEnd');
       resolve({
         status: 'loaded',
@@ -4361,14 +4417,20 @@ function scheduleSceneImagePrefetch(fileId) {
   var generation = ++scenePrefetchGeneration;
   scenePrefetchTimer = setTimeout(function () {
     if (generation !== scenePrefetchGeneration || scenePrefetchActive || isSwitching ||
-        !fileId || fileId === currentFileId || deliveryMode === 'direct' || imageQualityMode !== 'fast') return;
+        !fileId || fileId === currentFileId || isEditMode || imageQualityMode !== 'fast') return;
     var connection = navigator.connection;
     if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
     scenePrefetchActive = true;
     var pending = isPublicViewingMode() && !isEditMode ? 2 : 1;
     function finish() { if (--pending === 0) scenePrefetchActive = false; }
     if (pending === 2) loadHotspotsCached(fileId, finish, finish, fileId);
-    loadBase64ImageForScene(fileId, finish, finish);
+    if (deliveryMode === 'base64') {
+      loadBase64ImageForScene(fileId, finish, finish);
+    } else {
+      // Match the foreground URL / CORS mode. A speculative read must not switch auto to Base64.
+      var scene = (allImages || []).filter(function (item) { return item.id === fileId; })[0] || { id: fileId };
+      preloadSceneImage(getDirectImageUrl(scene), null, null, 3000).then(finish, finish);
+    }
   }, 180);
 }
 
@@ -4402,9 +4464,14 @@ function normalizeHotspotResult(res) {
 function clearHotspotCache(fileId) {
   if (typeof fileId === 'undefined') {
     hotspotCacheByFileId = {};
+    hotspotCacheExpiresByFileId = {};
+    hotspotRequestsByFileId = {};
     return;
   }
-  delete hotspotCacheByFileId[getHotspotCacheKey(fileId)];
+  var key = getHotspotCacheKey(fileId);
+  delete hotspotCacheByFileId[key];
+  delete hotspotCacheExpiresByFileId[key];
+  delete hotspotRequestsByFileId[key];
 }
 
 function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHandle) {
@@ -4414,12 +4481,49 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
   var cacheKey = getHotspotCacheKey(northFileId || hotspotFileId);
   var useCache = isPublicViewingMode() && !isEditMode;
   var cacheTarget = hotspotCacheByFileId;
-  if (useCache && hotspotCacheByFileId[cacheKey]) {
+  if (useCache && hotspotCacheByFileId[cacheKey] && hotspotCacheExpiresByFileId[cacheKey] > Date.now()) {
+    var cachedResult = cloneHotspotResult(hotspotCacheByFileId[cacheKey]);
     setTimeout(function () {
       if (!canHandle()) return;
-      onSuccess(cloneHotspotResult(hotspotCacheByFileId[cacheKey]));
+      onSuccess(cachedResult, 'cache');
     }, 0);
     return;
+  }
+
+  var listener = { success: onSuccess, failure: onFailure, canHandle: canHandle, source: 'network' };
+  var pending = useCache && hotspotRequestsByFileId[cacheKey];
+  if (pending && pending.hotspotFileId === hotspotFileId) {
+    listener.source = 'pending';
+    pending.listeners.push(listener);
+    return;
+  }
+  pending = { hotspotFileId: hotspotFileId, listeners: [listener] };
+  if (useCache) hotspotRequestsByFileId[cacheKey] = pending;
+  var timer = setTimeout(function () { finish(null); }, 30000);
+
+  function finish(result) {
+    if (pending.settled) return;
+    pending.settled = true;
+    clearTimeout(timer);
+    if (useCache && hotspotRequestsByFileId[cacheKey] === pending) {
+      delete hotspotRequestsByFileId[cacheKey];
+      if (result && cacheTarget === hotspotCacheByFileId && !isEditMode) {
+        delete hotspotCacheByFileId[cacheKey];
+        hotspotCacheByFileId[cacheKey] = cloneHotspotResult(result);
+        hotspotCacheExpiresByFileId[cacheKey] = Date.now() + HOTSPOT_CACHE_TTL_MS;
+        var keys = Object.keys(hotspotCacheByFileId);
+        while (keys.length > HOTSPOT_CACHE_MAX_ENTRIES) {
+          var oldest = keys.shift();
+          delete hotspotCacheByFileId[oldest];
+          delete hotspotCacheExpiresByFileId[oldest];
+        }
+      }
+    }
+    pending.listeners.forEach(function (entry) {
+      if (!entry.canHandle()) return;
+      if (result) entry.success(cloneHotspotResult(result), entry.source);
+      else if (typeof entry.failure === 'function') entry.failure();
+    });
   }
 
   var request = northFileId && northFileId !== hotspotFileId
@@ -4428,16 +4532,50 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
 
   google.script.run
     .withSuccessHandler(function (res) {
-      if (!canHandle()) return;
-      var normalized = normalizeHotspotResult(res);
-      if (useCache && cacheTarget === hotspotCacheByFileId && !isEditMode) hotspotCacheByFileId[cacheKey] = cloneHotspotResult(normalized);
-      onSuccess(cloneHotspotResult(normalized));
+      finish(normalizeHotspotResult(res));
     })
     .withFailureHandler(function () {
-      if (!canHandle()) return;
-      if (typeof onFailure === 'function') onFailure();
+      finish(null);
     })
     .loadHotspots(request);
+}
+
+/** Prepare only lightweight scene metadata, with one background RPC across folder changes. */
+function startSceneMetadataPrefetchQueue(images) {
+  var generation = ++sceneMetadataPrefetchGeneration;
+  clearTimeout(sceneMetadataPrefetchTimer);
+  sceneMetadataPrefetchResume = null;
+  if (!sceneMetadataPrefetchEnabled || !isPublicViewingMode() || isEditMode) return;
+  var candidates = (images || []).filter(function (item) { return item && item.id && item.type !== 'folder'; }).slice(0, 20);
+  var next = 0;
+  sceneMetadataPrefetchResume = schedule;
+  function schedule() {
+    if (generation !== sceneMetadataPrefetchGeneration) return;
+    clearTimeout(sceneMetadataPrefetchTimer);
+    sceneMetadataPrefetchTimer = setTimeout(pump, 350);
+  }
+  function pump() {
+    if (generation !== sceneMetadataPrefetchGeneration || !sceneMetadataPrefetchEnabled || !isPublicViewingMode() || isEditMode) return;
+    var connection = navigator.connection;
+    if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
+    if (isSwitching || !sceneDisplayReady || document.hidden || sceneMetadataPrefetchActive) { schedule(); return; }
+    while (next < candidates.length) {
+      var index = next++, id = candidates[index].id;
+      if (id === currentFileId || (hotspotCacheByFileId[id] && hotspotCacheExpiresByFileId[id] > Date.now())) continue;
+      sceneMetadataPrefetchActive++;
+      var started = Date.now();
+      function finish(success) {
+        sceneMetadataPrefetchActive--;
+        if (generation === sceneMetadataPrefetchGeneration && scenePerformanceEnabled) {
+          console.info('[metadata-prefetch]', JSON.stringify({ index: index, success: success, duration: Date.now() - started }));
+        }
+        if (sceneMetadataPrefetchResume) sceneMetadataPrefetchResume();
+      }
+      loadHotspotsCached(id, function () { finish(true); }, function () { finish(false); }, id);
+      return;
+    }
+  }
+  schedule();
 }
 
 /**
@@ -7520,6 +7658,8 @@ function toggleMode(options) {
   setSceneReorderSaving(sceneReorderState.saving);
   syncDriveFolderButtons();
   syncSceneActionButtons();
+  if (isEditMode) clearHotspotCache();
+  startSceneMetadataPrefetchQueue(allImages);
   scheduleAppLayoutMetrics();
   revealActiveSceneCard();
 }

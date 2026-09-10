@@ -189,7 +189,7 @@ test('normalized settings merge preserves image URLs and updates current display
   const reload = getFunctionSource(app, 'reloadCurrentSceneAfterSettings');
   assert.match(apply, /mergeNormalizedSceneIntoImage\(/);
   assert.match(apply, /buildSceneSidebar\(allImages\)/);
-  assert.match(reload, /delete hotspotCacheByFileId\[/);
+  assert.match(reload, /clearHotspotCache\(fileId\)/);
   assert.match(reload, /viewer\.getYaw/);
   assert.match(reload, /viewer\.getPitch/);
   assert.match(reload, /previousType\s*===\s*'360'\s*&&\s*nextType\s*===\s*'360'/);
