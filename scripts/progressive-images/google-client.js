@@ -1,0 +1,29 @@
+(function(root) {
+  'use strict';
+  // Bounds of a rectilinear viewport on the sphere, including edge extrema.
+  function visibleTiles(yaw,pitch,hfov,vfov) {
+    if (![yaw,pitch,hfov,vfov].every(Number.isFinite)) return [];
+    pitch=Math.max(-90,Math.min(90,pitch));
+    if(hfov<=0 || vfov<=0 || hfov>=180 || vfov>=180)return [];
+    const h=Math.tan(hfov*Math.PI/360), v=Math.tan(vfov*Math.PI/360);
+    const sine=Math.sin(pitch*Math.PI/180), cosine=Math.cos(pitch*Math.PI/180), latitudes=[];
+    for(const u of [0,h]){
+      const vertical=[-v,v], extreme=cosine*(1+u*u)/sine;
+      if(Number.isFinite(extreme) && Math.abs(extreme)<=v)vertical.push(extreme);
+      for(const y of vertical)latitudes.push(Math.asin(Math.max(-1,Math.min(1,(sine+y*cosine)/Math.hypot(1,u,y))))*180/Math.PI);
+    }
+    const top=Math.min(90,Math.max(...latitudes)+.1), bottom=Math.max(-90,Math.min(...latitudes)-.1);
+    const nearestZ=cosine-v*Math.abs(sine);
+    const longitude=nearestZ<=0 ? 180 : Math.atan2(h,nearestZ)*180/Math.PI+.1;
+    const selected=[];
+    for(let y=0;y<4;y++) for(let x=0;x<8;x++) {
+      const latTop=90-y*45, latBottom=latTop-45, center=-180+(x+.5)*45;
+      const delta=Math.abs(((center-yaw+540)%360+360)%360-180);
+      if(latBottom<=top && latTop>=bottom && delta<=longitude+22.5) selected.push(y*8+x);
+    }
+    return selected;
+  }
+  const api={visibleTiles};
+  if(typeof module!=='undefined') module.exports=api;
+  else root.HemisphereProgressive=api;
+})(typeof window!=='undefined'?window:globalThis);

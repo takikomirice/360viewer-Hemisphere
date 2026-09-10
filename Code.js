@@ -3151,7 +3151,7 @@ function doGet(e) {
   const params = (e && e.parameter) || {};
   const mode = String(params.mode || '');
   const requestedEditKey = String(params.editKey || '');
-  const template = HtmlService.createTemplateFromFile('index');
+  const template = HtmlService.createTemplateFromFile(params.deliveryLab === '1' ? 'delivery-lab' : 'index');
 
   template.initialMode = mode === 'public' || mode === 'internal' || mode === 'edit' ? mode : '';
   template.editToken = '';
@@ -3668,6 +3668,90 @@ function readSceneThumbnail_(fileId, persist) {
 function getSceneThumbnail(fileId) {
   try { return readSceneThumbnail_(fileId, false); }
   catch (error) { return { success: false, error: 'サムネイルを取得できませんでした。' }; }
+}
+
+/** Read-only experimental derivatives. Revalidate scene scope and source revision on every RPC. */
+function getGooglePackContext_(fileId) {
+  const context = getReadableImageContext_(fileId);
+  const checksum = String(Drive.Files.get(context.fileId, { fields: 'md5Checksum' }).md5Checksum || '');
+  if (!/^[a-f0-9]{32}$/.test(checksum)) throw new Error('Unsupported source');
+  const cacheKey = 'google-pack-v1:' + (context.rootFolderId || '') + ':' + context.fileId + ':' + checksum;
+  let metadataCache = null;
+  try {
+    metadataCache = CacheService.getScriptCache();
+    const cached = metadataCache.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch (cacheError) { /* Cache is optional; authorization and revision checks above are never skipped. */ }
+  const root = getHotspotRootFolder_(false);
+  function uniqueFolder(parent, name) {
+    if (!parent) throw new Error('No pack');
+    const entries = parent.getFoldersByName(name);
+    if (!entries.hasNext()) throw new Error('No pack');
+    const folder = entries.next();
+    if (entries.hasNext()) throw new Error('Duplicate pack');
+    return folder;
+  }
+  const parent = uniqueFolder(root, 'progressive');
+  const folder = uniqueFolder(parent, 'google-v1-' + context.fileId + '-' + checksum);
+  const manifests = folder.getFilesByName('manifest.json');
+  if (!manifests.hasNext()) throw new Error('Incomplete pack');
+  const manifestFile = manifests.next();
+  if (manifests.hasNext() || manifestFile.getSize() > 20000) throw new Error('Invalid manifest');
+  const manifest = JSON.parse(manifestFile.getBlob().getDataAsString());
+  if (manifest.schemaVersion !== 1 || manifest.sceneId !== context.fileId || manifest.checksum !== checksum ||
+      !Number.isInteger(manifest.width) || manifest.width < 512 || manifest.width > 4096 || manifest.width % 8 ||
+      manifest.height !== manifest.width / 2 || manifest.columns !== 8 || manifest.rows !== 4) throw new Error('Invalid manifest');
+  const listing = Drive.Files.list({q: "'" + folder.getId() + "' in parents and trashed = false", pageSize:100,
+    fields:'nextPageToken,files(id,name,size,mimeType)'});
+  if (listing.nextPageToken) throw new Error('Oversized pack');
+  const result = { checksum:checksum, manifest:manifest, files:listing.files || [] };
+  try { if (metadataCache) metadataCache.put(cacheKey, JSON.stringify(result), 120); } catch (cacheError) { /* optional */ }
+  return result;
+}
+
+function getSceneProgressiveImage(fileId, kind) {
+  try {
+    if (kind !== 'preview' && kind !== 'full') throw new Error('Invalid kind');
+    const context = getGooglePackContext_(fileId);
+    const matches = context.files.filter(function(file) { return file.name === kind + '.jpg'; });
+    if (matches.length !== 1 || Number(matches[0].size) > 4000000 || matches[0].mimeType !== 'image/jpeg') throw new Error('Missing image');
+    const file = DriveApp.getFileById(matches[0].id);
+    return { success:true, checksum:context.checksum, width:context.manifest.width, height:context.manifest.height,
+      imageUrl:fileToDataUri_(file) };
+  } catch (error) { return { success:false, error:'比較用画像が未準備、変更済み、または取得できません。' }; }
+}
+
+function getSceneTileBatch(request) {
+  try {
+    const req = request || {};
+    if (!Array.isArray(req.tiles) || !req.tiles.length || req.tiles.length > 8 ||
+        req.tiles.some(function(index) { return !Number.isInteger(index) || index < 0 || index >= 32; })) throw new Error('Invalid tiles');
+    const context = getGooglePackContext_(req.fileId);
+    if (req.checksum !== context.checksum) throw new Error('Stale pack');
+    const indices = Array.from(new Set(req.tiles));
+    let total = 0;
+    const files = indices.map(function(index) {
+      const matches = context.files.filter(function(file) { return file.name === 'tile-' + index + '.jpg'; });
+      if (matches.length !== 1 || matches[0].mimeType !== 'image/jpeg' || !(Number(matches[0].size) > 0) || Number(matches[0].size) > 400000) throw new Error('Missing tile');
+      total += Number(matches[0].size);
+      return matches[0];
+    });
+    if (total > 2000000) throw new Error('Oversized batch');
+    const token = ScriptApp.getOAuthToken();
+    const responses = UrlFetchApp.fetchAll(files.map(function(file) {
+      return {url:'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(file.id) + '?alt=media',
+        headers:{Authorization:'Bearer ' + token}, followRedirects:false, muteHttpExceptions:true};
+    }));
+    const tiles = [], failed = [];
+    responses.forEach(function(response, i) {
+      if (response.getResponseCode() !== 200) { failed.push(indices[i]); return; }
+      const blob = response.getBlob(), bytes = blob.getBytes(), size = readJpegDimensions_(bytes);
+      if (bytes.length > 400000 || String(blob.getContentType()).split(';')[0] !== 'image/jpeg' || !size ||
+          size.width !== context.manifest.width / 8 || size.height !== context.manifest.height / 4) { failed.push(indices[i]); return; }
+      tiles.push({index:indices[i], imageUrl:'data:image/jpeg;base64,' + Utilities.base64Encode(bytes)});
+    });
+    return {success:true, tiles:tiles, failed:failed};
+  } catch (error) { return {success:false, error:'分割画像を取得できませんでした。'}; }
 }
 
 function prepareSceneThumbnail(payload) {

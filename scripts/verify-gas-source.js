@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const sourceFiles = ['appsscript.json', 'Code.js', 'index.html', 'styles.html', 'app.html'];
+const sourceFiles = ['appsscript.json', 'Code.js', 'index.html', 'styles.html', 'app.html', 'delivery-lab.html', 'progressive-client.html'];
 
 function normalize(source) {
   return source.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trimEnd();

@@ -46,7 +46,7 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
 ### ③ Add Apps Script to the Spreadsheet
 
 1. In the spreadsheet menu, click **"Extensions"** → **"Apps Script"**
-2. From the left panel, click **"+ New file"** and create these 5 files: `Code.js`, `index.html`, `styles.html`, `app.html`, `appsscript.json`
+2. From the left panel, click **"+ New file"** and create these 7 files: `Code.js`, `index.html`, `styles.html`, `app.html`, `appsscript.json`, `delivery-lab.html`, `progressive-client.html` (the last two provide the delivery comparison lab).
 3. Paste each repository file into its matching Apps Script file. Because this is a multi-file project, using [clasp](#local-development-clasp) below is normally recommended
    - **Note**: The audio editor UI is integrated into `index.html`, its CSS into `styles.html`, and the pinned vendor code, audio editor, and 360Viewer client into `app.html` in dependency order. All three HTML files are required
 4. (Optional) For bulk input sheet integration, run **"設定"** → **"一括入力用スプシを作成"** in the spreadsheet menu. This creates and links the official input sheet.
@@ -101,7 +101,7 @@ The scene list uses photo cards with centered white names on a translucent botto
 
 After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
 
-In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. Multiresolution tile delivery remains experimental and still requires a delivery destination; see the [integration notes](docs/scene-sidebar-integration.md).
+In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains its existing delivery behavior. See the [setup and measurement notes](docs/google-progressive-delivery.md).
 
 ### View Mode (for students)
 
