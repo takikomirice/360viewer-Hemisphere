@@ -3614,6 +3614,69 @@ function getReadableImageContext_(fileId) {
  * @param {string} [mode] 'public' の場合は Base64 Data URI を返す。それ以外は lh3 直リンクを返す。
  * @returns {{ success: boolean, imageUrl?: string, error?: string }}
  */
+/** Derived images stay under the existing private attachment root. Callers hold the write lock. */
+function getSceneThumbnailFolder_(createIfMissing) {
+  const root = getHotspotRootFolder_(false);
+  if (!root) return null;
+  const folders = root.getFoldersByName('thumbnail');
+  if (!folders.hasNext()) return createIfMissing ? root.createFolder('thumbnail') : null;
+  const folder = folders.next();
+  if (folders.hasNext()) throw new Error('サムネイルフォルダが重複しています。');
+  return folder;
+}
+
+/** Authorize every read, including cache hits. Never return a signed Drive URL. */
+function readSceneThumbnail_(fileId, persist) {
+  const context = getReadableImageContext_(fileId);
+  const metadata = Drive.Files.get(context.fileId, { fields: 'md5Checksum,thumbnailLink' });
+  const checksum = String(metadata.md5Checksum || '');
+  const name = 'scene-v1-' + context.fileId + '-' + checksum + '.jpg';
+  const reusable = /^[a-f0-9]{32}$/i.test(checksum);
+  let folder = getSceneThumbnailFolder_(false);
+  if (folder && reusable) {
+    const files = folder.getFilesByName(name);
+    if (files.hasNext()) {
+      const file = files.next();
+      if (file.getSize() <= 100000) return { success: true, imageUrl: fileToDataUri_(file) };
+    }
+  }
+  const link = String(metadata.thumbnailLink || '');
+  if (!/^https:\/\/lh[0-9]+\.googleusercontent\.com\//.test(link) || !/=s\d+$/.test(link)) {
+    throw new Error('サムネイルを利用できません。');
+  }
+  const response = UrlFetchApp.fetch(link.replace(/=s\d+$/, '=w320'), {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    followRedirects: false, muteHttpExceptions: true
+  });
+  if (response.getResponseCode() !== 200) throw new Error('サムネイル取得失敗');
+  const blob = response.getBlob();
+  const bytes = blob.getBytes();
+  const dimensions = readJpegDimensions_(bytes);
+  if (String(blob.getContentType()).split(';')[0] !== 'image/jpeg' || bytes.length > 100000 ||
+      !dimensions || dimensions.width > 640 || dimensions.height > 640) throw new Error('サムネイル形式不正');
+  if (persist && reusable) {
+    const lock = acquireLock_();
+    try {
+      folder = getSceneThumbnailFolder_(true);
+      // Another editor may have completed the same generation while we fetched it.
+      if (folder && !folder.getFilesByName(name).hasNext()) folder.createFile(blob.setName(name));
+    } finally { lock.releaseLock(); }
+  }
+  return { success: true, imageUrl: 'data:image/jpeg;base64,' + Utilities.base64Encode(bytes) };
+}
+
+function getSceneThumbnail(fileId) {
+  try { return readSceneThumbnail_(fileId, false); }
+  catch (error) { return { success: false, error: 'サムネイルを取得できませんでした。' }; }
+}
+
+function prepareSceneThumbnail(payload) {
+  try {
+    assertEditToken_(payload);
+    return readSceneThumbnail_(payload.fileId, true);
+  } catch (error) { return { success: false, error: 'サムネイルを準備できませんでした。' }; }
+}
+
 function getImageDataUri(fileId, mode, quality) {
   try {
     const context = getReadableImageContext_(fileId);

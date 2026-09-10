@@ -123,19 +123,19 @@ test('delivery=base64 uses Base64 before starting the viewer', () => {
   const loadSceneBody = getFunctionBody(app, 'loadScene');
   const fallbackBody = getFunctionBody(app, 'fallbackToBase64');
 
-  assert.match(loadSceneBody, /if \(deliveryMode === 'base64'\)/);
+  assert.match(loadSceneBody, /if \(sceneDeliveryMode === 'base64'\)/);
   assert.match(loadSceneBody, /base64Preparation\s*=\s*startBase64ImagePreparation\(imgData\.id/);
   assert.match(loadSceneBody, /Promise\.all\(\[hotspotPreparation,\s*base64Preparation\]\)/);
   assert.match(loadSceneBody, /displayPreparedImage\(prepared\[1\]\.imageUrl,\s*prepared\[0\],\s*'base64'/);
   assert.match(fallbackBody, /\.getImageDataUri\(fileId, 'public', requestedQuality\)/);
 });
 
-test('delivery=auto starts with direct URL and uses Base64 only from fallback', () => {
+test('uncached delivery=auto starts with direct URL and recovers through Base64', () => {
   const app = readApp();
   const loadSceneBody = getFunctionBody(app, 'loadScene');
   const fallbackBody = getFunctionBody(app, 'fallbackToBase64');
 
-  assert.match(loadSceneBody, /deliveryMode === 'auto'/);
+  assert.match(loadSceneBody, /sceneDeliveryMode === 'auto'/);
   assert.match(loadSceneBody, /directImagePreparation\s*=\s*preloadSceneImage\(/);
   assert.match(loadSceneBody, /Promise\.all\(\[hotspotPreparation,\s*directImagePreparation\]\)/);
   assert.match(loadSceneBody, /Promise\.all\(\[hotspotPreparation,\s*directImagePreparation\]\)[\s\S]{0,500}?prepared\[1\]\.status/);

@@ -129,7 +129,7 @@ test('delivery auto uses one scene-start fallback deadline without changing fixe
   assert.match(controllerBody, /autoFallbackDeadline/);
   assert.match(controllerBody, /autoFallbackStart/);
   assert.match(controllerBody, /directDisplayStart/);
-  assert.match(loadSceneBody, /deliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
+  assert.match(loadSceneBody, /sceneDeliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
   assert.match(singleBody, /deliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
   assert.doesNotMatch(loadSceneBody, /function startAutoFallbackTimer\(/);
   assert.doesNotMatch(singleBody, /function startSingleImageAutoFallbackTimer\(/);

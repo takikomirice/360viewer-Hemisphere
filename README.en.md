@@ -95,6 +95,14 @@ Run **"設定"** → **"編集用URLを生成・更新"** to generate the edit U
 
 ## Usage
 
+### Scene thumbnails and sidebar width
+
+The scene list displays thumbnails and names. On desktop, drag its right edge or focus the divider and use the arrow keys to resize it; the width is saved in this browser. Mobile retains the bottom scene list.
+
+After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
+
+In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. Multiresolution tile delivery remains experimental and still requires a delivery destination; see the [integration notes](docs/scene-sidebar-integration.md).
+
 ### View Mode (for students)
 
 - Drag to navigate the 360° view (2D flat maps support scroll and zoom)

@@ -1015,6 +1015,16 @@ var loadPollInterval = null;  // Pannellum loadイベントのポーリングイ
 var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
 var hotspotFolderOpenPending = false; // 共通Hotspotフォルダ取得APIの応答待ちかどうか
 var sidebarCollapsed = false; // サイドバー折りたたみ状態
+var sceneSidebarPreferredWidth = 280;
+var sceneSidebarResizeInitialized = false;
+var sceneThumbnailGeneration = 0;
+var sceneThumbnailTimer = null;
+var sceneThumbnailCache = new Map();
+var sceneThumbnailActive = 0;
+var sceneThumbnailResume = null;
+var scenePrefetchTimer = null;
+var scenePrefetchActive = false;
+var scenePrefetchGeneration = 0;
 var sceneContextTargetId = null; // 右クリック対象のシーンID
 var sceneContextReturnFocus = null;
 var sceneSettingsTargetId = null; // 設定モーダル対象のシーンID
@@ -2639,6 +2649,108 @@ function onConfigLoaded(config) {
  *
  * @param {Array} images  {id, name, imageUrl} の配列
  */
+function normalizeSceneSidebarWidth(value, viewportWidth) {
+  var width = Number(value);
+  if (!isFinite(width)) width = 280;
+  return Math.round(Math.max(200, Math.min(480, Math.floor(viewportWidth / 2), width)));
+}
+
+function applySceneSidebarWidth(value, persist) {
+  var width = normalizeSceneSidebarWidth(value, window.innerWidth);
+  document.documentElement.style.setProperty('--scene-sidebar-width', width + 'px');
+  var handle = document.getElementById('scene-sidebar-resize');
+  if (handle) {
+    handle.setAttribute('aria-valuenow', String(width));
+    handle.setAttribute('aria-valuemax', String(Math.min(480, Math.floor(window.innerWidth / 2))));
+  }
+  if (persist) {
+    sceneSidebarPreferredWidth = width;
+    try { localStorage.setItem('hemisphere.sceneSidebarWidth', String(width)); } catch (error) { /* Storage can be disabled. */ }
+  }
+  if (viewer && typeof viewer.resize === 'function') viewer.resize();
+}
+
+function initSceneSidebarResize() {
+  if (sceneSidebarResizeInitialized) return;
+  var handle = document.getElementById('scene-sidebar-resize');
+  if (!handle) return;
+  sceneSidebarResizeInitialized = true;
+  try {
+    var saved = localStorage.getItem('hemisphere.sceneSidebarWidth');
+    if (saved !== null && isFinite(Number(saved))) sceneSidebarPreferredWidth = Number(saved);
+  } catch (error) { /* Keep the default width. */ }
+  applySceneSidebarWidth(sceneSidebarPreferredWidth, false);
+  handle.addEventListener('pointerdown', function (event) {
+    if (event.button !== 0 || window.innerWidth <= 600) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', function (event) {
+    if (handle.hasPointerCapture(event.pointerId)) applySceneSidebarWidth(event.clientX, false);
+  });
+  handle.addEventListener('pointerup', function (event) {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId);
+    applySceneSidebarWidth(event.clientX, true);
+  });
+  handle.addEventListener('keydown', function (event) {
+    var width = Number(handle.getAttribute('aria-valuenow'));
+    if (event.key === 'ArrowLeft') width -= 10;
+    else if (event.key === 'ArrowRight') width += 10;
+    else if (event.key === 'Home') width = 200;
+    else if (event.key === 'End') width = 480;
+    else return;
+    event.preventDefault();
+    applySceneSidebarWidth(width, true);
+  });
+  window.addEventListener('resize', function () { applySceneSidebarWidth(sceneSidebarPreferredWidth, false); });
+}
+
+/** At most two background RPCs; scene changes pause new work and folder changes invalidate callbacks. */
+function startSceneThumbnailQueue() {
+  var generation = ++sceneThumbnailGeneration;
+  clearTimeout(sceneThumbnailTimer);
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.scene-thumbnail'));
+  var next = 0;
+  sceneThumbnailResume = pump;
+  function pump() {
+    if (generation !== sceneThumbnailGeneration) return;
+    clearTimeout(sceneThumbnailTimer);
+    if (isSwitching || !sceneDisplayReady || scenePrefetchActive) {
+      sceneThumbnailTimer = setTimeout(pump, 250);
+      return;
+    }
+    while (sceneThumbnailActive < 2 && next < nodes.length) start(nodes[next++]);
+  }
+  function start(node) {
+    var key = node.dataset.fileId;
+    var cached = sceneThumbnailCache.get(key);
+    if (cached) { node.src = cached; node.classList.add('loaded'); return; }
+    sceneThumbnailActive++;
+    var settled = false;
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      sceneThumbnailActive--;
+      if (generation !== sceneThumbnailGeneration) {
+        if (sceneThumbnailResume) sceneThumbnailResume();
+        return;
+      }
+      if (node.isConnected && result && result.success && /^data:image\/jpeg;base64,/.test(result.imageUrl || '')) {
+        sceneThumbnailCache.set(key, result.imageUrl);
+        while (sceneThumbnailCache.size > 100) sceneThumbnailCache.delete(sceneThumbnailCache.keys().next().value);
+        node.src = result.imageUrl;
+        node.classList.add('loaded');
+      }
+      pump();
+    }
+    var request = google.script.run.withSuccessHandler(finish).withFailureHandler(function () { finish(null); });
+    if (canEdit) request.prepareSceneThumbnail(withEditToken({ fileId: key }));
+    else request.getSceneThumbnail(key);
+  }
+  sceneThumbnailTimer = setTimeout(pump, 350);
+}
+
 function buildSceneSidebar(images) {
   var sidebar  = document.getElementById('scene-sidebar');
   var list     = document.getElementById('scene-list');
@@ -2697,6 +2809,14 @@ function buildSceneSidebar(images) {
         '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' +
         '</svg>' +
         '<button type="button" class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</button>';
+      var thumbnail = document.createElement('img');
+      thumbnail.className = 'scene-thumbnail';
+      thumbnail.alt = '';
+      thumbnail.draggable = false;
+      thumbnail.decoding = 'async';
+      thumbnail.dataset.fileId = img.id;
+      var sceneIcon = item.querySelector(':scope > svg');
+      if (sceneIcon) sceneIcon.replaceWith(thumbnail);
       if (canEdit) {
         var menuButton = document.createElement('button');
         menuButton.type = 'button';
@@ -2733,6 +2853,10 @@ function buildSceneSidebar(images) {
         loadScene(img);
         setMobileSceneSheetExpanded(false);
       });
+      item.addEventListener('mouseenter', function () { scheduleSceneImagePrefetch(img.id); });
+      item.addEventListener('focusin', function () { scheduleSceneImagePrefetch(img.id); });
+      item.addEventListener('mouseleave', function () { clearTimeout(scenePrefetchTimer); });
+      item.addEventListener('focusout', function () { clearTimeout(scenePrefetchTimer); });
       item.addEventListener('contextmenu', function (evt) {
         if (shouldSuppressSceneItemInteraction()) {
           evt.preventDefault();
@@ -2752,6 +2876,8 @@ function buildSceneSidebar(images) {
   setSceneReorderSaving(sceneReorderState.saving);
 
   sidebar.classList.remove('hidden');
+  initSceneSidebarResize();
+  startSceneThumbnailQueue();
   panorama.classList.add('with-sidebar');
   document.getElementById('flat-map-container').classList.add('with-sidebar');
   if (isPublicViewingMode() && isSmallViewport()) {
@@ -4206,9 +4332,35 @@ function loadBase64ImageForScene(fileId, onSuccess, onFailure) {
   fallbackToBase64(fileId, function (imageUrl) { finish(imageUrl, null); }, function (error) { finish(null, error); });
 }
 
+function getSceneDeliveryMode(fileId) {
+  if (deliveryMode !== 'auto') return deliveryMode;
+  var key = String(fileId || '') + ':' + imageQualityMode;
+  var cached = base64ImageCache.get(key);
+  return (cached && cached.expiresAt > Date.now()) || base64ImageRequests.has(key) ? 'base64' : 'auto';
+}
+
+function scheduleSceneImagePrefetch(fileId) {
+  clearTimeout(scenePrefetchTimer);
+  var generation = ++scenePrefetchGeneration;
+  scenePrefetchTimer = setTimeout(function () {
+    if (generation !== scenePrefetchGeneration || scenePrefetchActive || isSwitching ||
+        !fileId || fileId === currentFileId || deliveryMode === 'direct' || imageQualityMode !== 'fast') return;
+    var connection = navigator.connection;
+    if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
+    scenePrefetchActive = true;
+    var pending = isPublicViewingMode() && !isEditMode ? 2 : 1;
+    function finish() { if (--pending === 0) scenePrefetchActive = false; }
+    if (pending === 2) loadHotspotsCached(fileId, finish, finish, fileId);
+    loadBase64ImageForScene(fileId, finish, finish);
+  }, 180);
+}
+
 function clearBase64ImageCache() {
   base64ImageCache.clear();
   base64ImageRequests.clear();
+  sceneThumbnailCache.clear();
+  scenePrefetchGeneration++;
+  clearTimeout(scenePrefetchTimer);
 }
 
 function getHotspotCacheKey(fileId) {
@@ -4244,6 +4396,7 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
   var canHandle = typeof shouldHandle === 'function' ? shouldHandle : function () { return true; };
   var cacheKey = getHotspotCacheKey(northFileId || hotspotFileId);
   var useCache = isPublicViewingMode() && !isEditMode;
+  var cacheTarget = hotspotCacheByFileId;
   if (useCache && hotspotCacheByFileId[cacheKey]) {
     setTimeout(function () {
       if (!canHandle()) return;
@@ -4260,7 +4413,7 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
     .withSuccessHandler(function (res) {
       if (!canHandle()) return;
       var normalized = normalizeHotspotResult(res);
-      if (useCache) hotspotCacheByFileId[cacheKey] = cloneHotspotResult(normalized);
+      if (useCache && cacheTarget === hotspotCacheByFileId && !isEditMode) hotspotCacheByFileId[cacheKey] = cloneHotspotResult(normalized);
       onSuccess(cloneHotspotResult(normalized));
     })
     .withFailureHandler(function () {
@@ -4302,6 +4455,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     return false;
   }
   var sceneStartedAt = scenePerformanceNow_();
+  var sceneDeliveryMode = getSceneDeliveryMode(imgData.id);
   closeQuizModal({ restoreFocus: false });
   closePhotoLightbox({ restoreFocus: false });
   stopGyroIfActive('load-scene');
@@ -4331,7 +4485,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
                        !_tSidebar.classList.contains('hidden') &&
                        !sidebarCollapsed &&
                        window.innerWidth > 600;
-    _transOverlay.style.left = _tHasSidebar ? '200px' : '0';
+    _transOverlay.style.left = _tHasSidebar ? 'var(--scene-sidebar-width)' : '0';
     _transOverlay.classList.add('active');
   }
 
@@ -4367,7 +4521,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   var directImageUrl = getDirectImageUrl(imgData);
   var autoFallbackController = null;
   var pannellumSession = null;
-  if (deliveryMode === 'auto') {
+  if (sceneDeliveryMode === 'auto') {
     autoFallbackController = createAutoFallbackController(
       isCurrentLoad,
       performanceRecord,
@@ -4378,7 +4532,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   var hotspotPreparation = startHotspotPreparation(imgData.id, imgData.id, isCurrentLoad, performanceRecord);
   var directImagePreparation = null;
   var base64Preparation = null;
-  if (deliveryMode === 'base64') {
+  if (sceneDeliveryMode === 'base64') {
     base64Preparation = startBase64ImagePreparation(imgData.id, isCurrentLoad, performanceRecord);
   } else {
     directImagePreparation = preloadSceneImage(
@@ -4426,7 +4580,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'error');
     clearSceneTransitionOverlay();
-    showLoadError(message, deliveryMode === 'direct' ? function () {
+    showLoadError(message, sceneDeliveryMode === 'direct' ? function () {
       deliveryMode = 'base64';
       loadScene(imgData, preferredYaw, preferredPitch);
     } : null);
@@ -4567,7 +4721,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     );
   }
 
-  if (deliveryMode === 'base64') {
+  if (sceneDeliveryMode === 'base64') {
     Promise.all([hotspotPreparation, base64Preparation]).then(function (prepared) {
       if (!isCurrentLoad()) return;
       if (prepared[1].status !== 'loaded') {
@@ -4612,7 +4766,7 @@ function showSceneLoading() {
                    !sidebar.classList.contains('hidden') &&
                    !sidebarCollapsed &&
                    window.innerWidth > 600;
-  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.style.left = hasSidebar ? 'var(--scene-sidebar-width)' : '0';
   loading.innerHTML = '<div class="loading-ring"></div><p>読み込んでいます...</p>';
   loading.classList.remove('hidden');
 }
@@ -4625,7 +4779,7 @@ function showSceneEmptyState(message) {
                    !sidebar.classList.contains('hidden') &&
                    !sidebarCollapsed &&
                    window.innerWidth > 600;
-  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.style.left = hasSidebar ? 'var(--scene-sidebar-width)' : '0';
   loading.innerHTML =
     '<p style="font-size:14px;color:#71717A;text-align:center;padding:0 20px">' +
     escapeHtml(message || 'シーン一覧から写真を選択してください。') +

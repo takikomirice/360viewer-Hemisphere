@@ -28,7 +28,8 @@
       --app-viewport-base: 100vh;
       --app-toolbar-height: calc(60px + var(--app-safe-top));
       --app-edit-banner-height: 40px;
-      --app-scene-strip-height: calc(80px + var(--app-safe-bottom));
+      --app-scene-strip-height: calc(96px + var(--app-safe-bottom));
+      --scene-sidebar-width: 280px;
       --app-public-sheet-height: calc(56px + var(--app-safe-bottom));
       --app-public-sheet-expanded-height: min(56vh, 360px);
       --theme-background: #FFFFFF;
@@ -1696,7 +1697,7 @@
     #scene-sidebar {
       position: absolute;
       top: var(--app-top-offset); left: 0;
-      width: 200px;
+      width: var(--scene-sidebar-width);
       height: var(--app-viewport-height);
       background: rgba(255,255,255,0.93);
       border-right: 1px solid #E4E4E7;
@@ -1709,7 +1710,7 @@
     }
     #scene-sidebar.hidden { display: none; }
     #scene-sidebar.collapsed {
-      transform: translateX(-200px);
+      transform: translateX(calc(-1 * var(--scene-sidebar-width)));
       pointer-events: none;
     }
 
@@ -1808,6 +1809,31 @@
       white-space: nowrap;
     }
     .scene-item:hover { background: #F4F4F5; }
+    .scene-thumbnail {
+      flex: 0 0 72px;
+      width: 72px;
+      height: 44px;
+      object-fit: cover;
+      border-radius: 5px;
+      background: #E4E4E7;
+      color: transparent;
+    }
+    .scene-thumbnail:not(.loaded) { visibility: hidden; }
+    #scene-sidebar-resize {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 8px;
+      cursor: col-resize;
+      touch-action: none;
+      z-index: 2;
+    }
+    #scene-sidebar-resize:hover, #scene-sidebar-resize:focus-visible {
+      background: rgba(45,123,170,.3);
+      outline: 2px solid #2d7baa;
+      outline-offset: -2px;
+    }
     button.scene-item-name {
       flex: 1;
       min-width: 0;
@@ -1819,6 +1845,8 @@
       font: inherit;
       text-align: left;
       cursor: pointer;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .scene-menu-button {
       flex: 0 0 28px;
@@ -2220,8 +2248,8 @@
 
     /* サイドバーが表示されているときにPannellumを右にずらす */
     #panorama.with-sidebar {
-      left: 200px;
-      width: calc(100% - 200px);
+      left: var(--scene-sidebar-width);
+      width: calc(100% - var(--scene-sidebar-width));
     }
 
     /* =============================================
@@ -2379,6 +2407,8 @@
 
     /* 幅が狭い場合はサイドバーを下部に切り替える（600px以下） */
     @media (max-width: 600px) {
+      #scene-sidebar-resize { display: none; }
+      .scene-thumbnail { width: 56px; height: 32px; flex: 0 0 32px; }
       #scene-sidebar {
         top: auto;
         bottom: 0;
@@ -2561,8 +2591,8 @@
       z-index: 1;
     }
     #flat-map-container.with-sidebar {
-      left: 200px;
-      width: calc(100% - 200px);
+      left: var(--scene-sidebar-width);
+      width: calc(100% - var(--scene-sidebar-width));
     }
     @media (max-width: 600px) {
       #flat-map-container.with-sidebar {
