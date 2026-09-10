@@ -307,7 +307,7 @@ function browserHarnessBootstrap(options) {
               call.completedAt = performance.now();
               call.outcome = outcome;
               if (outcome === 'failure') {
-                if (typeof failureHandler === 'function') failureHandler(new Error('fixture transport failure'));
+                if (typeof failureHandler === 'function') failureHandler(new Error(behavior.message || 'fixture transport failure'));
                 return;
               }
               if (outcome === 'error') {

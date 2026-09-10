@@ -330,7 +330,7 @@ test('audio vendor loader is an authenticated retryable singleton with exact run
 
   const loader = app.slice(loaderStart, openStart);
   assert.match(app, /var audioVendorBundlePromise\s*=\s*null\s*;/);
-  assert.match(loader, /\.getAudioVendorBundle\(withEditToken\(\{\}\)\)/);
+  assert.match(loader, /runHotspotEditRequest\('getAudioVendorBundle', \{\}\)/);
   assert.match(loader, /result\.version\s*!==\s*['"]1\.50\.8['"]/);
   assert.match(loader, /typeof result\.source\s*!==\s*['"]string['"]/);
   assert.match(loader, /result\.source\.trim\(\)/);

@@ -194,10 +194,25 @@ function assertEditToken_(payload) {
 }
 
 /**
- * 編集URLに使う共有キーを生成する。
+ * 元の編集URLを再認証し、失効・キャッシュ退避済みの一時トークンを再発行する。
+ * doGetと同じ共有キー検証を行い、公開・internalモードでは発行しない。
  *
- * @returns {string}
+ * @returns {{editToken: string}}
  */
+function refreshEditToken(payload) {
+  const params = payload && typeof payload === 'object' ? payload : {};
+  const requestedKey = String(params.editKey || '');
+  if (params.mode !== 'edit' || !requestedKey || getAcceptedEditKeys_().indexOf(requestedKey) === -1) {
+    throw new Error('編集権限を更新できません。configの最新の編集URLを確認してください。');
+  }
+  const token = Utilities.getUuid();
+  CacheService.getScriptCache().put(
+    getEditTokenCacheKey_(token), getEditTokenCacheValue_(requestedKey), EDIT_TOKEN_TTL_SECONDS
+  );
+  return { editToken: token };
+}
+
+/** 編集URLに使う共有キーを生成する。 */
 function generateEditKey_() {
   let uuid = '';
   try {

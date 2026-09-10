@@ -980,6 +980,7 @@ var viewer          = null;   // Pannellumビューアインスタンス
 var isEditMode      = false;  // 現在編集モードかどうか
 var appMode         = String((document.body && document.body.getAttribute('data-app-mode')) || ''); // URLパラメータ: 'public' | 'internal' | ''
 var editToken       = String(window.__EDIT_TOKEN__ || '');
+var editTokenRefreshPromise = null;
 var canEdit         = !!editToken;
 var deliveryMode    = 'auto'; // 画像配信方式: 'direct' | 'auto' | 'base64'
 var initialSceneId  = '';     // URLパラメータ scene の初期表示シーンID
@@ -1308,6 +1309,71 @@ function withEditToken(payload) {
   }
   next.__editToken = editToken;
   return next;
+}
+
+function isExpiredEditTokenError(error) {
+  return String(error && error.message || error || '').indexOf(
+    '編集権限が確認できません。通常の編集画面を開き直してください。'
+  ) !== -1;
+}
+
+function refreshHotspotEditToken() {
+  if (editTokenRefreshPromise) return editTokenRefreshPromise;
+  var request = new Promise(function (resolve, reject) {
+    if (!canEdit || !google.script.url || typeof google.script.url.getLocation !== 'function') {
+      reject(new Error('編集権限を更新できません。configの最新の編集URLを確認してください。'));
+      return;
+    }
+    // GAS iframeのURLではなく、現在開いている編集URLから取得する。キーは保存しない。
+    google.script.url.getLocation(function (location) {
+      var params = location && location.parameter || {};
+      if (params.mode !== 'edit' || !params.editKey) {
+        reject(new Error('編集権限を更新できません。configの最新の編集URLを確認してください。'));
+        return;
+      }
+      google.script.run.withSuccessHandler(function (result) {
+        if (!result || typeof result.editToken !== 'string' || !result.editToken) {
+          reject(new Error('編集権限を更新できませんでした。もう一度お試しください。'));
+          return;
+        }
+        editToken = result.editToken;
+        resolve();
+      }).withFailureHandler(reject).refreshEditToken({ mode: params.mode, editKey: params.editKey });
+    });
+  });
+  editTokenRefreshPromise = request.then(function () {
+    editTokenRefreshPromise = null;
+  }, function (error) {
+    editTokenRefreshPromise = null;
+    throw error;
+  });
+  return editTokenRefreshPromise;
+}
+
+function runHotspotEditRequest(method, payload, extraArgs, canRetry) {
+  function send() {
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      runner[method].apply(runner, [withEditToken(payload)].concat(extraArgs || []));
+    });
+  }
+  var requestToken = editToken;
+  return send().catch(function (error) {
+    // この拒否は対象APIの副作用より前に発生する。通信エラーや部分成功は再送しない。
+    if (!isExpiredEditTokenError(error) || !canEdit || (canRetry && !canRetry())) throw error;
+    var renewed = editToken !== requestToken ? Promise.resolve() : refreshHotspotEditToken();
+    return renewed.then(function () {
+      if (canRetry && !canRetry()) throw error;
+      return send();
+    });
+  });
+}
+
+function getHotspotEditFailureMessage(error) {
+  var message = String(error && error.message || error || '');
+  return /編集権限/.test(message)
+    ? '編集権限を確認できませんでした。入力内容は保持しています。configの最新の編集URLを確認してください。'
+    : '通信エラーが発生しました。入力内容は保持しています。再度お試しください。';
 }
 
 function normalizeDeliveryMode(value) {
@@ -8015,8 +8081,10 @@ function onSaveClick() {
 
   if (targetArgs) {
     // ── 更新処理 ──────────────────────────────────────
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('updateHotspot', saveData, [targetArgs.id], function () {
+      return isCurrentHotspotMutationRequest(mutationRequest) && isHotspotFormSessionActive() &&
+        hotspotSaveUiRequestId === mutationRequest.id;
+    }).then(function (result) {
         finishHotspotMutationRequest(mutationRequest);
         if (result && result.success) clearHotspotCache(mutationRequest.fileId);
         var ownsSaveUi = resetHotspotSaveUi(mutationRequest, '更新する');
@@ -8043,19 +8111,19 @@ function onSaveClick() {
             'error'
           );
         }
-      })
-      .withFailureHandler(function () {
+      }, function (error) {
         finishHotspotMutationRequest(mutationRequest);
         resetHotspotSaveUi(mutationRequest, '更新する');
         if (!isCurrentHotspotMutationRequest(mutationRequest)) return;
-        showToast('通信エラーが発生しました。再度お試しください。', 'error');
-      })
-      .updateHotspot(withEditToken(saveData), targetArgs.id);
+        showToast(getHotspotEditFailureMessage(error), 'error');
+      });
 
   } else {
     // ── 新規保存処理 ───────────────────────────────────
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('saveHotspot', saveData, [], function () {
+      return isCurrentHotspotMutationRequest(mutationRequest) && isHotspotFormSessionActive() &&
+        hotspotSaveUiRequestId === mutationRequest.id;
+    }).then(function (result) {
         finishHotspotMutationRequest(mutationRequest);
         if (result && result.success) clearHotspotCache(mutationRequest.fileId);
         var ownsSaveUi = resetHotspotSaveUi(mutationRequest, '保存する');
@@ -8083,14 +8151,12 @@ function onSaveClick() {
             'error'
           );
         }
-      })
-      .withFailureHandler(function () {
+      }, function (error) {
         finishHotspotMutationRequest(mutationRequest);
         resetHotspotSaveUi(mutationRequest, '保存する');
         if (!isCurrentHotspotMutationRequest(mutationRequest)) return;
-        showToast('通信エラーが発生しました。再度お試しください。', 'error');
-      })
-      .saveHotspot(withEditToken(saveData));
+        showToast(getHotspotEditFailureMessage(error), 'error');
+      });
   }
 }
 
@@ -8869,8 +8935,8 @@ function loadAudioVendorBundle() {
   if (audioVendorBundlePromise) return audioVendorBundlePromise;
 
   var request = new Promise(function (resolve, reject) {
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('getAudioVendorBundle', {})
+      .then(function (result) {
         try {
           if (!result || result.version !== '1.50.8') {
             throw new Error('Audio vendor version mismatch.');
@@ -8888,11 +8954,9 @@ function loadAudioVendorBundle() {
         } catch (error) {
           reject(error);
         }
-      })
-      .withFailureHandler(function (error) {
-        reject(error instanceof Error ? error : new Error(String(error || 'Audio vendor request failed.')));
-      })
-      .getAudioVendorBundle(withEditToken({}));
+      }, function (error) {
+        reject(error instanceof Error ? error : new Error(String(error && error.message || error || 'Audio vendor request failed.')));
+      });
   });
 
   audioVendorBundlePromise = request.catch(function (error) {
@@ -8990,13 +9054,15 @@ function openHotspotAudioEditor(trigger, selectedFile) {
       editorSetupStarted = true;
       return showHotspotAudioEditor(trigger, selectedFile);
     })
-    .catch(function () {
+    .catch(function (error) {
       var releasedOpeningAttempt = releaseOpeningAttempt();
       if ((releasedOpeningAttempt || editorSetupStarted) &&
           generation === state.generation && isHotspotFormSessionActive() &&
           currentPopupMode === 'info' &&
           String(hotspotFormSessionState.startSceneId || '') === formSceneId) {
-        setHotspotAudioError('音声エディターを準備できませんでした。もう一度お試しください。');
+        setHotspotAudioError(/編集権限/.test(String(error && error.message || error || ''))
+          ? getHotspotEditFailureMessage(error)
+          : '音声エディターを準備できませんでした。もう一度お試しください。');
         if (trigger && trigger.isConnected) {
           setTimeout(function () { try { trigger.focus(); } catch (error) {} }, 0);
         }

@@ -401,6 +401,8 @@ The config-sheet `EDIT_KEY` is authoritative for URL generation and normal authe
 
 Regenerating `EDIT_KEY` immediately invalidates both old edit URLs and temporary edit tokens already issued from the previous key.
 
+When a temporary token expires, hotspot saves, updates, and audio-editor loading revalidate the original edit URL and retry once while preserving pending photos and audio. A changed or revoked edit key still requires the latest `EDIT_URL` from config. Network failures and partial saves are not automatically retried.
+
 ### scenes sheet (per-image settings)
 
 | Column | Content |

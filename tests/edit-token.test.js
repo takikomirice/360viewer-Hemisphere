@@ -280,6 +280,31 @@ function getFunctionBody(source, functionName) {
   throw new Error(`Could not parse ${functionName}`);
 }
 
+test('refreshEditToken renews an evicted token only with a currently accepted edit URL', () => {
+  const context = loadCode({}, {}, { EDIT_KEY: 'current-key' });
+  const result = context.refreshEditToken({ mode: 'edit', editKey: 'current-key' });
+  assert.ok(result.editToken);
+  assert.doesNotThrow(() => context.assertEditToken_({ __editToken: result.editToken }));
+  assert.equal(context.__cachePuts[0].ttlSeconds, 21600);
+  context.__configSheet.__rows.find(row => row[0] === 'EDIT_KEY')[1] = 'rotated-key';
+  assert.throws(() => context.assertEditToken_({ __editToken: result.editToken }));
+  assert.throws(() => context.refreshEditToken({ mode: 'edit', editKey: 'current-key' }));
+});
+
+test('refreshEditToken rejects missing keys, revoked keys, and non-edit views without issuing tokens', () => {
+  for (const payload of [null, {}, { mode: 'edit' }, { mode: 'edit', editKey: 'wrong' },
+    { mode: 'public', editKey: 'current-key' }, { mode: 'internal', editKey: 'current-key' }]) {
+    const context = loadCode({}, {}, { EDIT_KEY: 'current-key' });
+    assert.throws(() => context.refreshEditToken(payload));
+    assert.equal(context.__cachePuts.length, 0);
+  }
+  const context = loadCode({}, { EDIT_KEY: 'legacy-key' }, { EDIT_KEY: 'current-key' });
+  assert.throws(() => context.refreshEditToken({ mode: 'edit', editKey: 'legacy-key' }));
+  context.getAcceptedEditKeys_ = () => { throw new Error('config unavailable'); };
+  assert.throws(() => context.refreshEditToken({ mode: 'edit', editKey: 'current-key' }));
+  assert.equal(context.__cachePuts.length, 0);
+});
+
 test('doGet adds the mobile viewport meta tag to the GAS HtmlOutput', () => {
   const context = loadCode();
 
@@ -1076,6 +1101,10 @@ test('client sends __editToken with mutating google.script.run calls', () => {
   ];
 
   for (const call of mutatingCalls) {
+    if (call === 'saveHotspot' || call === 'updateHotspot') {
+      assert.match(app, new RegExp(`runHotspotEditRequest\\('${call}', saveData`));
+      continue; // Token injection and retry behavior are exercised in hotspot-edit-session.test.js.
+    }
     const pattern = new RegExp(`\\.${call}\\(\\s*withEditToken\\(`);
     assert.match(app, pattern, `${call} should receive a tokenized payload`);
   }

@@ -206,9 +206,9 @@ test('new save validates the captured scene and keeps draft state on save failur
   assert.match(close, /cleanupHotspotDraft\(/);
   assert.match(close, /endHotspotFormSession\(/);
 
-  const failureBranches = Array.from(save.matchAll(/withFailureHandler/g));
+  const failureBranches = Array.from(save.matchAll(/\}, function \(error\)/g));
   assert.equal(failureBranches.length, 2);
-  assert.doesNotMatch(save, /withFailureHandler\([\s\S]{0,500}cleanupHotspotDraft/);
+  assert.doesNotMatch(save, /\}, function \(error\)[\s\S]{0,500}cleanupHotspotDraft/);
 });
 
 test('all terminal lifecycle paths tear down drafts, listeners, and operation locks', () => {

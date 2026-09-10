@@ -5,6 +5,7 @@ CLAUDE.md
 node_modules/
 output/playwright/
 output/quality-audit/
+output/spot-attachments/
 playwright-report/
 test-results/
 debug.log
