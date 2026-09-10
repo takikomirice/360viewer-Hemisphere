@@ -1015,7 +1015,7 @@ var loadPollInterval = null;  // Pannellum loadイベントのポーリングイ
 var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
 var hotspotFolderOpenPending = false; // 共通Hotspotフォルダ取得APIの応答待ちかどうか
 var sidebarCollapsed = false; // サイドバー折りたたみ状態
-var sceneSidebarPreferredWidth = 280;
+var sceneSidebarPreferredWidth = 160;
 var sceneSidebarResizeInitialized = false;
 var sceneThumbnailGeneration = 0;
 var sceneThumbnailTimer = null;
@@ -2651,8 +2651,8 @@ function onConfigLoaded(config) {
  */
 function normalizeSceneSidebarWidth(value, viewportWidth) {
   var width = Number(value);
-  if (!isFinite(width)) width = 280;
-  return Math.round(Math.max(200, Math.min(480, Math.floor(viewportWidth / 2), width)));
+  if (!isFinite(width)) width = 160;
+  return Math.round(Math.max(140, Math.min(480, Math.floor(viewportWidth / 2), width)));
 }
 
 function applySceneSidebarWidth(value, persist) {
@@ -2697,7 +2697,7 @@ function initSceneSidebarResize() {
     var width = Number(handle.getAttribute('aria-valuenow'));
     if (event.key === 'ArrowLeft') width -= 10;
     else if (event.key === 'ArrowRight') width += 10;
-    else if (event.key === 'Home') width = 200;
+    else if (event.key === 'Home') width = 140;
     else if (event.key === 'End') width = 480;
     else return;
     event.preventDefault();
@@ -2929,6 +2929,20 @@ function goBackFolder() {
   syncActiveSceneItem(currentFileId);
 }
 
+function revealActiveSceneCard() {
+  requestAnimationFrame(function () {
+    var list = document.getElementById('scene-list');
+    var card = list && list.querySelector('.scene-item.active');
+    if (!card || !list.clientWidth || !list.clientHeight) return;
+    var bounds = list.getBoundingClientRect();
+    var item = card.getBoundingClientRect();
+    if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
+    else if (item.top < bounds.top) list.scrollTop += item.top - bounds.top;
+    if (item.right > bounds.right) list.scrollLeft += item.right - bounds.right;
+    else if (item.left < bounds.left) list.scrollLeft += item.left - bounds.left;
+  });
+}
+
 function syncActiveSceneItem(activeId) {
   var items = document.querySelectorAll('.scene-item');
   items.forEach(function (el) {
@@ -2940,6 +2954,7 @@ function syncActiveSceneItem(activeId) {
   if (toggle && isPublicViewingMode() && isSmallViewport()) {
     toggle.textContent = 'シーンを選ぶ';
   }
+  revealActiveSceneCard();
 }
 
 function setSceneRefreshButtonState(isLoading) {
@@ -7499,6 +7514,7 @@ function toggleMode(options) {
   syncDriveFolderButtons();
   syncSceneActionButtons();
   scheduleAppLayoutMetrics();
+  revealActiveSceneCard();
 }
 
 function shouldIgnorePanoramaPointer(evt) {

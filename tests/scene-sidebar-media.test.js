@@ -17,8 +17,8 @@ test('sidebar clamps widths and reserves usable space when viewport shrinks', ()
   const c = load(['normalizeSceneSidebarWidth'], {});
   assert.equal(c.normalizeSceneSidebarWidth(350, 1200), 350);
   assert.equal(c.normalizeSceneSidebarWidth(900, 1200), 480);
-  assert.equal(c.normalizeSceneSidebarWidth(-1, 1200), 200);
-  assert.equal(c.normalizeSceneSidebarWidth(NaN, 1200), 280);
+  assert.equal(c.normalizeSceneSidebarWidth(-1, 1200), 140);
+  assert.equal(c.normalizeSceneSidebarWidth(NaN, 1200), 160);
   assert.equal(c.normalizeSceneSidebarWidth(480, 700), 350);
 });
 

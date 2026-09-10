@@ -97,7 +97,7 @@ Run **"設定"** → **"編集用URLを生成・更新"** to generate the edit U
 
 ### Scene thumbnails and sidebar width
 
-The scene list displays thumbnails and names. On desktop, drag its right edge or focus the divider and use the arrow keys to resize it; the width is saved in this browser. Mobile retains the bottom scene list.
+The scene list uses photo cards with centered white names on a translucent bottom band. On desktop, drag its right edge or focus the divider and use the arrow keys to resize it (140–480px, default 160px); the width is saved in this browser. Mobile retains the bottom scene list and uses two columns when the viewing sheet is expanded.
 
 After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
 

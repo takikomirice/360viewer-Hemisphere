@@ -29,7 +29,7 @@
       --app-toolbar-height: calc(60px + var(--app-safe-top));
       --app-edit-banner-height: 40px;
       --app-scene-strip-height: calc(96px + var(--app-safe-bottom));
-      --scene-sidebar-width: 280px;
+      --scene-sidebar-width: 160px;
       --app-public-sheet-height: calc(56px + var(--app-safe-bottom));
       --app-public-sheet-expanded-height: min(56vh, 360px);
       --theme-background: #FFFFFF;
@@ -3888,4 +3888,70 @@ html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button,html[da
 
 .hemisphere-audio-editor-dialog { margin:auto; }
     /* HEMISPHERE_AUDIO_EDITOR_STYLES_END */
-  </style>
+    /* Photo cards: the caption sits on the image, as in the reference tour. */
+    #scene-list .scene-item {
+      position: relative;
+      display: block;
+      margin: 6px 10px 12px;
+      padding: 0;
+      min-height: 64px;
+      border: 2px solid transparent;
+      border-radius: 7px;
+      overflow: hidden;
+      background: #343438;
+      white-space: normal;
+    }
+    #scene-list .scene-item.active { border-color: #62b5e5; }
+    #scene-list .scene-item:hover { border-color: #a2cfe9; }
+    #scene-list .scene-item:focus-within { outline: 2px solid #62b5e5; outline-offset: -2px; }
+    #scene-list .scene-thumbnail {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 3 / 2;
+      border-radius: 0;
+      object-fit: cover;
+    }
+    #scene-list button.scene-item-name {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      min-height: 26px;
+      max-height: 60%;
+      padding: 4px 6px;
+      background: rgba(0, 0, 0, .58);
+      color: #fff;
+      text-align: center;
+      line-height: 1.35;
+      font-size: 13px;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0,0,0,.5);
+    }
+    #scene-list .scene-menu-button,
+    #scene-list .scene-drag-handle {
+      position: absolute;
+      top: 4px;
+      width: 32px;
+      height: 32px;
+      min-height: 32px;
+      margin: 0;
+      z-index: 1;
+      background: rgba(0,0,0,.58);
+      color: #fff;
+    }
+    #scene-list .scene-menu-button { right: 4px; }
+    #scene-list .scene-drag-handle { left: 4px; }
+    @media (max-width: 600px) {
+      :root { --app-scene-strip-height: calc(120px + var(--app-safe-bottom)); }
+      #scene-list .scene-item { flex: 0 0 144px; width: 144px; min-width: 144px; margin: 4px; }
+      #scene-list button.scene-item-name { font-size: 11px; padding: 3px; }
+      body.mobile-public-view #scene-sidebar.mobile-expanded #scene-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-content: start; }
+      body.mobile-public-view #scene-list .scene-item { width: auto; min-width: 0; }
+      body.mobile-public-view #scene-list .scene-folder-item { grid-column: 1 / -1; }
+    }
+    @media (pointer: coarse) {
+      #scene-list .scene-menu-button { width: 44px; height: 44px; }
+      #scene-list button.scene-item-name { min-height: 44px; }
+    }
+</style>
