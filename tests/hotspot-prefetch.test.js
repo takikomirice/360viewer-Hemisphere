@@ -173,3 +173,12 @@ test('quiz photo/audio participate in bounded idle preparation', () => {
   c.scheduleHotspotMediaPrefetch([{ ...photo, audioId: 'a', markerIcon: 'quiz' }]); tick();
   assert.equal(requests.length, 2);
 });
+
+test('3G keeps media preparation sequential even when scene reuse is enabled', () => {
+  const { c, requests, tick } = harness(true); c.mediaWarmupEnabled = true;
+  c.navigator.connection.effectiveType = '3g';
+  c.scheduleHotspotMediaPrefetch([photo, audio]); tick();
+  assert.equal(requests.length, 1);
+  requests[0].success({ success: true, dataUri: 'photo' }); tick();
+  assert.equal(requests.length, 2);
+});

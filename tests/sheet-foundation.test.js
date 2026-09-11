@@ -1981,6 +1981,17 @@ test('public folder navigation synchronizes only the configured root subtree', (
   assert.equal(allowed.error, undefined);
   assert.ok(context.readSceneRows_(scenesSheet).byFileId['child-image-file']);
 
+  childFolder.__files.push(createDriveFile({ id: 'added-child-image', name: 'Added.jpg' }));
+  const cached = context.navigateToFolder(childId, false);
+  assert.equal(cached.images.some(image => image.id === 'added-child-image'), false);
+  assert.equal(context.readSceneRows_(scenesSheet).byFileId['added-child-image'], undefined);
+  const refreshed = context.navigateToFolder(childId, true);
+  assert.equal(refreshed.images.some(image => image.id === 'added-child-image'), true);
+
+  // Even a warm list must not bypass the current Drive subtree check after a move.
+  childFolder.__setParents([outsideFolder]);
+  assert.match(context.navigateToFolder(childId, false).error, /ルートフォルダ|範囲|配下/);
+
   const rejected = context.navigateToFolder(outsideId, true);
   assert.match(rejected.error, /ルートフォルダ|範囲|配下/);
   assert.equal(context.readSceneRows_(scenesSheet).byFileId['outside-image-file'], undefined);

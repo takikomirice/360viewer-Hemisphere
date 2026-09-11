@@ -1000,6 +1000,8 @@ var toastTimer      = null;   // トーストの自動非表示タイマー
 var allImages       = null;   // フォルダモード時の全画像リスト {id, name, imageUrl}
 var homeImageId     = null;   // scenesでホーム設定されたルート画像のファイルID
 var folderStack     = [];     // サブフォルダナビゲーション用スタック [{id, name, items}]
+var folderCacheEnabled = true; // folderCache=0 で閲覧時も毎回同期
+var foldersRefreshedAfterManualRefresh = null;
 var rootFolderId    = null;   // ルートフォルダのDrive ID
 var currentFileId   = null;   // 現在表示中の画像ファイルID
 var previousSceneId = null;   // ジャンプ前のシーンID（振り返り視点計算用）
@@ -2131,6 +2133,7 @@ window.addEventListener('load', function () {
     sceneMetadataPrefetchEnabled = String((loc.parameter && loc.parameter.metadataPrefetch) || '') !== '0';
     hotspotPrefetchEnabled = String((loc.parameter && loc.parameter.hotspotPrefetch) || '') !== '0';
     mediaWarmupEnabled = String((loc.parameter && loc.parameter.mediaWarmup) || '') !== '0';
+    folderCacheEnabled = String((loc.parameter && loc.parameter.folderCache) || '') !== '0';
     sceneThumbnailDirectEnabled = String((loc.parameter && loc.parameter.thumbnailDelivery) || '') !== 'gas';
     initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
     initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
@@ -3027,6 +3030,9 @@ function openSubfolder(folderItem) {
   cancelHotspotMove('フォルダ移動のため移動をキャンセルしました。', { silent: true });
   // 現在の状態をスタックに積む
   folderStack.push({ id: folderItem.id, name: folderItem.name, items: allImages });
+  var refreshState = foldersRefreshedAfterManualRefresh;
+  var forceRefresh = !folderCacheEnabled || !isPublicViewingMode() ||
+    !!(refreshState && !refreshState[folderItem.id]);
 
   setSceneRefreshButtonState(true);
   google.script.run
@@ -3038,6 +3044,7 @@ function openSubfolder(folderItem) {
         return;
       }
       allImages = res.images || [];
+      if (forceRefresh && refreshState) refreshState[folderItem.id] = true;
       buildSceneSidebar(allImages);
       syncActiveSceneItem(null);
     })
@@ -3046,7 +3053,7 @@ function openSubfolder(folderItem) {
       showToast('フォルダの読み込みに失敗しました。', 'error');
       folderStack.pop();
     })
-    .navigateToFolder(folderItem.id, true);
+    .navigateToFolder(folderItem.id, forceRefresh);
 }
 
 /**
@@ -3100,6 +3107,8 @@ function setSceneRefreshButtonState(isLoading) {
 function refreshSceneList() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('refresh-scene-list')) return false;
   if (isRefreshingSceneList || !allImages) return;
+  // Root refresh does not invalidate server caches for child folders. Refresh each on its next visit.
+  foldersRefreshedAfterManualRefresh = Object.create(null);
   clearBase64ImageCache();
   clearHotspotCache();
   startSceneMetadataPrefetchQueue([]);
@@ -7278,7 +7287,8 @@ function scheduleHotspotMediaPrefetch(hotspots) {
   }
   function pump() {
     if (!isCurrentQueue() || !canPrefetchHotspotContent() || !candidates.length) return;
-    var limit = mediaWarmupEnabled ? 2 : 1;
+    var connection = navigator.connection;
+    var limit = mediaWarmupEnabled && !(connection && connection.effectiveType === '3g') ? 2 : 1;
     if (isSwitching || !sceneDisplayReady || document.hidden || hotspotMediaPrefetchActive >= limit) { schedule(); return; }
     while (candidates.length && hotspotMediaPrefetchActive < limit) {
       var candidate = candidates.shift();
