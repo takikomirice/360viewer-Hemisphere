@@ -1152,6 +1152,11 @@ var HOTSPOT_AUDIO_CACHE_LIMIT = 2;
 var HOTSPOT_AUDIO_PREFETCH_DELAY_MS = 150;
 var HOTSPOT_FORM_GUARD_MESSAGE = 'ホットスポットの保存またはキャンセル後に操作してください。';
 var photoCache           = {};    // 写真データURIのキャッシュ {fileId|hotspotId|photoId: dataUri}
+var photoCacheOrder = [];
+var photoInFlight = {};
+var hotspotPrefetchEnabled = true; // hotspotPrefetch=0 で比較用に無効化
+var hotspotMediaPrefetchTimer = null;
+var hotspotMediaPrefetchActive = false;
 var PHOTO_LIGHTBOX_MIN_SCALE = 1;
 var PHOTO_LIGHTBOX_MAX_SCALE = 5;
 var PHOTO_LIGHTBOX_ZOOM_FACTOR = 1.35;
@@ -1178,6 +1183,7 @@ var sceneMetadataPrefetchGeneration = 0;
 var sceneMetadataPrefetchTimer = null;
 var sceneMetadataPrefetchActive = 0;
 var sceneMetadataPrefetchResume = null;
+var sceneMetadataPrefetchPriority = [];
 var activeJumpTooltip    = null;  // 表示中のジャンプツールチップ要素
 var DEFAULT_MARKER_SHAPE = 'circle';
 var DEFAULT_MARKER_COLOR = 'blue';
@@ -2119,6 +2125,7 @@ window.addEventListener('load', function () {
     deliveryMode = normalizeDeliveryMode(dParam);
     scenePerformanceEnabled = String((loc.parameter && loc.parameter.perf) || '') === '1';
     sceneMetadataPrefetchEnabled = String((loc.parameter && loc.parameter.metadataPrefetch) || '') !== '0';
+    hotspotPrefetchEnabled = String((loc.parameter && loc.parameter.hotspotPrefetch) || '') !== '0';
     sceneThumbnailDirectEnabled = String((loc.parameter && loc.parameter.thumbnailDelivery) || '') !== 'gas';
     initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
     initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
@@ -2299,6 +2306,7 @@ function loadSingleImageScene(config) {
       markScenePerformanceRecord(performanceRecord, 'pannellumLoad');
       isSwitching = false;
       finishScenePerformanceRecord(performanceRecord, 'loaded');
+      scheduleHotspotMediaPrefetch(preparedHotspots.hotspots || []);
     }
     if (canReusePannellum) {
       var reused = pannellumSession.loadImage(
@@ -4611,6 +4619,7 @@ function startSceneMetadataPrefetchQueue(images) {
   var generation = ++sceneMetadataPrefetchGeneration;
   clearTimeout(sceneMetadataPrefetchTimer);
   sceneMetadataPrefetchResume = null;
+  sceneMetadataPrefetchPriority = [];
   if (!sceneMetadataPrefetchEnabled || !isPublicViewingMode() || isEditMode) return;
   var candidates = (images || []).filter(function (item) { return item && item.id && item.type !== 'folder'; }).slice(0, 20);
   var next = 0;
@@ -4625,8 +4634,10 @@ function startSceneMetadataPrefetchQueue(images) {
     var connection = navigator.connection;
     if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
     if (isSwitching || !sceneDisplayReady || document.hidden || sceneMetadataPrefetchActive) { schedule(); return; }
-    while (next < candidates.length) {
-      var index = next++, id = candidates[index].id;
+    while (sceneMetadataPrefetchPriority.length || next < candidates.length) {
+      var priorityId = sceneMetadataPrefetchPriority.shift();
+      var index = priorityId ? -1 : next++;
+      var id = priorityId || candidates[index].id;
       if (id === currentFileId || (hotspotCacheByFileId[id] && hotspotCacheExpiresByFileId[id] > Date.now())) continue;
       sceneMetadataPrefetchActive++;
       var started = Date.now();
@@ -4650,6 +4661,12 @@ function startSceneMetadataPrefetchQueue(images) {
  */
 function preloadJumpScenes(hotspots) {
   if (!Array.isArray(hotspots)) return;
+  if (hotspotPrefetchEnabled && canPrefetchHotspotContent()) {
+    sceneMetadataPrefetchPriority = hotspots.map(function (hs) { return hs.jumpSceneId; }).filter(function (id, index, ids) {
+      return id && id !== currentFileId && ids.indexOf(id) === index && getSceneImageById(id);
+    }).slice(0, 4);
+    if (sceneMetadataPrefetchResume) sceneMetadataPrefetchResume();
+  }
   hotspots.forEach(function (hs) {
     var sceneId = hs.jumpSceneId;
     if (!sceneId || preloadedScenes.has(sceneId)) return;
@@ -4778,7 +4795,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   hotspotPreparation.then(function (prepared) {
     if (!isCurrentLoad()) return;
     setTimeout(function () {
-      if (isCurrentLoad()) preloadJumpScenes(prepared.hotspots || []);
+      if (isCurrentSceneLoadRequest(loadGeneration, imgData.id)) preloadJumpScenes(prepared.hotspots || []);
     }, 0);
   });
 
@@ -4793,6 +4810,9 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     if (autoFallbackController) autoFallbackController.cancel();
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'loaded');
+    hotspotPreparation.then(function (prepared) {
+      if (isCurrentSceneLoadRequest(loadGeneration, imgData.id)) scheduleHotspotMediaPrefetch(prepared.hotspots);
+    });
   }
 
   function showDeliveryError(message) {
@@ -7030,6 +7050,7 @@ function requestHotspotAudio(identity, callbacks) {
   var handlers = callbacks || {};
   if (!normalized.fileId || !normalized.hotspotId || !normalized.audioId) {
     if (typeof handlers.failure === 'function') handlers.failure();
+    if (typeof handlers.settled === 'function') handlers.settled();
     return false;
   }
   var cacheKey = getHotspotAudioCacheKey(normalized);
@@ -7037,6 +7058,7 @@ function requestHotspotAudio(identity, callbacks) {
     var cachedResult = hotspotAudioCache[cacheKey];
     setTimeout(function () {
       if (typeof handlers.success === 'function') handlers.success(cachedResult, true);
+      if (typeof handlers.settled === 'function') handlers.settled();
     }, 0);
     return true;
   }
@@ -7045,6 +7067,7 @@ function requestHotspotAudio(identity, callbacks) {
   if (currentEntry && currentEntry.requestGeneration === hotspotAudioRequestGeneration) {
     if (typeof handlers.success === 'function') currentEntry.successHandlers.push(handlers.success);
     if (typeof handlers.failure === 'function') currentEntry.failureHandlers.push(handlers.failure);
+    if (typeof handlers.settled === 'function') currentEntry.settledHandlers.push(handlers.settled);
     return true;
   }
 
@@ -7053,9 +7076,19 @@ function requestHotspotAudio(identity, callbacks) {
     identity: normalized,
     requestGeneration: hotspotAudioRequestGeneration,
     successHandlers: typeof handlers.success === 'function' ? [handlers.success] : [],
-    failureHandlers: typeof handlers.failure === 'function' ? [handlers.failure] : []
+    failureHandlers: typeof handlers.failure === 'function' ? [handlers.failure] : [],
+    settledHandlers: typeof handlers.settled === 'function' ? [handlers.settled] : []
   };
   hotspotAudioInFlight[cacheKey] = entry;
+  var requestTimer = setTimeout(finishFailure, 30000);
+
+  function settleRequest() {
+    if (entry.finished) return false;
+    entry.finished = true;
+    clearTimeout(requestTimer);
+    entry.settledHandlers.forEach(function (handler) { handler(); });
+    return true;
+  }
 
   function isCurrentEntry() {
     return hotspotAudioInFlight[cacheKey] === entry &&
@@ -7064,6 +7097,7 @@ function requestHotspotAudio(identity, callbacks) {
       (!currentFileId || String(currentFileId) === entry.identity.fileId);
   }
   function finishFailure() {
+    if (!settleRequest()) return;
     if (!isCurrentEntry()) return;
     delete hotspotAudioInFlight[cacheKey];
     entry.failureHandlers.forEach(function (handler) { handler(); });
@@ -7071,6 +7105,7 @@ function requestHotspotAudio(identity, callbacks) {
 
   google.script.run
     .withSuccessHandler(function (result) {
+      if (!settleRequest()) return;
       if (!isCurrentEntry()) return;
       delete hotspotAudioInFlight[cacheKey];
       if (!result || !result.success || !result.dataUri) {
@@ -7102,6 +7137,92 @@ function prefetchHotspotAudio(args) {
   return requestHotspotAudio(identity);
 }
 
+function canPrefetchHotspotContent() {
+  var connection = navigator.connection;
+  return hotspotPrefetchEnabled && isPublicViewingMode() && !isEditMode &&
+    !(connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || '')));
+}
+
+/** Share authorized photo reads between intent, idle preparation and the popup. */
+function requestHotspotPhoto(args, callbacks) {
+  var handlers = callbacks || {};
+  var fileId = String(args && args.fileId || currentFileId || '');
+  var hotspotId = String(args && args.id || '');
+  var photoId = String(args && args.photoId || '');
+  var key = [fileId, hotspotId, photoId].join('|');
+  if (!fileId || !hotspotId || !photoId) {
+    if (handlers.failure) handlers.failure();
+    if (handlers.settled) handlers.settled();
+    return;
+  }
+  if (photoCache[key]) {
+    var cached = photoCache[key];
+    setTimeout(function () {
+      if (handlers.success) handlers.success(cached);
+      if (handlers.settled) handlers.settled();
+    }, 0);
+    return;
+  }
+  var generation = sceneLoadGeneration;
+  var pending = photoInFlight[key];
+  if (pending && pending.generation === generation) {
+    pending.handlers.push(handlers);
+    return;
+  }
+  var entry = { generation: generation, handlers: [handlers] };
+  photoInFlight[key] = entry;
+  var requestTimer = setTimeout(function () { finish(null); }, 30000);
+  function finish(result) {
+    if (entry.finished) return;
+    entry.finished = true;
+    clearTimeout(requestTimer);
+    var current = photoInFlight[key] === entry && sceneLoadGeneration === generation && !isEditMode &&
+      (!currentFileId || String(currentFileId) === fileId);
+    if (photoInFlight[key] === entry) delete photoInFlight[key];
+    var data = current && result && result.success && result.dataUri;
+    if (data) {
+      photoCache[key] = String(data);
+      photoCacheOrder = photoCacheOrder.filter(function (item) { return item !== key; });
+      photoCacheOrder.push(key);
+      while (photoCacheOrder.length > 4) delete photoCache[photoCacheOrder.shift()];
+    }
+    entry.handlers.forEach(function (listener) {
+      if (current && data && listener.success) listener.success(String(data));
+      if (current && !data && listener.failure) listener.failure();
+      if (listener.settled) listener.settled();
+    });
+  }
+  google.script.run.withSuccessHandler(finish).withFailureHandler(function () { finish(null); })
+    .getHotspotPhotoDataUri({ fileId: fileId, hotspotId: hotspotId, photoId: photoId });
+}
+
+/** At most two attachments per scene, one background media RPC across scene changes. */
+function scheduleHotspotMediaPrefetch(hotspots) {
+  clearTimeout(hotspotMediaPrefetchTimer);
+  if (!canPrefetchHotspotContent()) return;
+  var generation = sceneLoadGeneration;
+  var candidates = [];
+  (hotspots || []).forEach(function (args) {
+    if (args.jumpSceneId || args.markerIcon === 'quiz') return;
+    if (args.photoId) candidates.push({ args: args, photo: true });
+    if (args.audioId) candidates.push({ args: args, photo: false });
+  });
+  candidates = candidates.slice(0, 2);
+  function schedule() {
+    if (generation === sceneLoadGeneration) hotspotMediaPrefetchTimer = setTimeout(pump, 500);
+  }
+  function pump() {
+    if (generation !== sceneLoadGeneration || !canPrefetchHotspotContent() || !candidates.length) return;
+    if (isSwitching || !sceneDisplayReady || document.hidden || hotspotMediaPrefetchActive) { schedule(); return; }
+    var candidate = candidates.shift();
+    hotspotMediaPrefetchActive = true;
+    function settled() { hotspotMediaPrefetchActive = false; schedule(); }
+    if (candidate.photo) requestHotspotPhoto(candidate.args, { settled: settled });
+    else requestHotspotAudio(candidate.args, { settled: settled });
+  }
+  schedule();
+}
+
 function bindHotspotAudioPrefetch(container, args) {
   if (!container || !args) return;
   container.tabIndex = 0;
@@ -7117,7 +7238,15 @@ function bindHotspotAudioPrefetch(container, args) {
     event.preventDefault();
     container.click();
   });
-  if (!args.audioId || args.jumpSceneId) return;
+  if (!args.audioId && !args.photoId && !args.jumpSceneId) return;
+  function prefetchContent() {
+    if (args.jumpSceneId) {
+      if (canPrefetchHotspotContent()) scheduleSceneImagePrefetch(args.jumpSceneId);
+    } else {
+      if (args.audioId) prefetchHotspotAudio(args);
+      if (args.photoId && args.markerIcon !== 'quiz' && canPrefetchHotspotContent()) requestHotspotPhoto(args);
+    }
+  }
   var hoverTimer = null;
   function cancelHoverPrefetch() {
     if (hoverTimer === null) return;
@@ -7136,14 +7265,14 @@ function bindHotspotAudioPrefetch(container, args) {
       hotspotAudioPrefetchTimers = hotspotAudioPrefetchTimers.filter(function (timer) {
         return timer !== completedTimer;
       });
-      prefetchHotspotAudio(args);
+      prefetchContent();
     }, HOTSPOT_AUDIO_PREFETCH_DELAY_MS);
     hotspotAudioPrefetchTimers.push(hoverTimer);
   });
   container.addEventListener('pointerleave', cancelHoverPrefetch);
   container.addEventListener('focusin', function () {
     cancelHoverPrefetch();
-    prefetchHotspotAudio(args);
+    prefetchContent();
   });
 }
 
@@ -7193,14 +7322,12 @@ function loadHotspotAudioForPopup(popup, args) {
 function renderPhotoInPopup(popup, args) {
   var fileId = String(args && args.fileId || currentFileId || '');
   var hotspotId = String(args && args.id || '');
-  var photoId = String(args && args.photoId || '');
   var popupGeneration = popup && popup.__infoPopupGeneration;
   var sceneGeneration = sceneLoadGeneration;
-  var cacheKey = [fileId, hotspotId, photoId].join('|');
   function isCurrentPhotoRequest() {
     return !!(popup && popup.isConnected && popup.id === 'active-info-popup' &&
       popup.__infoPopupGeneration === popupGeneration && infoPopupGeneration === popupGeneration &&
-      sceneLoadGeneration === sceneGeneration && String(currentFileId || '') === fileId &&
+      sceneLoadGeneration === sceneGeneration && (!currentFileId || String(currentFileId) === fileId) &&
       popup.dataset.fileId === fileId && popup.dataset.hotspotId === hotspotId);
   }
   function showPhotoInArea(dataUri) {
@@ -7223,34 +7350,14 @@ function renderPhotoInPopup(popup, args) {
     area.parentNode.replaceChild(button, area);
   }
 
-  // キャッシュあり
-  if (photoCache[cacheKey]) {
-    showPhotoInArea(photoCache[cacheKey]);
-    return;
-  }
-
-  google.script.run
-    .withSuccessHandler(function (result) {
-      if (!isCurrentPhotoRequest()) return;
-      var area = popup.querySelector('#popup-photo-area');
-      if (!area) return; // popup が閉じられた場合
-      if (result && result.success) {
-        photoCache[cacheKey] = result.dataUri;
-        showPhotoInArea(result.dataUri);
-      } else {
-        area.textContent = '写真を読み込めませんでした';
-      }
-    })
-    .withFailureHandler(function () {
+  requestHotspotPhoto(args, {
+    success: showPhotoInArea,
+    failure: function () {
       if (!isCurrentPhotoRequest()) return;
       var area = popup.querySelector('#popup-photo-area');
       if (area) area.textContent = '写真を読み込めませんでした';
-    })
-    .getHotspotPhotoDataUri({
-      fileId: fileId,
-      hotspotId: hotspotId,
-      photoId: photoId
-    });
+    }
+  });
 }
 
 function isPhotoLightboxOpen() {

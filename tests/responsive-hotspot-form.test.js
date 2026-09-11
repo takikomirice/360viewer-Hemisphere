@@ -313,8 +313,9 @@ test('hotspot photo data is sent only with CRUD save and server-normalized hotsp
   const render = getFunctionSource(app, 'renderPhotoInPopup');
   assert.match(render, /fileId/);
   assert.match(render, /hotspotId/);
-  assert.match(render, /photoId/);
-  assert.match(render, /getHotspotPhotoDataUri\(\{/);
+  assert.match(render, /requestHotspotPhoto\(args,/);
+  const request = getFunctionSource(app, 'requestHotspotPhoto');
+  assert.match(request, /getHotspotPhotoDataUri\(\{ fileId: fileId, hotspotId: hotspotId, photoId: photoId \}\)/);
 });
 
 test('hotspot delete surfaces attachment cleanup partial success as a warning', () => {

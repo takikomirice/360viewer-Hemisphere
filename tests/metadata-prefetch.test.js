@@ -93,6 +93,17 @@ test('background metadata is sequential, skips current and folders, and pauses d
   assert.equal(requests.length, 2); assert.equal(requests[1].request, 'b');
 });
 
+test('jump destinations move ahead of the remaining list without interrupting an active read', () => {
+  const { c, requests, tick } = harness();
+  c.startSceneMetadataPrefetchQueue([{ id: 'a' }, { id: 'b' }, { id: 'jump' }]);
+  tick(); assert.equal(requests[0].request, 'a');
+  c.sceneMetadataPrefetchPriority = ['jump']; c.sceneMetadataPrefetchResume(); tick();
+  assert.equal(requests.length, 1);
+  requests[0].success(response()); tick(); assert.equal(requests[1].request, 'jump');
+  requests[1].success(response()); tick(); assert.equal(requests[2].request, 'b');
+  requests[2].success(response()); tick(); assert.equal(requests.length, 3);
+});
+
 test('disabled, editing, data saver and 2G do not start automatic metadata reads', () => {
   for (const configure of [c => { c.sceneMetadataPrefetchEnabled = false; }, c => { c.isEditMode = true; },
     c => { c.navigator.connection.saveData = true; }, c => { c.navigator.connection.effectiveType = '2g'; }]) {
