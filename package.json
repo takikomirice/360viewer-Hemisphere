@@ -1,6 +1,6 @@
 {
   "name": "360viewer-hemisphere-ui-tests",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "private": true,
   "description": "Local browser harness and responsive layout checks for 360Viewer Hemisphere",
   "scripts": {

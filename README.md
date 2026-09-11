@@ -420,6 +420,8 @@ npm run test:browser
 
 ## リリース
 
+最新バージョンは **[v3.0.0](https://github.com/takikomirice/360viewer-Hemisphere/releases/tag/v3.0.0)** です。サムネイル一覧、シーン切り替えと写真・音声の読み込み改善をまとめています。[変更内容・更新手順](docs/releases/v3.0.0.md)を確認してください。
+
 バージョンごとの変更点と更新方法は [GitHub Releases](https://github.com/takikomirice/360viewer-Hemisphere/releases) を参照してください。
 
 ---

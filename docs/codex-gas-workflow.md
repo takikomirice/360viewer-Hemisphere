@@ -4,7 +4,7 @@
 認証にはインストール済みの `clasp` のログインを使う。
 認証ファイルやアクセストークンをリポジトリへコピーしない。
 
-- 作業ブランチ: `improve/quality-audit-20260908`
+- 開発はmainから作業ブランチを作り、検証後にPRで統合する。v3.0.0までの改善は `improve/quality-audit-20260908` にまとめた。
 - 検証用Webアプリ: https://script.google.com/macros/s/AKfycbzZaFfkHQJELtoeZAYVZxVWQGg_vS8oAdU0htYqvSO_AG9VkvU2pOUFAPVgIaQAZmTF/exec
 - 編集用URLはスプレッドシートのconfigにある `EDIT_URL` を利用する。編集キーを含むためGitや公開レポートには記載しない。
 
@@ -13,8 +13,8 @@
 1. `git status --short` と `git branch --show-current` で作業状態を確認する。
 2. ローカルの `Code.js`、`index.html`、`styles.html`、`app.html` を編集する。
 3. `node --test tests/*.test.js` と、変更に関係する `npm run test:browser` のテストを実行する。
-4. `clasp status` で送信対象が上記4ファイルと `appsscript.json` の計5ファイルであることを確認する。
-5. `clasp push` で反映する。非対話環境で `Skipping push.` になる場合は、リモートのマニフェスト差分を確認してから `clasp push --force` を使う。成功メッセージの `Pushed 5 files.` を確認する。
+4. `clasp status` で送信対象が上記4ファイルと `appsscript.json`、`delivery-lab.html`、`progressive-client.html` の計7ファイルであることを確認する。
+5. `clasp push` で反映する。非対話環境で `Skipping push.` になる場合は、リモートのマニフェスト差分を確認してから `clasp push --force` を使う。成功メッセージの `Pushed 7 files.` を確認する。
 6. 下記の手順で読み戻し照合し、変更と検証結果をブランチへコミット・プッシュする。
 
 `clasp push` はGASの編集ソースを更新する。公開Webアプリのバージョン更新とは別操作。
@@ -35,7 +35,7 @@ Pop-Location
 npm run verify:gas -- output/quality-audit/verified
 ```
 
-`verify:gas` は5ファイルを比較し、欠落・不一致があれば終了コード1を返す。
+`verify:gas` は7ファイルを比較し、欠落・不一致があれば終了コード1を返す。
 BOM・CRLF/LF・ファイル末尾の空白だけを正規化する。GASの取得内容を実行せず、内容や認証情報も出力しない。
 ソース一致は公開デプロイの一致や実行時権限の確認を代替しない。
 

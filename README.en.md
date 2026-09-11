@@ -101,7 +101,7 @@ The scene list uses photo cards with centered white names on a translucent botto
 
 After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
 
-In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, original quality, and forced direct delivery disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains single-image delivery. See the [setup and measurement notes](docs/google-progressive-delivery.md).
+In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, and original quality disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains single-image delivery. See the [setup and measurement notes](docs/google-progressive-delivery.md).
 
 Fast single-image delivery now encodes the same JPEG bytes locally in GAS V8 to reduce conversion time without changing image quality. The lab can compare the old and new conversion methods and report server-stage durations; this comparison needs no prepared derivatives. See [profiling and measurement notes](docs/image-delivery-profile.md).
 
@@ -341,6 +341,8 @@ Using [clasp](https://github.com/google/clasp):
 ---
 
 ## Releases
+
+The latest version is **[v3.0.0](https://github.com/takikomirice/360viewer-Hemisphere/releases/tag/v3.0.0)**, featuring scene thumbnail cards, faster scene navigation, and reusable photo/audio loading. Existing spreadsheet data remains compatible. See the [release notes and upgrade instructions (Japanese)](docs/releases/v3.0.0.md). Update all seven Apps Script files, then update the existing web app deployment to a new version; publishing a GitHub release alone does not update the public web app.
 
 See [GitHub Releases](https://github.com/takikomirice/360viewer-Hemisphere/releases) for version-specific changes and upgrade instructions.
 
