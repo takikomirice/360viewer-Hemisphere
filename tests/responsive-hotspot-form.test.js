@@ -206,9 +206,9 @@ test('new save validates the captured scene and keeps draft state on save failur
   assert.match(close, /cleanupHotspotDraft\(/);
   assert.match(close, /endHotspotFormSession\(/);
 
-  const failureBranches = Array.from(save.matchAll(/withFailureHandler/g));
+  const failureBranches = Array.from(save.matchAll(/\}, function \(error\)/g));
   assert.equal(failureBranches.length, 2);
-  assert.doesNotMatch(save, /withFailureHandler\([\s\S]{0,500}cleanupHotspotDraft/);
+  assert.doesNotMatch(save, /\}, function \(error\)[\s\S]{0,500}cleanupHotspotDraft/);
 });
 
 test('all terminal lifecycle paths tear down drafts, listeners, and operation locks', () => {
@@ -313,8 +313,9 @@ test('hotspot photo data is sent only with CRUD save and server-normalized hotsp
   const render = getFunctionSource(app, 'renderPhotoInPopup');
   assert.match(render, /fileId/);
   assert.match(render, /hotspotId/);
-  assert.match(render, /photoId/);
-  assert.match(render, /getHotspotPhotoDataUri\(\{/);
+  assert.match(render, /requestHotspotPhoto\(args,/);
+  const request = getFunctionSource(app, 'requestHotspotPhoto');
+  assert.match(request, /getHotspotPhotoDataUri\(\{ fileId: fileId, hotspotId: hotspotId, photoId: photoId \}\)/);
 });
 
 test('hotspot delete surfaces attachment cleanup partial success as a warning', () => {

@@ -38,6 +38,17 @@ test.afterAll(async () => {
   if (harnessServer) await harnessServer.close();
 });
 
+test.beforeEach(async ({ page }) => {
+  // Fixture scene IDs do not exist on Drive. Keep layout checks independent of Google responses.
+  // Direct delivery and fallback behavior are covered separately in thumbnail-delivery.spec.js.
+  await page.route(/^https:\/\/lh3\.googleusercontent\.com\/d\/fixture-[^/?]+=w320$/, route => route.fulfill({
+    status: 200,
+    contentType: 'image/svg+xml',
+    headers: { 'Access-Control-Allow-Origin': '*' },
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160"><rect width="320" height="160" fill="#0f766e"/><rect x="30" y="25" width="120" height="100" fill="#67e8f9"/></svg>'
+  }));
+});
+
 async function openHarness(page, viewport, options) {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   const params = new URLSearchParams({
@@ -1235,8 +1246,7 @@ for (const viewport of viewports) {
           '#open-hotspot-folder-btn',
           '#scene-list .scene-item',
           '#btn-home',
-          '#quality-toggle-btn',
-          '#gyro-toggle-btn'
+          '#quality-toggle-btn'
         ];
         for (const selector of landscapeTapTargets) {
           const target = page.locator(selector).first();
@@ -1248,6 +1258,8 @@ for (const viewport of viewports) {
         }
         await expect(page.locator('#fullscreen-btn')).toBeHidden();
         await expect(page.locator('#fullscreen-btn')).toBeDisabled();
+        await expect(page.locator('#gyro-toggle-btn')).toBeHidden();
+        await expect(page.locator('#gyro-toggle-btn')).toBeDisabled();
       }
 
       if (viewport.width <= 600) {

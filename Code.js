@@ -194,10 +194,25 @@ function assertEditToken_(payload) {
 }
 
 /**
- * 編集URLに使う共有キーを生成する。
+ * 元の編集URLを再認証し、失効・キャッシュ退避済みの一時トークンを再発行する。
+ * doGetと同じ共有キー検証を行い、公開・internalモードでは発行しない。
  *
- * @returns {string}
+ * @returns {{editToken: string}}
  */
+function refreshEditToken(payload) {
+  const params = payload && typeof payload === 'object' ? payload : {};
+  const requestedKey = String(params.editKey || '');
+  if (params.mode !== 'edit' || !requestedKey || getAcceptedEditKeys_().indexOf(requestedKey) === -1) {
+    throw new Error('編集権限を更新できません。configの最新の編集URLを確認してください。');
+  }
+  const token = Utilities.getUuid();
+  CacheService.getScriptCache().put(
+    getEditTokenCacheKey_(token), getEditTokenCacheValue_(requestedKey), EDIT_TOKEN_TTL_SECONDS
+  );
+  return { editToken: token };
+}
+
+/** 編集URLに使う共有キーを生成する。 */
 function generateEditKey_() {
   let uuid = '';
   try {
@@ -1418,21 +1433,22 @@ function normalizeSceneNameForSave_(requestedName, originalFileName, mimeType) {
  * 未登録、重複、ルート外、親不一致、画像以外は拒否する。
  *
  * @param {string} fileId
- * @param {{scenesSheet?:GoogleAppsScript.Spreadsheet.Sheet,snapshot?:Object}=} options
+ * @param {{scenesSheet?:GoogleAppsScript.Spreadsheet.Sheet,snapshot?:Object,appConfig?:Object}=} options サーバー内で取得済みの設定・シートのみ。
  * @returns {{fileId:string,rootFolderId:string,scenesSheet:Object,snapshot:Object,scene:Object,file:Object,parentFolderIds:Array<string>}}
  */
 function getEditableSceneContext_(fileId, options) {
   const targetId = String(fileId || '').trim();
   if (!targetId) throw new Error('ファイルIDが指定されていません。');
 
-  const config = getAppConfig_();
+  const opts = options || {};
+  const config = opts.appConfig || getAppConfig_();
   const rootFolderId = extractDriveFolderId_(config[IMAGE_DRIVE_URL_CONFIG_KEY] || '') || '';
   if (!rootFolderId) throw new Error('IMAGE_DRIVE_URLに有効なルートフォルダが設定されていません。');
 
-  const opts = options || {};
   const scenesSheet = opts.scenesSheet || SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SCENES_SHEET_NAME);
   if (!scenesSheet) throw new Error('scenesシートに対象画像が登録されていません。');
   const snapshot = opts.snapshot || readSceneRows_(scenesSheet);
+  if (opts.profile) opts.profile.mark('sceneRowsMs');
   if ((snapshot.duplicateFileIds || []).indexOf(targetId) !== -1) {
     throw new Error('scenesシートに対象ファイルIDの重複があります。先に重複を解消してください。');
   }
@@ -1445,6 +1461,7 @@ function getEditableSceneContext_(fileId, options) {
   }
 
   const file = DriveApp.getFileById(targetId);
+  if (opts.profile) opts.profile.mark('registeredParentMs');
   if (String(file.getId() || '').trim() !== targetId) {
     throw new Error('DriveファイルIDがscenesの登録内容と一致しません。');
   }
@@ -1453,6 +1470,7 @@ function getEditableSceneContext_(fileId, options) {
   }
 
   const parentFolderIds = getFileParentFolderIds_(file);
+  if (opts.profile) opts.profile.mark('fileMetadataMs');
   if (parentFolderIds.indexOf(sceneParentFolderId) === -1) {
     throw new Error('Drive上の親フォルダとscenesの親フォルダが一致しません。一覧を同期してください。');
   }
@@ -1463,6 +1481,7 @@ function getEditableSceneContext_(fileId, options) {
     throw new Error('対象Driveファイルは設定済みルートフォルダの配下ではありません。');
   }
 
+  if (opts.profile) opts.profile.mark('actualParentMs');
   return {
     fileId: targetId,
     rootFolderId: rootFolderId,
@@ -2615,13 +2634,15 @@ function getNorthOffsetAccessContext_(fileId) {
  *
  * @param {string} fileId
  * @param {GoogleAppsScript.Drive.File=} file
+ * @param {{fileId:string,allowed:boolean,scene:Object,file:Object}=} validatedAccess 同じ呼出し内でサーバーが認可済みの対象のみ。
  * @returns {number|null}
  */
-function getOrExtractNorthOffset_(fileId, file) {
+function getOrExtractNorthOffset_(fileId, file, validatedAccess) {
   const targetId = String(fileId || '').trim();
   if (!targetId) return null;
 
-  const access = getNorthOffsetAccessContext_(targetId);
+  const access = validatedAccess && validatedAccess.fileId === targetId
+    ? validatedAccess : getNorthOffsetAccessContext_(targetId);
   if (!access.allowed) return null;
 
   // scenes行がある場合はその状態を正とする。manual/noneは非JPEGでもBlobを読まず返し、
@@ -2639,7 +2660,7 @@ function getOrExtractNorthOffset_(fileId, file) {
   const targetFile = file || access.file || DriveApp.getFileById(targetId);
   if (targetFile.getMimeType() !== 'image/jpeg') return null;
 
-  const northOffset = toFiniteNumber_(extractHeadingFromBlob_(targetFile.getBlob()));
+  const northOffset = toFiniteNumber_(extractHeadingFromBlob_(getImageHeadingBlob_(targetFile)));
   try {
     updateExistingSceneNorthOffset_(targetId, northOffset, northOffset == null ? 'none' : 'xmp');
   } catch (cacheError) {
@@ -3149,11 +3170,12 @@ function doGet(e) {
   const params = (e && e.parameter) || {};
   const mode = String(params.mode || '');
   const requestedEditKey = String(params.editKey || '');
-  const template = HtmlService.createTemplateFromFile('index');
+  const template = HtmlService.createTemplateFromFile(params.deliveryLab === '1' ? 'delivery-lab' : 'index');
 
   template.initialMode = mode === 'public' || mode === 'internal' || mode === 'edit' ? mode : '';
   template.editToken = '';
-  const acceptedEditKeys = getAcceptedEditKeys_();
+  // 閲覧HTMLでは認証用のシート・プロパティ取得を行わない。
+  const acceptedEditKeys = mode === 'edit' && requestedEditKey ? getAcceptedEditKeys_() : [];
   const configuredEditKey = acceptedEditKeys.length > 0 ? acceptedEditKeys[0] : '';
   const matchedEditKey = acceptedEditKeys.indexOf(requestedEditKey) !== -1 ? requestedEditKey : '';
 
@@ -3381,9 +3403,10 @@ function getConfigFromFolder_(folderId, options) {
  *
  * @param {string} folderId
  * @param {string} rootFolderId
+ * @param {Object<string,Array<string>>=} parentIdsByFolder 同じ読取検証内のみの親一覧。Drive更新をまたいで再利用しない。
  * @returns {boolean}
  */
-function isDriveFolderWithinRoot_(folderId, rootFolderId) {
+function isDriveFolderWithinRoot_(folderId, rootFolderId, parentIdsByFolder) {
   const targetId = String(folderId || '').trim();
   const rootId = String(rootFolderId || '').trim();
   if (!targetId || !rootId) return false;
@@ -3398,10 +3421,18 @@ function isDriveFolderWithinRoot_(folderId, rootFolderId) {
     visited[currentId] = true;
     inspected += 1;
 
-    const folder = DriveApp.getFolderById(currentId);
-    const parents = folder.getParents();
-    while (parents.hasNext()) {
-      const parentId = String(parents.next().getId() || '').trim();
+    let parentIds;
+    if (parentIdsByFolder && Object.prototype.hasOwnProperty.call(parentIdsByFolder, currentId)) {
+      parentIds = parentIdsByFolder[currentId];
+    } else {
+      const folder = DriveApp.getFolderById(currentId);
+      const parents = folder.getParents();
+      parentIds = [];
+      while (parents.hasNext()) parentIds.push(String(parents.next().getId() || '').trim());
+      if (parentIdsByFolder) parentIdsByFolder[currentId] = parentIds;
+    }
+    for (let i = 0; i < parentIds.length; i++) {
+      const parentId = parentIds[i];
       if (parentId === rootId) return true;
       if (parentId && !visited[parentId]) pendingIds.push(parentId);
     }
@@ -3463,6 +3494,87 @@ function fileToDataUri_(file) {
   return 'data:' + blob.getContentType() + ';base64,' + base64;
 }
 
+/** JPEGのSOFから寸法を読む。画像本文を文字列化せず、切れたデータは拒否する。 */
+function readJpegDimensions_(bytes) {
+  function byte(index) { return bytes[index] & 255; }
+  if (!bytes || bytes.length < 4 || byte(0) !== 255 || byte(1) !== 216) return null;
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (byte(offset) !== 255) return null;
+    while (byte(offset) === 255) offset++;
+    const marker = byte(offset++);
+    if (marker === 217 || marker === 218) return null;
+    if (marker === 1 || (marker >= 208 && marker <= 215)) continue;
+    const length = (byte(offset) << 8) + byte(offset + 1);
+    if (length < 2 || offset + length > bytes.length) return null;
+    if ([192,193,194,195,197,198,199,201,202,203,205,206,207].indexOf(marker) !== -1) {
+      if (length < 8) return null;
+      return { width: (byte(offset + 5) << 8) + byte(offset + 6), height: (byte(offset + 3) << 8) + byte(offset + 4) };
+    }
+    offset += length;
+  }
+  return null;
+}
+
+/**
+ * Driveが生成するプレビューを認証付きで取得する。サイズ指定はベストエフォート。
+ * Google側の変更・小さいサムネイル・比率違い・取得失敗は原寸画像へフォールバックする。
+ * thumbnailLinkとOAuthトークンはクライアントへ返さない。
+ */
+function getFastImageDataUri_(file, profile) {
+  try {
+    const metadata = Drive.Files.get(file.getId(), { fields: 'thumbnailLink,imageMediaMetadata(width,height,rotation),size' });
+    if (profile) profile.mark('previewMetadataMs');
+    const source = metadata.imageMediaMetadata || {};
+    const width = Number(source.width), height = Number(source.height);
+    const link = String(metadata.thumbnailLink || '');
+    if (!(width > 4096 && height > 0) || Number(source.rotation || 0) !== 0) return null;
+    if (!/^https:\/\/lh[0-9]+\.googleusercontent\.com\//.test(link) || !/=s\d+$/.test(link)) return null;
+    const response = UrlFetchApp.fetch(link.replace(/=s\d+$/, '=w4096'), {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) return null;
+    const blob = response.getBlob();
+    if (String(blob.getContentType()).split(';')[0] !== 'image/jpeg') return null;
+    const bytes = blob.getBytes();
+    if (profile) profile.mark('previewFetchMs');
+    if (bytes.length > 3 * 1024 * 1024 || bytes.length >= Number(metadata.size)) return null;
+    const dimensions = readJpegDimensions_(bytes);
+    if (!dimensions || dimensions.width < 2048 || dimensions.width > 4096 ||
+        Math.abs(dimensions.height - dimensions.width * height / width) > 2) return null;
+    const result = 'data:image/jpeg;base64,' + (profile && profile.nativeEncoding
+      ? Utilities.base64Encode(bytes) : encodeImageBytes_(bytes));
+    if (profile) profile.mark('encodingMs');
+    return result;
+  } catch (error) {
+    console.warn('縮小画像を取得できなかったため原寸画像を使用します。');
+    return null;
+  }
+}
+
+/** 呼出元で認可済みのJPEGから、方位抽出に必要な先頭128KiBだけを取得する。 */
+function getImageHeadingBlob_(file) {
+  try {
+    const response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(file.getId()) + '?alt=media', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), Range: 'bytes=0-131071' },
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() === 206) {
+      const headers = response.getHeaders();
+      const range = String(headers['Content-Range'] || headers['content-range'] || '').match(/^bytes 0-(\d+)\/\d+$/);
+      const blob = response.getBlob();
+      const length = blob.getBytes().length;
+      if (range && length > 0 && length <= 131072 && Number(range[1]) + 1 === length) return blob;
+    }
+  } catch (error) {
+    console.warn('画像の部分取得を利用できなかったため従来方式で方位を取得します。');
+  }
+  return file.getBlob();
+}
+
 /**
  * GoogleドライブのURLからファイルIDを抽出する内部ユーティリティ。
  *
@@ -3495,14 +3607,15 @@ function extractDriveFolderId_(url) {
  * @param {string} fileId
  * @returns {{fileId:string,file:Object,scene?:Object|null,rootFolderId:string}}
  */
-function getReadableImageContext_(fileId) {
+function getReadableImageContext_(fileId, profile) {
   const targetId = String(fileId || '').trim();
   if (!targetId) throw new Error('ファイルIDが指定されていません。');
 
   const config = getAppConfig_();
+  if (profile) profile.mark('configMs');
   const configuredUrl = config[IMAGE_DRIVE_URL_CONFIG_KEY] || '';
   const rootFolderId = extractDriveFolderId_(configuredUrl) || '';
-  if (rootFolderId) return getEditableSceneContext_(targetId);
+  if (rootFolderId) return getEditableSceneContext_(targetId, { appConfig: config, profile: profile });
 
   const configuredFileId = extractDriveFileId_(configuredUrl) || '';
   if (!configuredFileId || configuredFileId !== targetId) {
@@ -3526,12 +3639,195 @@ function getReadableImageContext_(fileId) {
  * @param {string} [mode] 'public' の場合は Base64 Data URI を返す。それ以外は lh3 直リンクを返す。
  * @returns {{ success: boolean, imageUrl?: string, error?: string }}
  */
-function getImageDataUri(fileId, mode) {
+/** Derived images stay under the existing private attachment root. Callers hold the write lock. */
+function getSceneThumbnailFolder_(createIfMissing) {
+  const root = getHotspotRootFolder_(false);
+  if (!root) return null;
+  const folders = root.getFoldersByName('thumbnail');
+  if (!folders.hasNext()) return createIfMissing ? root.createFolder('thumbnail') : null;
+  const folder = folders.next();
+  if (folders.hasNext()) throw new Error('サムネイルフォルダが重複しています。');
+  return folder;
+}
+
+/** Encode bounded preview bytes locally, avoiding the Utilities service's large-array conversion. */
+function encodeImageBytes_(bytes) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const chunks = [];
+  let chunk = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i] & 255, b = bytes[i + 1] & 255, c = bytes[i + 2] & 255;
+    chunk += alphabet[a >> 2] + alphabet[((a & 3) << 4) | (b >> 4)] +
+      (i + 1 < bytes.length ? alphabet[((b & 15) << 2) | (c >> 6)] : '=') +
+      (i + 2 < bytes.length ? alphabet[c & 63] : '=');
+    if (chunk.length >= 32768) { chunks.push(chunk); chunk = ''; }
+  }
+  chunks.push(chunk);
+  return chunks.join('');
+}
+
+/** Authorize every read, including cache hits. Never return a signed Drive URL. */
+function readSceneThumbnail_(fileId, persist) {
+  const context = getReadableImageContext_(fileId);
+  const metadata = Drive.Files.get(context.fileId, { fields: 'md5Checksum,thumbnailLink' });
+  const checksum = String(metadata.md5Checksum || '');
+  const name = 'scene-v1-' + context.fileId + '-' + checksum + '.jpg';
+  const reusable = /^[a-f0-9]{32}$/i.test(checksum);
+  let folder = getSceneThumbnailFolder_(false);
+  if (folder && reusable) {
+    const files = folder.getFilesByName(name);
+    if (files.hasNext()) {
+      const file = files.next();
+      if (file.getSize() <= 100000) return { success: true, imageUrl: fileToDataUri_(file) };
+    }
+  }
+  const link = String(metadata.thumbnailLink || '');
+  if (!/^https:\/\/lh[0-9]+\.googleusercontent\.com\//.test(link) || !/=s\d+$/.test(link)) {
+    throw new Error('サムネイルを利用できません。');
+  }
+  const response = UrlFetchApp.fetch(link.replace(/=s\d+$/, '=w320'), {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    followRedirects: false, muteHttpExceptions: true
+  });
+  if (response.getResponseCode() !== 200) throw new Error('サムネイル取得失敗');
+  const blob = response.getBlob();
+  const bytes = blob.getBytes();
+  const dimensions = readJpegDimensions_(bytes);
+  if (String(blob.getContentType()).split(';')[0] !== 'image/jpeg' || bytes.length > 100000 ||
+      !dimensions || dimensions.width > 640 || dimensions.height > 640) throw new Error('サムネイル形式不正');
+  if (persist && reusable) {
+    const lock = acquireLock_();
+    try {
+      folder = getSceneThumbnailFolder_(true);
+      // Another editor may have completed the same generation while we fetched it.
+      if (folder && !folder.getFilesByName(name).hasNext()) folder.createFile(blob.setName(name));
+    } finally { lock.releaseLock(); }
+  }
+  return { success: true, imageUrl: 'data:image/jpeg;base64,' + Utilities.base64Encode(bytes) };
+}
+
+function getSceneThumbnail(fileId) {
+  try { return readSceneThumbnail_(fileId, false); }
+  catch (error) { return { success: false, error: 'サムネイルを取得できませんでした。' }; }
+}
+
+/** Read-only experimental derivatives. Revalidate scene scope and source revision on every RPC. */
+function getGooglePackContext_(fileId) {
+  const context = getReadableImageContext_(fileId);
+  const checksum = String(Drive.Files.get(context.fileId, { fields: 'md5Checksum' }).md5Checksum || '');
+  if (!/^[a-f0-9]{32}$/.test(checksum)) throw new Error('Unsupported source');
+  const cacheKey = 'google-pack-v1:' + (context.rootFolderId || '') + ':' + context.fileId + ':' + checksum;
+  let metadataCache = null;
+  try {
+    metadataCache = CacheService.getScriptCache();
+    const cached = metadataCache.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch (cacheError) { /* Cache is optional; authorization and revision checks above are never skipped. */ }
+  const root = getHotspotRootFolder_(false);
+  function uniqueFolder(parent, name) {
+    if (!parent) throw new Error('No pack');
+    const entries = parent.getFoldersByName(name);
+    if (!entries.hasNext()) throw new Error('No pack');
+    const folder = entries.next();
+    if (entries.hasNext()) throw new Error('Duplicate pack');
+    return folder;
+  }
+  const parent = uniqueFolder(root, 'progressive');
+  const folder = uniqueFolder(parent, 'google-v1-' + context.fileId + '-' + checksum);
+  const manifests = folder.getFilesByName('manifest.json');
+  if (!manifests.hasNext()) throw new Error('Incomplete pack');
+  const manifestFile = manifests.next();
+  if (manifests.hasNext() || manifestFile.getSize() > 20000) throw new Error('Invalid manifest');
+  const manifest = JSON.parse(manifestFile.getBlob().getDataAsString());
+  if (manifest.schemaVersion !== 1 || manifest.sceneId !== context.fileId || manifest.checksum !== checksum ||
+      !Number.isInteger(manifest.width) || manifest.width < 512 || manifest.width > 4096 || manifest.width % 8 ||
+      manifest.height !== manifest.width / 2 || manifest.columns !== 8 || manifest.rows !== 4) throw new Error('Invalid manifest');
+  const listing = Drive.Files.list({q: "'" + folder.getId() + "' in parents and trashed = false", pageSize:100,
+    fields:'nextPageToken,files(id,name,size,mimeType)'});
+  if (listing.nextPageToken) throw new Error('Oversized pack');
+  const result = { checksum:checksum, manifest:manifest, files:listing.files || [] };
+  try { if (metadataCache) metadataCache.put(cacheKey, JSON.stringify(result), 120); } catch (cacheError) { /* optional */ }
+  return result;
+}
+
+function getSceneProgressiveImage(fileId, kind) {
+  try {
+    if (kind !== 'preview' && kind !== 'full') throw new Error('Invalid kind');
+    const context = getGooglePackContext_(fileId);
+    const matches = context.files.filter(function(file) { return file.name === kind + '.jpg'; });
+    if (matches.length !== 1 || Number(matches[0].size) > 4000000 || matches[0].mimeType !== 'image/jpeg') throw new Error('Missing image');
+    const file = DriveApp.getFileById(matches[0].id);
+    return { success:true, checksum:context.checksum, width:context.manifest.width, height:context.manifest.height,
+      imageUrl:fileToDataUri_(file) };
+  } catch (error) { return { success:false, error:'比較用画像が未準備、変更済み、または取得できません。' }; }
+}
+
+function getSceneTileBatch(request) {
+  try {
+    const req = request || {};
+    if (!Array.isArray(req.tiles) || !req.tiles.length || req.tiles.length > 8 ||
+        req.tiles.some(function(index) { return !Number.isInteger(index) || index < 0 || index >= 32; })) throw new Error('Invalid tiles');
+    const context = getGooglePackContext_(req.fileId);
+    if (req.checksum !== context.checksum) throw new Error('Stale pack');
+    const indices = Array.from(new Set(req.tiles));
+    let total = 0;
+    const files = indices.map(function(index) {
+      const matches = context.files.filter(function(file) { return file.name === 'tile-' + index + '.jpg'; });
+      if (matches.length !== 1 || matches[0].mimeType !== 'image/jpeg' || !(Number(matches[0].size) > 0) || Number(matches[0].size) > 400000) throw new Error('Missing tile');
+      total += Number(matches[0].size);
+      return matches[0];
+    });
+    if (total > 2000000) throw new Error('Oversized batch');
+    const token = ScriptApp.getOAuthToken();
+    const responses = UrlFetchApp.fetchAll(files.map(function(file) {
+      return {url:'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(file.id) + '?alt=media',
+        headers:{Authorization:'Bearer ' + token}, followRedirects:false, muteHttpExceptions:true};
+    }));
+    const tiles = [], failed = [];
+    responses.forEach(function(response, i) {
+      if (response.getResponseCode() !== 200) { failed.push(indices[i]); return; }
+      const blob = response.getBlob(), bytes = blob.getBytes(), size = readJpegDimensions_(bytes);
+      if (bytes.length > 400000 || String(blob.getContentType()).split(';')[0] !== 'image/jpeg' || !size ||
+          size.width !== context.manifest.width / 8 || size.height !== context.manifest.height / 4) { failed.push(indices[i]); return; }
+      tiles.push({index:indices[i], imageUrl:'data:image/jpeg;base64,' + Utilities.base64Encode(bytes)});
+    });
+    return {success:true, tiles:tiles, failed:failed};
+  } catch (error) { return {success:false, error:'分割画像を取得できませんでした。'}; }
+}
+
+function prepareSceneThumbnail(payload) {
+  try {
+    assertEditToken_(payload);
+    return readSceneThumbnail_(payload.fileId, true);
+  } catch (error) { return { success: false, error: 'サムネイルを準備できませんでした。' }; }
+}
+
+/** Read-only diagnostics; returns durations, never tokens or signed Drive URLs. */
+function getImageDeliveryProfile(fileId, nativeEncoding) {
+  const started = Date.now(), timings = {};
+  let previous = started;
+  const profile = { nativeEncoding: nativeEncoding === true, mark: function(name) { const now = Date.now(); timings[name] = now - previous; previous = now; } };
+  try {
+    const context = getReadableImageContext_(fileId, profile);
+    timings.authorizationMs = Date.now() - started;
+    previous = Date.now();
+    const preview = getFastImageDataUri_(context.file, profile);
+    const imageUrl = preview || fileToDataUri_(context.file);
+    if (!preview) profile.mark('originalFallbackMs');
+    timings.totalMs = Date.now() - started;
+    return { success: true, imageUrl: imageUrl, quality: preview ? 'fast' : 'original', timings: timings };
+  } catch (error) {
+    return { success: false, error: '画像の取得に失敗しました。' };
+  }
+}
+
+function getImageDataUri(fileId, mode, quality) {
   try {
     const context = getReadableImageContext_(fileId);
     const file = context.file;
     if (mode === 'public') {
-      return { success: true, imageUrl: fileToDataUri_(file) };
+      const preview = quality === 'fast' ? getFastImageDataUri_(file) : null;
+      return { success: true, imageUrl: preview || fileToDataUri_(file), quality: preview ? 'fast' : 'original' };
     }
     return { success: true, imageUrl: 'https://lh3.googleusercontent.com/d/' + context.fileId + '=s0' };
   } catch (e) {
@@ -3935,7 +4231,7 @@ function validateMigrationRootFolder_(folder, containerContext, allowedNames) {
     throw createHotspotFolderMigrationError_('移行中のHotspotルート名がジャーナルと一致しません。', true);
   }
   if (containerContext.configuredImageRootId &&
-      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId, containerContext.readOnlyParentIds)) {
     throw createHotspotFolderMigrationError_('移行中のHotspotルートはIMAGE_DRIVE_URL配下に配置できません。', true);
   }
 }
@@ -4015,6 +4311,9 @@ function recoverUntrackedHotspotChild_(rootFolder, targetName, kind, otherOffici
 }
 
 function inspectHotspotFolderStructure_(propertyIds, containerContext, allowInterruptedRecovery) {
+  // この関数は復旧候補の調査も含め読取のみ。呼出し元へ返さない複製で共有し、
+  // 実際の作成・移行や次の呼出しでは、移動後の親を必ず読み直す。
+  containerContext = Object.assign({}, containerContext, { readOnlyParentIds: Object.create(null) });
   const distinctIds = [propertyIds.rootId, propertyIds.photoId, propertyIds.audioId].filter(Boolean);
   if (new Set(distinctIds).size !== distinctIds.length) {
     throw new Error('Hotspotルート、photos、audioにはすべて異なる正式IDが必要です。');
@@ -4288,7 +4587,7 @@ function validateHotspotChildForRead_(folder, rootFolder, containerContext, labe
     throw new Error('正式な' + label + 'フォルダの親フォルダが不正です。');
   }
   if (containerContext.configuredImageRootId &&
-      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId)) {
+      isDriveFolderWithinRoot_(folderId, containerContext.configuredImageRootId, containerContext.readOnlyParentIds)) {
     throw new Error('正式な' + label + 'フォルダはIMAGE_DRIVE_URL配下に配置できません。');
   }
   return folder;
@@ -5198,7 +5497,7 @@ function getHotspotStorageContext_(storageFileId) {
 
   if (rootFolderId) {
     if (!storageId) throw new Error('対象シーンIDが指定されていません。');
-    const editable = getEditableSceneContext_(storageId);
+    const editable = getEditableSceneContext_(storageId, { appConfig: config });
     return {
       storageFileId: storageId,
       actualFileId: editable.fileId,
@@ -5482,7 +5781,15 @@ function loadHotspots(request) {
   var northOffset = null;
   if (fileId) {
     try {
-      northOffset = getOrExtractNorthOffset_(fileId);
+      // フォルダ内の画像は上でDriveの実親・scenes登録・対象IDの一致まで検証済み。
+      // 単一画像はscenesに別途保存された方位設定も確認するため従来経路を使う。
+      const validatedNorthAccess = accessContext.rootFolderId ? {
+        fileId: accessContext.actualFileId,
+        allowed: normalizeSceneType_(accessContext.scene && accessContext.scene.type) === SCENE_TYPE_360,
+        scene: accessContext.scene,
+        file: accessContext.file
+      } : null;
+      northOffset = getOrExtractNorthOffset_(fileId, accessContext.file, validatedNorthAccess);
     } catch (metaErr) {
       console.warn('loadHotspots: northOffset 取得スキップ:', metaErr.message);
     }
@@ -5906,8 +6213,9 @@ function updateHotspot(data, hotspotId) {
  * ID 列が空の既存行には UUID を自動付与する。
  *
  * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ * @param {{preserveCurrentLayout?:boolean}=} options 通常保存では現行スキーマの書式を再設定しない。
  */
-function migrateSheetIfNeeded_(sheet) {
+function migrateSheetIfNeeded_(sheet, options) {
   const originalColumns = sheet.getLastColumn();
   const targetColumns = INFO_HEADERS.length;
   if (originalColumns === 0) {
@@ -6003,7 +6311,11 @@ function migrateSheetIfNeeded_(sheet) {
     }
   }
 
-  applyInfoSheetSchema_(sheet);
+  const schemaAlreadyCurrent = originalColumns === targetColumns &&
+    originalHeader.every(function(value, index) { return value === INFO_HEADERS[index]; });
+  if (!(options && options.preserveCurrentLayout && schemaAlreadyCurrent)) {
+    applyInfoSheetSchema_(sheet);
+  }
   return { migrated: migrated, idsAdded: idsAdded };
 }
 
@@ -6014,7 +6326,7 @@ function migrateSheetIfNeeded_(sheet) {
  * @returns {{migrated:boolean,idsAdded?:number}}
  */
 function ensureInfoSheetSchema_(sheet) {
-  const result = migrateSheetIfNeeded_(sheet);
+  const result = migrateSheetIfNeeded_(sheet, { preserveCurrentLayout: true });
   if (result && result.warning) throw new Error(result.warning);
   return result;
 }

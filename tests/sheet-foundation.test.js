@@ -946,6 +946,23 @@ test('info migration keeps unknown schemas untouched and aligns known five-colum
   assert.equal(legacy.__rows[1][13], '');
 });
 
+test('ordinary info writes preserve current layout while repairing missing hotspot IDs', () => {
+  const info = createSheet('info', [INFO_HEADERS,
+    ['2026-09-08', 'scene-a', 'Keep', '', '', 1, 2, 'circle', 'blue', 'info', '', '', 'keep-id', ''],
+    ['2026-09-08', 'scene-a', 'Repair', '', '', 3, 4, 'circle', 'blue', 'info', '', '', '', '']
+  ]);
+  const context = loadCode({ sheets: { info } });
+  const result = context.ensureInfoSheetSchema_(info);
+  assert.equal(result.idsAdded, 1);
+  assert.equal(info.__rows[1][12], 'keep-id');
+  assert.equal(info.__rows[2][12], 'uuid-1');
+  assert.equal(info.__columnWidthCalls.length, 0);
+  assert.equal(info.__setValuesCalls.some(call => call.row === 1), false);
+  // Explicit setup still restores the standard sheet layout.
+  context.migrateSheetIfNeeded_(info);
+  assert.equal(info.__columnWidthCalls.length, INFO_HEADERS.length);
+});
+
 test('info migration appends audio ID after the existing M-column hotspot ID without moving or replacing it', () => {
   const previousHeaders = INFO_HEADERS.slice(0, 13);
   const info = createSheet('info', [
@@ -1963,6 +1980,17 @@ test('public folder navigation synchronizes only the configured root subtree', (
   const allowed = context.navigateToFolder(childId, true);
   assert.equal(allowed.error, undefined);
   assert.ok(context.readSceneRows_(scenesSheet).byFileId['child-image-file']);
+
+  childFolder.__files.push(createDriveFile({ id: 'added-child-image', name: 'Added.jpg' }));
+  const cached = context.navigateToFolder(childId, false);
+  assert.equal(cached.images.some(image => image.id === 'added-child-image'), false);
+  assert.equal(context.readSceneRows_(scenesSheet).byFileId['added-child-image'], undefined);
+  const refreshed = context.navigateToFolder(childId, true);
+  assert.equal(refreshed.images.some(image => image.id === 'added-child-image'), true);
+
+  // Even a warm list must not bypass the current Drive subtree check after a move.
+  childFolder.__setParents([outsideFolder]);
+  assert.match(context.navigateToFolder(childId, false).error, /ルートフォルダ|範囲|配下/);
 
   const rejected = context.navigateToFolder(outsideId, true);
   assert.match(rejected.error, /ルートフォルダ|範囲|配下/);
@@ -3764,6 +3792,32 @@ function reviewInfoRow(fileId, label, id, options = {}) {
   ];
 }
 
+test('public hotspot load reuses validated folder context for heading without repeating Drive reads', () => {
+  const rootId = 'read-once-root-folder-123';
+  const sceneId = 'read-once-scene-file-123';
+  const file = createDriveFile({ id: sceneId, name: 'Scene.jpg' });
+  const context = loadCode({
+    sheets: {
+      config: createFolderConfigSheet(rootId),
+      scenes: createSheet('scenes', [EXPECTED_SCENE_HEADERS, reviewSceneRow(sceneId, 'Scene.jpg', rootId, { northOffset: 45, northOffsetSource: 'manual' })]),
+      info: createSheet('info', [INFO_HEADERS, reviewInfoRow(sceneId, '公開情報', 'read-once-hotspot')])
+    },
+    driveFolders: { [rootId]: createDriveFolder({ id: rootId, files: [file] }) }
+  });
+  const originalGetFile = context.DriveApp.getFileById;
+  let driveReads = 0;
+  const originalGetConfig = context.getAppConfig_;
+  let configReads = 0;
+  context.getAppConfig_ = function () { configReads++; return originalGetConfig(); };
+  context.DriveApp.getFileById = function (id) { driveReads++; return originalGetFile(id); };
+  const result = context.loadHotspots(sceneId);
+  assert.equal(result.hotspots[0].label, '公開情報');
+  assert.equal(result.northOffset, 45);
+  assert.equal(driveReads, 1);
+  assert.equal(configReads, 1);
+  assert.equal(file.__blobReads, 0);
+});
+
 test('public hotspot and photo reads stay inside configured, associated image IDs', () => {
   const rootId = 'review-public-root-folder';
   const outsideFolderId = 'review-public-outside-folder';
@@ -4825,6 +4879,28 @@ test('an already complete normal structure performs zero Drive mutations on late
 
   assert.deepEqual(fixture.operations, operationsAfterFirst);
   assert.equal(fixture.context.__scriptProperties.HOTSPOT_FOLDER_MIGRATION_STATE, undefined);
+});
+
+test('read-only attachment inspection shares ancestor reads only within one lookup', () => {
+  const fixture = createHotspotFolderStructureFixture({ legacyPhoto: false, legacyAudio: false });
+  const created = fixture.context.getHotspotFolderStructure_(true);
+  const originalGetFolder = fixture.context.DriveApp.getFolderById;
+  let projectReads = 0;
+  fixture.context.DriveApp.getFolderById = function (id) {
+    if (id === fixture.containerParent.getId()) projectReads++;
+    return originalGetFolder(id);
+  };
+  const operationsBefore = fixture.operations.slice();
+  const first = fixture.context.getHotspotFolderStructure_(false);
+  assert.equal(first.audioFolder.getId(), created.audioFolder.getId());
+  assert.equal(projectReads, 2); // Container eligibility, then the shared attachment ancestry walk.
+  fixture.context.getHotspotFolderStructure_(false);
+  assert.equal(projectReads, 4);
+  fixture.context.getHotspotFolderStructure_(true);
+  assert.equal(projectReads, 6); // Write preflight is also read-only until inspection returns.
+  assert.deepEqual(fixture.operations, operationsBefore);
+  fixture.containerParent.__setParents([fixture.imageRoot]);
+  assert.throws(() => fixture.context.getHotspotFolderStructure_(false), /IMAGE_DRIVE_URL/);
 });
 
 test('read-only folder lookup never resumes or mutates an active migration journal', () => {

@@ -4,6 +4,102 @@ const { createWavBuffer } = require('../helpers/create-wav-fixture');
 
 let harnessServer;
 
+for (const editing of [false, true]) {
+  test(`renews expired editor and ${editing ? 'update' : 'save'} tokens without losing photo or audio`, async ({ page }) => {
+    await openHarness(page);
+    if (editing) await openExistingAudioForm(page, 'renewal');
+    else await openInfoForm(page);
+    await page.locator('#input-label').fill('添付保持の検証');
+    await page.evaluate(() => {
+      google.script.url = { getLocation(callback) { callback({ parameter: { mode: 'edit', editKey: 'fixture-key' } }); } };
+      window.__HARNESS_BEHAVIOR__.refreshEditToken = { response: { editToken: 'renewed-token' } };
+      window.__HARNESS_BEHAVIOR__.getAudioVendorBundle = { queue: [
+        { outcome: 'failure', message: 'Error: 編集権限が確認できません。通常の編集画面を開き直してください。' },
+        { outcome: 'success' }
+      ] };
+    });
+    await chooseAudio(page, page.locator(editing ? '#hotspot-audio-change-btn' : '#hotspot-audio-open-editor-btn'));
+    await expect(page.locator('[data-hae-editor]')).toBeVisible();
+    await page.locator('[data-hae-confirm]').click();
+    await expect(page.locator('#hotspot-audio-attach-result')).toBeEnabled({ timeout: 15000 });
+    await page.locator('#hotspot-audio-attach-result').click();
+    await page.waitForFunction(() => !!hotspotAudioAttachmentState.base64);
+    const png = await require('sharp')({ create: { width: 16, height: 16, channels: 3, background: '#3977cc' } }).png().toBuffer();
+    await page.locator('#hotspot-photo-file-input').setInputFiles({ name: 'guide.png', mimeType: 'image/png', buffer: png });
+    await expect(page.locator('#hotspot-photo-upload-card')).toBeVisible();
+    const method = editing ? 'updateHotspot' : 'saveHotspot';
+    await page.evaluate((method) => {
+      window.__HARNESS_BEHAVIOR__[method] = { queue: [
+        { outcome: 'failure', message: '編集権限が確認できません。通常の編集画面を開き直してください。' },
+        { outcome: 'success' }
+      ] };
+    }, method);
+    await page.locator('#btn-save').click();
+    await expect(page.locator('#hotspot-popup')).not.toHaveClass(/visible/);
+    const calls = await page.evaluate(method => window.__HARNESS_CALLS__.filter(call => call.method === method), method);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args[0]).toMatchObject({ label: '添付保持の検証', __editToken: 'renewed-token',
+      photoUpload: { mimeType: 'image/png' }, audioUpload: { mimeType: 'audio/mpeg' } });
+    expect(calls[1].args[0].photoUpload.base64).toBe(calls[0].args[0].photoUpload.base64);
+    expect(calls[1].args[0].audioUpload.base64).toBe(calls[0].args[0].audioUpload.base64);
+    if (editing) expect(calls[1].args[1]).toBe('existing-audio-renewal');
+    expect(await page.evaluate(() => window.__HARNESS_ERRORS__)).toEqual([]);
+  });
+}
+
+async function chooseAudio(page, trigger = page.locator('#hotspot-audio-open-editor-btn')) {
+  const chosen = page.waitForEvent('filechooser');
+  await trigger.click();
+  await (await chosen).setFiles({ name: 'direct-choice.wav', mimeType: 'audio/wav',
+    buffer: createWavBuffer({ duration: 2.5, sampleRate: 8000 }) });
+}
+
+test('opens the file picker directly and skips the empty editor screen', async ({ page }) => {
+  await openHarness(page);
+  await openInfoForm(page);
+  const picker = page.waitForEvent('filechooser', { timeout: 2000 }).catch(() => null);
+  await page.locator('#hotspot-audio-open-editor-btn').click();
+  const chooser = await picker;
+  expect(chooser, 'attachment button must open the native file picker').not.toBeNull();
+  await expect(page.locator('#hotspot-audio-editor-dialog')).not.toBeVisible();
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getAudioVendorBundle').length)).toBe(0);
+  await chooser.setFiles({ name: 'direct.wav', mimeType: 'audio/wav', buffer: createWavBuffer({ duration: 2 }) });
+  await expect(page.locator('#hotspot-audio-editor-dialog')).toBeVisible();
+  await expect(page.locator('[data-hae-editor]')).toBeVisible();
+  await expect(page.locator('[data-hae-empty]')).not.toBeVisible();
+  await expect(page.locator('[data-hae-file-name]')).toHaveText('direct.wav');
+});
+
+test('canceling the picker keeps the existing attachment and allows selecting again', async ({ page }) => {
+  await openHarness(page);
+  const existing = await openExistingAudioForm(page, 'picker-cancel');
+  await page.locator('#input-label').fill('入力を保持');
+  const chosen = page.waitForEvent('filechooser');
+  await page.locator('#hotspot-audio-change-btn').click();
+  await (await chosen).setFiles([]);
+  await expect(page.locator('#hotspot-audio-editor-dialog')).not.toBeVisible();
+  await expect(page.locator('#input-label')).toHaveValue('入力を保持');
+  expect(await page.evaluate(() => ({ id: hotspotAudioAttachmentState.existingAudioId,
+    operation: hotspotAudioAttachmentState.operation,
+    requests: window.__HARNESS_CALLS__.filter(c => c.method === 'getAudioVendorBundle').length
+  }))).toEqual({ id: existing.audioId, operation: 'keep', requests: 0 });
+  await chooseAudio(page, page.locator('#hotspot-audio-change-btn'));
+  await expect(page.locator('[data-hae-editor]')).toBeVisible();
+});
+
+test('ignores a file chosen for a form that has already closed', async ({ page }) => {
+  await openHarness(page);
+  await openInfoForm(page);
+  const chosen = page.waitForEvent('filechooser');
+  await page.locator('#hotspot-audio-open-editor-btn').click();
+  const chooser = await chosen;
+  await page.evaluate(() => closePopup({ silent: true }));
+  await openInfoForm(page);
+  await chooser.setFiles({ name: 'stale.wav', mimeType: 'audio/wav', buffer: createWavBuffer({ duration: 2 }) });
+  await expect(page.locator('#hotspot-audio-editor-dialog')).not.toBeVisible();
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getAudioVendorBundle').length)).toBe(0);
+});
+
 test.beforeAll(async () => {
   harnessServer = await startHarnessServer();
 });
@@ -76,7 +172,7 @@ test('edits real WAV audio to MP3, keeps it client-only, and sends it with hotsp
   await page.locator('#marker-style-toggle').click();
   await page.locator('#marker-icon').selectOption('warning');
 
-  await page.locator('#hotspot-audio-open-editor-btn').click();
+  await chooseAudio(page);
   const dialog = page.locator('#hotspot-audio-editor-dialog');
   await expect(dialog).toHaveAttribute('open', '');
   expect(await page.evaluate(() => ({
@@ -167,10 +263,10 @@ test('edits real WAV audio to MP3, keeps it client-only, and sends it with hotsp
     fileName: hotspotAudioAttachmentState.fileName,
     base64Length: hotspotAudioAttachmentState.base64.length
   }));
-  await page.locator('#hotspot-audio-change-btn').click();
+  await chooseAudio(page, page.locator('#hotspot-audio-change-btn'));
   await expect(dialog).toHaveAttribute('open', '');
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
-  expect(await dialog.evaluate((element) => getComputedStyle(element).getPropertyValue('--hae-bg').trim())).toBe('#111827');
+  expect(await dialog.evaluate((element) => getComputedStyle(element).getPropertyValue('--hae-bg').trim())).toBe('#27272A');
   await page.locator('#hae-audio-file').setInputFiles({
     name: 'unconfirmed-replacement.wav',
     mimeType: 'audio/wav',
@@ -226,11 +322,11 @@ test('fits a tablet viewport and canceling an uncommitted edit leaves no pending
   await page.setViewportSize({ width: 768, height: 1024 });
   await openHarness(page);
   await openInfoForm(page);
-  await page.locator('#hotspot-audio-open-editor-btn').click();
+  await chooseAudio(page);
 
   const dialog = page.locator('#hotspot-audio-editor-dialog');
   await expect(dialog).toHaveAttribute('open', '');
-  expect(await dialog.evaluate((element) => getComputedStyle(element).getPropertyValue('--hae-bg').trim())).toBe('#f3f6f8');
+  expect(await dialog.evaluate((element) => getComputedStyle(element).getPropertyValue('--hae-bg').trim())).toBe('#F8FAFC');
   const geometry = await dialog.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return {
@@ -323,7 +419,7 @@ test('keeps an existing single-image attachment unchanged or explicitly removes 
   expect(removed.audioUpload).toBeUndefined();
 
   expect(await page.evaluate((args) => openPopup(260, 180, args), editArgs)).toBe(true);
-  await page.locator('#hotspot-audio-change-btn').click();
+  await chooseAudio(page, page.locator('#hotspot-audio-change-btn'));
   await page.locator('#hae-audio-file').setInputFiles({
     name: 'replacement.wav',
     mimeType: 'audio/wav',
@@ -368,7 +464,7 @@ test('loads associated public audio lazily without autoplay and discards a late 
   await page.waitForTimeout(150);
   await expect(page.locator('#active-info-popup')).toHaveCount(0);
 
-  await page.evaluate(() => {
+  const initialFailureStatus = await page.evaluate(() => {
     window.__HARNESS_BEHAVIOR__.getHotspotAudioData = { outcome: 'error', delay: 100 };
     onMarkerClick({ clientX: 210, clientY: 190, currentTarget: null }, {
       id: 'audio-hotspot-error',
@@ -376,18 +472,19 @@ test('loads associated public audio lazily without autoplay and discards a late 
       label: '取得失敗',
       audioId: 'audio-file-error'
     });
+    return document.querySelector('#popup-audio-area .info-popup-audio-status').textContent;
   });
   const failureArea = page.locator('#popup-audio-area');
   const failureAudio = failureArea.locator('audio');
   await expect(failureAudio).toBeVisible();
   await expect(failureAudio).not.toHaveAttribute('src', /.+/);
   await expect(failureAudio).toHaveAttribute('aria-disabled', 'true');
-  await expect(failureArea.locator('.info-popup-audio-status')).toHaveText('音声を準備しています…');
+  expect(initialFailureStatus).toBe('音声を準備しています…');
   await expect(failureArea).toHaveClass(/info-popup-audio-error/);
   await expect(failureArea.locator('.info-popup-audio-status')).toHaveText('音声を読み込めませんでした');
   await page.evaluate(() => closeActiveInfoPopup({ restoreFocus: false }));
 
-  await page.evaluate(() => {
+  const initialAudioState = await page.evaluate(() => {
     window.__HARNESS_BEHAVIOR__.getHotspotAudioData = {
       outcome: 'success',
       delay: 100,
@@ -406,6 +503,8 @@ test('loads associated public audio lazily without autoplay and discards a late 
       audioId: 'audio-file-2'
     });
     window.__immediatePopupAudio = document.querySelector('#active-info-popup audio');
+    return { src: window.__immediatePopupAudio.getAttribute('src'),
+      status: document.querySelector('#active-info-popup .info-popup-audio-status').textContent };
   });
   const audio = page.locator('#active-info-popup audio');
   await expect(audio).toBeVisible();
@@ -413,8 +512,7 @@ test('loads associated public audio lazily without autoplay and discards a late 
   await expect(audio).toHaveAttribute('controlslist', 'nodownload');
   await expect(audio).toHaveAttribute('preload', 'none');
   expect(await audio.evaluate((element) => element.controlsList.contains('nodownload'))).toBe(true);
-  await expect(audio).not.toHaveAttribute('src', /.+/);
-  await expect(page.locator('.info-popup-audio-status')).toHaveText('音声を準備しています…');
+  expect(initialAudioState).toEqual({ src: null, status: '音声を準備しています…' });
   await expect(audio).toHaveAttribute('src', /^data:audio\/mpeg;base64,/);
   expect(await page.evaluate(() => window.__immediatePopupAudio === document.querySelector('#active-info-popup audio'))).toBe(true);
   await expect(page.locator('.info-popup-audio-status')).toBeHidden();
@@ -490,7 +588,7 @@ test('loads the audio vendor once, joins concurrent opens, and reuses it after c
   }))).toEqual({ mediabunny: 'object', mp3Encoder: 'object' });
 
   await dialog.getByRole('button', { name: '音声編集を閉じる' }).click();
-  await page.locator('#hotspot-audio-open-editor-btn').click();
+  await chooseAudio(page);
   await expect(dialog).toHaveAttribute('open', '');
   expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length)).toBe(1);
   expect(vendorEndpointRequests).toHaveLength(1);
@@ -505,7 +603,7 @@ test('does not open a stale form after loading and never requests the editor ven
   await openInfoForm(page);
   await page.evaluate(() => {
     window.__HARNESS_BEHAVIOR__.getAudioVendorBundle = { delay: 250 };
-    document.getElementById('hotspot-audio-open-editor-btn').click();
+    openHotspotAudioEditor(document.getElementById('hotspot-audio-open-editor-btn'));
     closePopup({ silent: true });
   });
   await page.waitForTimeout(350);
@@ -568,7 +666,7 @@ test('preserves form and audio state after vendor failure, then retries once and
     };
   });
 
-  await page.locator('#hotspot-audio-change-btn').click();
+  await chooseAudio(page, page.locator('#hotspot-audio-change-btn'));
   await expect(page.locator('#hotspot-audio-error')).toHaveText('音声エディターを準備できませんでした。もう一度お試しください。');
   await expect(page.locator('#hotspot-audio-editor-dialog')).not.toHaveAttribute('open', '');
   await expect(page.locator('#hotspot-audio-open-editor-btn')).toBeEnabled();
@@ -591,7 +689,7 @@ test('preserves form and audio state after vendor failure, then retries once and
     vendorCalls: 1
   });
 
-  await page.locator('#hotspot-audio-change-btn').click();
+  await chooseAudio(page, page.locator('#hotspot-audio-change-btn'));
   await expect(page.locator('#hotspot-audio-editor-dialog')).toHaveAttribute('open', '');
   expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length)).toBe(2);
   expect(pageErrors).toEqual([]);
@@ -613,7 +711,7 @@ test('rolls back a failed editor initialization and retries without reloading th
   });
 
   const trigger = page.locator('#hotspot-audio-change-btn');
-  await trigger.click();
+  await chooseAudio(page, trigger);
   await expect.poll(() => page.evaluate(() =>
     window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length
   )).toBe(1);
@@ -648,7 +746,7 @@ test('rolls back a failed editor initialization and retries without reloading th
     window.HemisphereAudioEditor.init = window.__originalHotspotAudioEditorInit;
     delete window.__originalHotspotAudioEditorInit;
   });
-  await trigger.click();
+  await chooseAudio(page, trigger);
   await expect(page.locator('#hotspot-audio-editor-dialog')).toHaveAttribute('open', '');
   expect(await page.evaluate(() =>
     window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length
@@ -692,7 +790,7 @@ test('rejects invalid vendor responses, resets the loader, and restores the real
     }, scenario.response);
 
     const trigger = page.locator('#hotspot-audio-open-editor-btn');
-    await trigger.click();
+    await chooseAudio(page, trigger);
     await expect(page.locator('#hotspot-audio-error')).toHaveText('音声エディターを準備できませんでした。もう一度お試しください。');
     await expect(page.locator('#hotspot-audio-editor-dialog')).not.toHaveAttribute('open', '');
     await expect(trigger).toBeEnabled();
@@ -718,7 +816,7 @@ test('rejects invalid vendor responses, resets the loader, and restores the real
       expect(await page.evaluate(() => window.__wrongAudioVendorExecuted)).toBeUndefined();
     }
 
-    await trigger.click();
+    await chooseAudio(page, trigger);
     await expect(page.locator('#hotspot-audio-editor-dialog')).toHaveAttribute('open', '');
     expect(await page.evaluate(() => ({
       vendorCalls: window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length,
@@ -760,7 +858,7 @@ test('releases the current vendor opening attempt when the form leaves info mode
     }, scenario.behavior);
 
     const trigger = page.locator('#hotspot-audio-change-btn');
-    await trigger.click();
+    await chooseAudio(page, trigger);
     await expect.poll(() => page.evaluate(() =>
       window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length
     )).toBe(1);
@@ -798,7 +896,7 @@ test('releases the current vendor opening attempt when the form leaves info mode
       });
     }
     await expect(trigger).toBeEnabled();
-    await trigger.click();
+    await chooseAudio(page, trigger);
     await expect(page.locator('#hotspot-audio-editor-dialog')).toHaveAttribute('open', '');
     expect(await page.evaluate(() =>
       window.__HARNESS_CALLS__.filter((call) => call.method === 'getAudioVendorBundle').length

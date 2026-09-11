@@ -42,11 +42,11 @@ function extractMarkedCss(source) {
   return source.slice(startAt + startMarker.length, endAt);
 }
 
-test('GAS client uses only the traditional three HTML files and two includes', () => {
+test('main GAS client retains its two includes and the delivery lab stays separate', () => {
   const htmlFiles = fs.readdirSync(root)
     .filter((name) => name.endsWith('.html'))
     .sort();
-  assert.deepEqual(htmlFiles, ['app.html', 'index.html', 'styles.html']);
+  assert.deepEqual(htmlFiles, ['app.html', 'delivery-lab.html', 'index.html', 'progressive-client.html', 'styles.html']);
 
   const index = read('index.html');
   const includes = Array.from(index.matchAll(/include\(["']([^"']+)["']\)/g), (match) => match[1]);
@@ -330,7 +330,7 @@ test('audio vendor loader is an authenticated retryable singleton with exact run
 
   const loader = app.slice(loaderStart, openStart);
   assert.match(app, /var audioVendorBundlePromise\s*=\s*null\s*;/);
-  assert.match(loader, /\.getAudioVendorBundle\(withEditToken\(\{\}\)\)/);
+  assert.match(loader, /runHotspotEditRequest\('getAudioVendorBundle', \{\}\)/);
   assert.match(loader, /result\.version\s*!==\s*['"]1\.50\.8['"]/);
   assert.match(loader, /typeof result\.source\s*!==\s*['"]string['"]/);
   assert.match(loader, /result\.source\.trim\(\)/);

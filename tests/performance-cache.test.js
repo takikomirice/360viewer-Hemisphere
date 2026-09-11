@@ -129,7 +129,7 @@ test('delivery auto uses one scene-start fallback deadline without changing fixe
   assert.match(controllerBody, /autoFallbackDeadline/);
   assert.match(controllerBody, /autoFallbackStart/);
   assert.match(controllerBody, /directDisplayStart/);
-  assert.match(loadSceneBody, /deliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
+  assert.match(loadSceneBody, /sceneDeliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
   assert.match(singleBody, /deliveryMode === 'auto'[\s\S]*?createAutoFallbackController\(/);
   assert.doesNotMatch(loadSceneBody, /function startAutoFallbackTimer\(/);
   assert.doesNotMatch(singleBody, /function startSingleImageAutoFallbackTimer\(/);
@@ -153,5 +153,6 @@ test('README documents Phase 6 performance caching behavior', () => {
   assert.match(readme, /ホットスポット取得.*キャッシュ/s);
   assert.match(readme, /delivery=auto.*一定時間/s);
   assert.match(readme, /delivery=direct.*最速/s);
-  assert.match(readme, /ページ再読み込み.*シーン一覧更新/s);
+  assert.match(readme, /ページの再読み込みだけでは有効なサーバーキャッシュ/);
+  assert.match(readme, /すぐに反映したい場合は「シーン一覧を更新」を押し、子フォルダならその後で開き直して/);
 });

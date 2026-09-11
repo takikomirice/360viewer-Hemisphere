@@ -1,10 +1,13 @@
 {
   "name": "360viewer-hemisphere-ui-tests",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "private": true,
   "description": "Local browser harness and responsive layout checks for 360Viewer Hemisphere",
   "scripts": {
+    "verify:gas": "node scripts/verify-gas-source.js",
     "preview:ui": "node tests/browser/harness-server.js",
+    "preview:images": "node scripts/progressive-images/serve.js",
+    "images:generate": "node scripts/progressive-images/generate.js",
     "test:browser": "playwright test",
     "vendor:sync": "node scripts/sync-audio-vendor.js",
     "vendor:check": "node scripts/sync-audio-vendor.js --check"
@@ -15,6 +18,8 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
-    "esbuild": "0.25.6"
+    "esbuild": "0.25.6",
+    "pannellum": "2.5.7",
+    "sharp": "0.35.4"
   }
 }

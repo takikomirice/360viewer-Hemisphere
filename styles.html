@@ -1,4 +1,25 @@
-  <style>
+<style>
+  .delete-confirmation {
+    width: min(420px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    box-sizing: border-box;
+    padding: 24px;
+    border: 1px solid var(--theme-border, #666);
+    border-radius: 16px;
+    background: var(--theme-surface, #202127);
+    color: var(--theme-text, #fff);
+    box-shadow: 0 16px 56px #0008;
+  }
+  .delete-confirmation::backdrop { background: #0009; }
+  .delete-confirmation h2 { font-size: 1.1rem; margin: 0 0 16px; }
+  .delete-confirmation p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  .delete-confirmation-actions { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+  .delete-confirmation button {
+    min-height: 44px; padding: 8px 16px; border: 1px solid currentColor;
+    border-radius: 8px; background: transparent; color: inherit; cursor: pointer;
+  }
+  .delete-confirmation button:focus-visible { outline: 3px solid #65a7ff; outline-offset: 3px; }
+  .delete-confirmation .delete-confirmation-submit { background: #b42332; color: #fff; border-color: #b42332; }
     :root {
       --app-safe-top: env(safe-area-inset-top, 0px);
       --app-safe-right: env(safe-area-inset-right, 0px);
@@ -7,7 +28,8 @@
       --app-viewport-base: 100vh;
       --app-toolbar-height: calc(60px + var(--app-safe-top));
       --app-edit-banner-height: 40px;
-      --app-scene-strip-height: calc(80px + var(--app-safe-bottom));
+      --app-scene-strip-height: calc(96px + var(--app-safe-bottom));
+      --scene-sidebar-width: 160px;
       --app-public-sheet-height: calc(56px + var(--app-safe-bottom));
       --app-public-sheet-expanded-height: min(56vh, 360px);
       --theme-background: #FFFFFF;
@@ -1675,7 +1697,7 @@
     #scene-sidebar {
       position: absolute;
       top: var(--app-top-offset); left: 0;
-      width: 200px;
+      width: var(--scene-sidebar-width);
       height: var(--app-viewport-height);
       background: rgba(255,255,255,0.93);
       border-right: 1px solid #E4E4E7;
@@ -1688,7 +1710,7 @@
     }
     #scene-sidebar.hidden { display: none; }
     #scene-sidebar.collapsed {
-      transform: translateX(-200px);
+      transform: translateX(calc(-1 * var(--scene-sidebar-width)));
       pointer-events: none;
     }
 
@@ -1787,6 +1809,63 @@
       white-space: nowrap;
     }
     .scene-item:hover { background: #F4F4F5; }
+    .scene-thumbnail {
+      flex: 0 0 72px;
+      width: 72px;
+      height: 44px;
+      object-fit: cover;
+      border-radius: 5px;
+      background: #E4E4E7;
+      color: transparent;
+    }
+    .scene-thumbnail:not(.loaded) { visibility: hidden; }
+    #scene-sidebar-resize {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 8px;
+      cursor: col-resize;
+      touch-action: none;
+      z-index: 2;
+    }
+    #scene-sidebar-resize:hover, #scene-sidebar-resize:focus-visible {
+      background: rgba(45,123,170,.3);
+      outline: 2px solid #2d7baa;
+      outline-offset: -2px;
+    }
+    button.scene-item-name {
+      flex: 1;
+      min-width: 0;
+      min-height: 32px;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .scene-menu-button {
+      flex: 0 0 28px;
+      min-height: 36px;
+      border: 0;
+      padding: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: inherit;
+      font-size: 22px;
+      cursor: pointer;
+    }
+    .scene-menu-button:hover { background: rgba(128,128,128,.15); }
+    button.scene-item-name:focus-visible,
+    .scene-menu-button:focus-visible,
+    .scene-folder-item:focus-visible {
+      outline: 2px solid #2d7baa;
+      outline-offset: 2px;
+    }
     .scene-item.active {
       background: #EFF6FF;
       border-left-color: #2d7baa;
@@ -1884,6 +1963,8 @@
     .scene-folder-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
     @media (pointer: coarse) {
+      .scene-menu-button { flex-basis: 44px; min-height: 44px; }
+      button.scene-item-name { min-height: 44px; }
       body.edit-mode-active .scene-drag-handle,
       body.edit-mode-active .scene-drop-zone { display: none; }
     }
@@ -2167,8 +2248,8 @@
 
     /* サイドバーが表示されているときにPannellumを右にずらす */
     #panorama.with-sidebar {
-      left: 200px;
-      width: calc(100% - 200px);
+      left: var(--scene-sidebar-width);
+      width: calc(100% - var(--scene-sidebar-width));
     }
 
     /* =============================================
@@ -2296,6 +2377,13 @@
       -webkit-backdrop-filter: blur(2px);
     }
     #gyro-toggle-btn.visible { display: flex; }
+    #fullscreen-btn:disabled,
+    #btn-home:disabled,
+    #quality-toggle-btn:disabled,
+    #gyro-toggle-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
     #gyro-toggle-btn:hover { background: rgba(0,0,0,0.52); }
     #gyro-toggle-btn svg {
       width: 18px; height: 18px;
@@ -2326,6 +2414,8 @@
 
     /* 幅が狭い場合はサイドバーを下部に切り替える（600px以下） */
     @media (max-width: 600px) {
+      #scene-sidebar-resize { display: none; }
+      .scene-thumbnail { width: 56px; height: 32px; flex: 0 0 32px; }
       #scene-sidebar {
         top: auto;
         bottom: 0;
@@ -2388,7 +2478,8 @@
       align-items: center;
       justify-content: center;
       gap: 14px;
-      z-index: 999;
+      /* Keep loading above the image and below the persistent UI (z-index: 100). */
+      z-index: 94;
       transition: left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .loading-ring {
@@ -2413,7 +2504,7 @@
       background: #000;
       opacity: 0;
       pointer-events: none;
-      z-index: 500;
+      z-index: 93;
       transition: left 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease;
     }
     #scene-transition-overlay.active {
@@ -2508,8 +2599,8 @@
       z-index: 1;
     }
     #flat-map-container.with-sidebar {
-      left: 200px;
-      width: calc(100% - 200px);
+      left: var(--scene-sidebar-width);
+      width: calc(100% - var(--scene-sidebar-width));
     }
     @media (max-width: 600px) {
       #flat-map-container.with-sidebar {
@@ -2830,6 +2921,35 @@
 
     .quiz-card-container {
       perspective: 1000px;
+      max-height: calc(100dvh - 64px);
+      padding: 4px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .quiz-attachments {
+      width: min(300px, calc(100vw - 40px));
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 10px;
+      background: var(--theme-surface);
+      color: var(--theme-text);
+    }
+    .quiz-attachments .info-popup-photo {
+      max-height: 160px;
+      object-fit: contain;
+    }
+    #quiz-flip-button, .compatible-retry-button {
+      display: block;
+      min-height: 44px;
+      margin: 12px auto 0;
+      padding: 10px 20px;
+      border: 0;
+      border-radius: 8px;
+      background: #fbbf24;
+      color: #422006;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
     }
 
     .quiz-card {
@@ -2926,8 +3046,8 @@
       color: #ffffff;
       font-size: 24px;
       line-height: 1;
-      width: 40px;
-      height: 40px;
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
       cursor: pointer;
       display: flex;
@@ -3725,11 +3845,10 @@
 .hae-modal-header h2 { margin:0; font-size:1rem; }
 .hae-modal-body { min-height:0; overflow:auto; overscroll-behavior:contain; }
 .hae-modal-action:disabled { cursor:not-allowed; opacity:.55; }
-html[data-theme="dark"] .hemisphere-audio-editor-dialog { --hae-bg:#111827; --hae-surface:#1f2937; --hae-text:#f3f4f6; --hae-muted:#cbd5e1; --hae-line:#475569; --hae-accent:#38bdf8; --hae-accent-soft:#164e63; --hae-focus:#f59e0b; --hae-warning:#fbbf24; --hae-warning-bg:#422006; color-scheme:dark; }
 html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-wave-panel,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-detail-waveform,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-full-controls,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-range-controls { background:#172033; }
 html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-time-input:focus,html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-time-input:hover { background:#273449; color:var(--hae-text); }
 @media (max-width:700px) { .hemisphere-audio-editor-dialog { width:100vw; max-width:none; height:100dvh; max-height:none; border:0; border-radius:0; } .hae-modal-header { padding-left:max(12px,env(safe-area-inset-left)); padding-right:max(12px,env(safe-area-inset-right)); } }
-.hemisphere-audio-editor-dialog { --hae-bg:#f3f6f8; --hae-surface:#fff; --hae-text:#24313d; --hae-muted:#607080; --hae-line:#d5dee5; --hae-accent:#176a8d; --hae-accent-soft:#dcedf4; --hae-focus:#ba4f00; --hae-warning:#8a4b00; --hae-warning-bg:#fff4df; }
+.hemisphere-audio-editor-dialog { --hae-bg:var(--theme-surface-subtle); --hae-surface:var(--theme-surface); --hae-text:var(--theme-text); --hae-muted:var(--theme-text-muted); --hae-line:var(--theme-border); --hae-accent:var(--theme-accent); --hae-accent-soft:var(--theme-accent-soft); --hae-focus:var(--theme-focus-ring); --hae-warning:var(--theme-edit-text); --hae-warning-bg:var(--theme-edit-background); }
 .hemisphere-audio-editor-dialog, .hemisphere-audio-editor-dialog * { box-sizing:border-box; }
 .hemisphere-audio-editor-dialog [hidden] { display:none !important; }
 .hemisphere-audio-editor-dialog { margin:0; background:var(--hae-bg); color:var(--hae-text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
@@ -3775,5 +3894,94 @@ html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button,html[da
 @media (prefers-reduced-motion:reduce) { .hemisphere-audio-editor-dialog *,.hemisphere-audio-editor-dialog *::before,.hemisphere-audio-editor-dialog *::after { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
 
 .hemisphere-audio-editor-dialog { margin:auto; }
+/* Use the same surfaces and controls as the surrounding Hemisphere form. */
+.hemisphere-audio-editor-dialog .hae-icon-button,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button {
+  border-radius:10px; background:var(--theme-button-background); color:var(--theme-text);
+  transition:background .15s, border-color .15s;
+}
+.hemisphere-audio-editor-dialog .hae-icon-button:hover:not(:disabled) { background:var(--theme-surface-hover); border-color:var(--theme-border-strong); }
+.hemisphere-audio-editor-dialog .hae-icon-button-primary,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-icon-button-primary { background:#2563EB; border-color:#2563EB; color:#fff; }
+.hemisphere-audio-editor-dialog .hae-icon-button-primary:hover:not(:disabled) { background:#1D4ED8; border-color:#1D4ED8; }
+.hemisphere-audio-editor-dialog .hae-text-button { display:inline-flex; width:auto; padding:0 12px; gap:7px; align-items:center; justify-content:center; font-size:.85rem; font-weight:600; }
+.hemisphere-audio-editor-dialog .hae-wave-panel,
+.hemisphere-audio-editor-dialog .hae-detail-waveform,
+.hemisphere-audio-editor-dialog .hae-full-controls,
+.hemisphere-audio-editor-dialog .hae-range-controls,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-wave-panel,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-detail-waveform,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-full-controls,
+html[data-theme="dark"] .hemisphere-audio-editor-dialog .hae-range-controls { background:var(--theme-surface-subtle); }
+.hemisphere-audio-editor-dialog .hae-preset-group label { color:var(--theme-text-muted); }
+.hemisphere-audio-editor-dialog .hae-segment-input:checked + label { color:var(--theme-text); }
+.hemisphere-audio-editor-dialog .hae-warning,
+.hemisphere-audio-editor-dialog .hae-encode-message { color:var(--theme-edit-text); }
     /* HEMISPHERE_AUDIO_EDITOR_STYLES_END */
-  </style>
+    /* Photo cards: the caption sits on the image, as in the reference tour. */
+    #scene-list .scene-item {
+      position: relative;
+      display: block;
+      margin: 6px 10px 12px;
+      padding: 0;
+      min-height: 64px;
+      border: 2px solid transparent;
+      border-radius: 7px;
+      overflow: hidden;
+      background: #343438;
+      white-space: normal;
+    }
+    #scene-list .scene-item.active { border-color: #62b5e5; }
+    #scene-list .scene-item:hover { border-color: #a2cfe9; }
+    #scene-list .scene-item:focus-within { outline: 2px solid #62b5e5; outline-offset: -2px; }
+    #scene-list .scene-thumbnail {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 3 / 2;
+      border-radius: 0;
+      object-fit: cover;
+    }
+    #scene-list button.scene-item-name {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      min-height: 26px;
+      max-height: 60%;
+      padding: 4px 6px;
+      background: rgba(0, 0, 0, .58);
+      color: #fff;
+      text-align: center;
+      line-height: 1.35;
+      font-size: 13px;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0,0,0,.5);
+    }
+    #scene-list .scene-menu-button,
+    #scene-list .scene-drag-handle {
+      position: absolute;
+      top: 4px;
+      width: 32px;
+      height: 32px;
+      min-height: 32px;
+      margin: 0;
+      z-index: 1;
+      background: rgba(0,0,0,.58);
+      color: #fff;
+    }
+    #scene-list .scene-menu-button { right: 4px; }
+    #scene-list .scene-drag-handle { left: 4px; }
+    @media (max-width: 600px) {
+      :root { --app-scene-strip-height: calc(120px + var(--app-safe-bottom)); }
+      #scene-list .scene-item { flex: 0 0 144px; width: 144px; min-width: 144px; margin: 4px; }
+      #scene-list button.scene-item-name { font-size: 11px; padding: 3px; }
+      body.mobile-public-view #scene-sidebar.mobile-expanded #scene-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-content: start; }
+      body.mobile-public-view #scene-list .scene-item { width: auto; min-width: 0; }
+      body.mobile-public-view #scene-list .scene-folder-item { grid-column: 1 / -1; }
+    }
+    @media (pointer: coarse) {
+      #scene-list .scene-menu-button { width: 44px; height: 44px; }
+      #scene-list button.scene-item-name { min-height: 44px; }
+    }
+</style>

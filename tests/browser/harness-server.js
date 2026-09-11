@@ -219,6 +219,14 @@ function browserHarnessBootstrap(options) {
     if (method === 'getImageDataUri') {
       return { success: true, imageUrl: fixtureImage };
     }
+    if (method === 'getSceneThumbnail' || method === 'prepareSceneThumbnail') {
+      var canvas = document.createElement('canvas');
+      canvas.width = 320; canvas.height = 160;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#0f766e'; ctx.fillRect(0, 0, 320, 160);
+      ctx.fillStyle = '#67e8f9'; ctx.fillRect(30, 25, 120, 100);
+      return { success: true, imageUrl: canvas.toDataURL('image/jpeg') };
+    }
     if (method === 'getHotspotPhotoDataUri') {
       return {
         success: true,
@@ -299,7 +307,7 @@ function browserHarnessBootstrap(options) {
               call.completedAt = performance.now();
               call.outcome = outcome;
               if (outcome === 'failure') {
-                if (typeof failureHandler === 'function') failureHandler(new Error('fixture transport failure'));
+                if (typeof failureHandler === 'function') failureHandler(new Error(behavior.message || 'fixture transport failure'));
                 return;
               }
               if (outcome === 'error') {

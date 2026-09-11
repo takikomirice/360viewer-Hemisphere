@@ -117,7 +117,7 @@ test('client scene loading, home selection, sync timing, and northOffset zero us
   assert.match(loadScene, /getExplicitSceneType\(imgData\)\s*===\s*'2D'/);
   assert.match(onConfigLoaded, /updateRootHomeImageId\(\)/);
   assert.match(app, /\.getConfig\(appMode,\s*true\)/);
-  assert.match(app, /\.navigateToFolder\(folderItem\.id,\s*true\)/);
+  assert.match(app, /\.navigateToFolder\(folderItem\.id,\s*forceRefresh\)/);
   assert.match(refreshSceneList, /updateRootHomeImageId\(\)/);
   assert.match(applyDelete, /updateRootHomeImageId\(\)/);
   assert.match(applySettings, /sortSceneListItems\(allImages\)/);

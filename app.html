@@ -980,12 +980,15 @@ var viewer          = null;   // Pannellumビューアインスタンス
 var isEditMode      = false;  // 現在編集モードかどうか
 var appMode         = String((document.body && document.body.getAttribute('data-app-mode')) || ''); // URLパラメータ: 'public' | 'internal' | ''
 var editToken       = String(window.__EDIT_TOKEN__ || '');
+var editTokenRefreshPromise = null;
 var canEdit         = !!editToken;
-var deliveryMode    = 'direct'; // 画像配信方式: 'direct' | 'auto' | 'base64'
+var deliveryMode    = 'auto'; // 画像配信方式: 'direct' | 'auto' | 'base64'
 var initialSceneId  = '';     // URLパラメータ scene の初期表示シーンID
 var initialYaw      = null;   // URLパラメータ yaw の初期視点
 var initialPitch    = null;   // URLパラメータ pitch の初期視点
 var isGyroActive    = false;  // ジャイロ（DeviceOrientation）ON/OFF状態
+var gyroRequestGeneration = 0;
+var gyroPermissionPending = false;
 var appBaseUrl      = '';     // WebアプリのベースURL（共有URL生成用）
 var pendingPitch    = null;   // クリック地点のPitch（保存待ち）
 // 編集モード: ドラッグとクリックの判別用（ドラッグ後のclickでホットスポットを開かない）
@@ -997,24 +1000,47 @@ var toastTimer      = null;   // トーストの自動非表示タイマー
 var allImages       = null;   // フォルダモード時の全画像リスト {id, name, imageUrl}
 var homeImageId     = null;   // scenesでホーム設定されたルート画像のファイルID
 var folderStack     = [];     // サブフォルダナビゲーション用スタック [{id, name, items}]
+var folderCacheEnabled = true; // folderCache=0 で閲覧時も毎回同期
+var foldersRefreshedAfterManualRefresh = null;
 var rootFolderId    = null;   // ルートフォルダのDrive ID
 var currentFileId   = null;   // 現在表示中の画像ファイルID
 var previousSceneId = null;   // ジャンプ前のシーンID（振り返り視点計算用）
 var preloadedScenes = new Set(); // プリロード済みシーンIDのセット（先読みキャッシュ管理）
 var isSwitching     = false;  // シーン切替中フラグ（二重クリック防止）
 var imageQualityMode = 'fast'; // 画質モード: 'fast'(=w4096) | 'high'(=s0)
+// 互換表示の再転送を抑制。永続ストレージには保存せず、容量と保持時間を制限する。
+var BASE64_IMAGE_CACHE_MAX_ENTRIES = 3;
+var BASE64_IMAGE_CACHE_MAX_CHARS = 32 * 1024 * 1024;
+var BASE64_IMAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+var base64ImageCache = new Map();
+var base64ImageRequests = new Map();
 var loadPollInterval = null;  // Pannellum loadイベントのポーリングインターバル
 var isRefreshingSceneList = false; // シーン一覧の再取得中かどうか
 var hotspotFolderOpenPending = false; // 共通Hotspotフォルダ取得APIの応答待ちかどうか
 var sidebarCollapsed = false; // サイドバー折りたたみ状態
+var sceneSidebarPreferredWidth = 160;
+var sceneSidebarResizeInitialized = false;
+var sceneThumbnailGeneration = 0;
+var sceneThumbnailTimer = null;
+var sceneThumbnailCache = new Map();
+var sceneThumbnailDirectEnabled = true; // thumbnailDelivery=gas で従来方式と比較可能
+var sceneThumbnailActive = 0;
+var sceneThumbnailResume = null;
+var scenePrefetchTimer = null;
+var scenePrefetchActive = false;
+var scenePrefetchGeneration = 0;
 var sceneContextTargetId = null; // 右クリック対象のシーンID
+var sceneContextReturnFocus = null;
 var sceneSettingsTargetId = null; // 設定モーダル対象のシーンID
 var sceneSettingsOriginal = null; // 設定保存前の正規化済みシーン
 var sceneSettingsReturnFocusId = null; // モーダル終了後にフォーカスを戻すシーンID
 var isSavingSceneSettings = false; // 設定保存の二重送信防止
 var sceneSettingsRequestGeneration = 0; // 古い設定取得応答を破棄する世代番号
 var sceneLoadGeneration = 0; // 同一IDの再読込も含め古い表示応答を破棄する世代番号
+var appStartupPerformance = { startedAt: scenePerformanceNow_(), configStart: null, configEnd: null, finished: false };
 var sceneDisplayReady = false; // 現在のシーン画像が操作可能な状態まで読み込まれたか
+var sceneControlsAvailable = false; // 初回表示後は切替・失敗中も操作ボタンの配置を保つ
+var sceneGyroAvailable = false; // ビューア再生成中も直前に確認した対応状況を保つ
 var sceneReorderState = {
   draggedId: '',
   originalItems: null,
@@ -1118,6 +1144,7 @@ var hotspotAudioAttachmentState = {
 };
 var infoPopupGeneration = 0;
 var activeInfoPopupReturnFocus = null;
+var activeQuizReturnFocus = null;
 var hotspotAudioCache = {};
 var hotspotAudioCacheOrder = [];
 var hotspotAudioInFlight = {};
@@ -1127,6 +1154,15 @@ var HOTSPOT_AUDIO_CACHE_LIMIT = 2;
 var HOTSPOT_AUDIO_PREFETCH_DELAY_MS = 150;
 var HOTSPOT_FORM_GUARD_MESSAGE = 'ホットスポットの保存またはキャンセル後に操作してください。';
 var photoCache           = {};    // 写真データURIのキャッシュ {fileId|hotspotId|photoId: dataUri}
+var photoCacheOrder = [];
+var photoInFlight = {};
+var hotspotPrefetchEnabled = true; // hotspotPrefetch=0 で比較用に無効化
+var mediaWarmupEnabled = true; // mediaWarmup=0 でシーン間再利用・並行先読みを比較
+var hotspotMediaCacheExpires = {};
+var HOTSPOT_MEDIA_CACHE_TTL_MS = 5 * 60 * 1000;
+var hotspotMediaPrefetchTimer = null;
+var hotspotMediaPrefetchActive = 0;
+var hotspotMediaPrefetchGeneration = 0;
 var PHOTO_LIGHTBOX_MIN_SCALE = 1;
 var PHOTO_LIGHTBOX_MAX_SCALE = 5;
 var PHOTO_LIGHTBOX_ZOOM_FACTOR = 1.35;
@@ -1144,6 +1180,16 @@ var photoLightboxState = {
   stageClickStartedOnImage: false
 };
 var hotspotCacheByFileId = {};
+var hotspotCacheExpiresByFileId = {};
+var hotspotRequestsByFileId = {};
+var HOTSPOT_CACHE_TTL_MS = 5 * 60 * 1000;
+var HOTSPOT_CACHE_MAX_ENTRIES = 50;
+var sceneMetadataPrefetchEnabled = true; // metadataPrefetch=0 で比較用に無効化
+var sceneMetadataPrefetchGeneration = 0;
+var sceneMetadataPrefetchTimer = null;
+var sceneMetadataPrefetchActive = 0;
+var sceneMetadataPrefetchResume = null;
+var sceneMetadataPrefetchPriority = [];
 var activeJumpTooltip    = null;  // 表示中のジャンプツールチップ要素
 var DEFAULT_MARKER_SHAPE = 'circle';
 var DEFAULT_MARKER_COLOR = 'blue';
@@ -1277,9 +1323,74 @@ function withEditToken(payload) {
   return next;
 }
 
+function isExpiredEditTokenError(error) {
+  return String(error && error.message || error || '').indexOf(
+    '編集権限が確認できません。通常の編集画面を開き直してください。'
+  ) !== -1;
+}
+
+function refreshHotspotEditToken() {
+  if (editTokenRefreshPromise) return editTokenRefreshPromise;
+  var request = new Promise(function (resolve, reject) {
+    if (!canEdit || !google.script.url || typeof google.script.url.getLocation !== 'function') {
+      reject(new Error('編集権限を更新できません。configの最新の編集URLを確認してください。'));
+      return;
+    }
+    // GAS iframeのURLではなく、現在開いている編集URLから取得する。キーは保存しない。
+    google.script.url.getLocation(function (location) {
+      var params = location && location.parameter || {};
+      if (params.mode !== 'edit' || !params.editKey) {
+        reject(new Error('編集権限を更新できません。configの最新の編集URLを確認してください。'));
+        return;
+      }
+      google.script.run.withSuccessHandler(function (result) {
+        if (!result || typeof result.editToken !== 'string' || !result.editToken) {
+          reject(new Error('編集権限を更新できませんでした。もう一度お試しください。'));
+          return;
+        }
+        editToken = result.editToken;
+        resolve();
+      }).withFailureHandler(reject).refreshEditToken({ mode: params.mode, editKey: params.editKey });
+    });
+  });
+  editTokenRefreshPromise = request.then(function () {
+    editTokenRefreshPromise = null;
+  }, function (error) {
+    editTokenRefreshPromise = null;
+    throw error;
+  });
+  return editTokenRefreshPromise;
+}
+
+function runHotspotEditRequest(method, payload, extraArgs, canRetry) {
+  function send() {
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      runner[method].apply(runner, [withEditToken(payload)].concat(extraArgs || []));
+    });
+  }
+  var requestToken = editToken;
+  return send().catch(function (error) {
+    // この拒否は対象APIの副作用より前に発生する。通信エラーや部分成功は再送しない。
+    if (!isExpiredEditTokenError(error) || !canEdit || (canRetry && !canRetry())) throw error;
+    var renewed = editToken !== requestToken ? Promise.resolve() : refreshHotspotEditToken();
+    return renewed.then(function () {
+      if (canRetry && !canRetry()) throw error;
+      return send();
+    });
+  });
+}
+
+function getHotspotEditFailureMessage(error) {
+  var message = String(error && error.message || error || '');
+  return /編集権限/.test(message)
+    ? '編集権限を確認できませんでした。入力内容は保持しています。configの最新の編集URLを確認してください。'
+    : '通信エラーが発生しました。入力内容は保持しています。再度お試しください。';
+}
+
 function normalizeDeliveryMode(value) {
   value = String(value || '').trim().toLowerCase();
-  return (value === 'auto' || value === 'base64' || value === 'direct') ? value : 'direct';
+  return (value === 'auto' || value === 'base64' || value === 'direct') ? value : 'auto';
 }
 
 function isPublicViewingMode() {
@@ -1872,7 +1983,7 @@ function renderShareQrCode(url) {
     var svg = document.createElementNS(svgNs, 'svg');
     svg.setAttribute('viewBox', '0 0 ' + viewSize + ' ' + viewSize);
     svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'public共有URLのQRコード');
+    svg.setAttribute('aria-label', '閲覧用リンクのQRコード');
     svg.setAttribute('shape-rendering', 'crispEdges');
 
     var background = document.createElementNS(svgNs, 'rect');
@@ -1971,14 +2082,31 @@ window.addEventListener('load', function () {
     var card     = document.getElementById('quiz-card');
     var closeBtn = document.getElementById('quiz-modal-close');
 
-    function closeQuizModal() {
-      overlay.classList.add('hidden');
-    }
-
     // カードクリックでフリップ（裏面のリンクは除外）
     card.addEventListener('click', function (evt) {
       if (evt.target.closest('#quiz-card-link')) return; // リンクはそのまま遷移
-      card.classList.toggle('is-flipped');
+      toggleQuizAnswer();
+    });
+    document.getElementById('quiz-flip-button').addEventListener('click', toggleQuizAnswer);
+    overlay.addEventListener('keydown', function (evt) {
+      if (evt.key === 'Escape') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        closeQuizModal();
+      } else if (evt.key === 'Tab') {
+        var controls = Array.from(overlay.querySelectorAll('button, a[href], audio[controls]')).filter(function (el) {
+          return !el.closest('[inert], .hidden') && !el.disabled;
+        });
+        var first = controls[0];
+        var last = controls[controls.length - 1];
+        if (evt.shiftKey && document.activeElement === first) {
+          evt.preventDefault();
+          last.focus();
+        } else if (!evt.shiftKey && document.activeElement === last) {
+          evt.preventDefault();
+          first.focus();
+        }
+      }
     });
 
     // ×ボタンで閉じる
@@ -2002,6 +2130,11 @@ window.addEventListener('load', function () {
     var dParam = (loc.parameter && loc.parameter.delivery) || '';
     deliveryMode = normalizeDeliveryMode(dParam);
     scenePerformanceEnabled = String((loc.parameter && loc.parameter.perf) || '') === '1';
+    sceneMetadataPrefetchEnabled = String((loc.parameter && loc.parameter.metadataPrefetch) || '') !== '0';
+    hotspotPrefetchEnabled = String((loc.parameter && loc.parameter.hotspotPrefetch) || '') !== '0';
+    mediaWarmupEnabled = String((loc.parameter && loc.parameter.mediaWarmup) || '') !== '0';
+    folderCacheEnabled = String((loc.parameter && loc.parameter.folderCache) || '') !== '0';
+    sceneThumbnailDirectEnabled = String((loc.parameter && loc.parameter.thumbnailDelivery) || '') !== 'gas';
     initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
     initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
     initialPitch = parseNumberParam(loc.parameter && loc.parameter.pitch);
@@ -2026,12 +2159,16 @@ window.addEventListener('load', function () {
     syncDriveFolderButtons();
     maybeShowMobilePublicHint();
 
+    appStartupPerformance.configStart = scenePerformanceNow_();
     google.script.run
-      .withSuccessHandler(onConfigLoaded)
+      .withSuccessHandler(function (config) {
+        appStartupPerformance.configEnd = scenePerformanceNow_();
+        onConfigLoaded(config);
+      })
       .withFailureHandler(function () {
         showLoadError('設定の読み込みに失敗しました。');
       })
-      .getConfig(appMode, true);
+      .getConfig(appMode, !isPublicViewingMode());
   });
 });
 
@@ -2039,6 +2176,7 @@ window.addEventListener('pagehide', teardownHotspotFormForPageExit);
 window.addEventListener('beforeunload', teardownHotspotFormForPageExit);
 
 function teardownHotspotFormForPageExit() {
+  closeQuizModal({ restoreFocus: false });
   closePhotoLightbox({ restoreFocus: false });
   closeActiveInfoPopup({ restoreFocus: false });
   disposeHotspotAudioAttachmentState({ restoreFocus: false });
@@ -2055,6 +2193,8 @@ function teardownHotspotFormForPageExit() {
  * 設定取得後: フォルダモードと単一画像モードを振り分ける
  */
 function loadSingleImageScene(config) {
+  prepareHotspotMediaForSceneChange();
+  closeQuizModal({ restoreFocus: false });
   var sceneStartedAt = scenePerformanceNow_();
   var loadGeneration = ++sceneLoadGeneration;
   currentFileId = null;
@@ -2117,7 +2257,10 @@ function loadSingleImageScene(config) {
     if (autoFallbackController) autoFallbackController.cancel();
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'error');
-    showLoadError(message);
+    showLoadError(message, deliveryMode === 'direct' && config.fileId ? function () {
+      deliveryMode = 'base64';
+      loadSingleImageScene(config);
+    } : null);
   }
 
   function beginSingleImageBase64Fallback() {
@@ -2172,6 +2315,7 @@ function loadSingleImageScene(config) {
       markScenePerformanceRecord(performanceRecord, 'pannellumLoad');
       isSwitching = false;
       finishScenePerformanceRecord(performanceRecord, 'loaded');
+      scheduleHotspotMediaPrefetch(preparedHotspots.hotspots || []);
     }
     if (canReusePannellum) {
       var reused = pannellumSession.loadImage(
@@ -2232,7 +2376,7 @@ function loadSingleImageScene(config) {
       if (autoFallbackController) {
         autoFallbackController.startFallback('direct-display-failed');
       } else {
-        showSingleImageDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+        showSingleImageDeliveryError('画像を読み込めませんでした。互換表示で再試行するか、画像の共有設定を確認してください。');
       }
     });
   });
@@ -2602,6 +2746,146 @@ function onConfigLoaded(config) {
  *
  * @param {Array} images  {id, name, imageUrl} の配列
  */
+function normalizeSceneSidebarWidth(value, viewportWidth) {
+  var width = Number(value);
+  if (!isFinite(width)) width = 160;
+  return Math.round(Math.max(140, Math.min(480, Math.floor(viewportWidth / 2), width)));
+}
+
+function applySceneSidebarWidth(value, persist) {
+  var width = normalizeSceneSidebarWidth(value, window.innerWidth);
+  document.documentElement.style.setProperty('--scene-sidebar-width', width + 'px');
+  var handle = document.getElementById('scene-sidebar-resize');
+  if (handle) {
+    handle.setAttribute('aria-valuenow', String(width));
+    handle.setAttribute('aria-valuemax', String(Math.min(480, Math.floor(window.innerWidth / 2))));
+  }
+  if (persist) {
+    sceneSidebarPreferredWidth = width;
+    try { localStorage.setItem('hemisphere.sceneSidebarWidth', String(width)); } catch (error) { /* Storage can be disabled. */ }
+  }
+  if (viewer && typeof viewer.resize === 'function') viewer.resize();
+}
+
+function initSceneSidebarResize() {
+  if (sceneSidebarResizeInitialized) return;
+  var handle = document.getElementById('scene-sidebar-resize');
+  if (!handle) return;
+  sceneSidebarResizeInitialized = true;
+  try {
+    var saved = localStorage.getItem('hemisphere.sceneSidebarWidth');
+    if (saved !== null && isFinite(Number(saved))) sceneSidebarPreferredWidth = Number(saved);
+  } catch (error) { /* Keep the default width. */ }
+  applySceneSidebarWidth(sceneSidebarPreferredWidth, false);
+  handle.addEventListener('pointerdown', function (event) {
+    if (event.button !== 0 || window.innerWidth <= 600) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', function (event) {
+    if (handle.hasPointerCapture(event.pointerId)) applySceneSidebarWidth(event.clientX, false);
+  });
+  handle.addEventListener('pointerup', function (event) {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId);
+    applySceneSidebarWidth(event.clientX, true);
+  });
+  handle.addEventListener('keydown', function (event) {
+    var width = Number(handle.getAttribute('aria-valuenow'));
+    if (event.key === 'ArrowLeft') width -= 10;
+    else if (event.key === 'ArrowRight') width += 10;
+    else if (event.key === 'Home') width = 140;
+    else if (event.key === 'End') width = 480;
+    else return;
+    event.preventDefault();
+    applySceneSidebarWidth(width, true);
+  });
+  window.addEventListener('resize', function () { applySceneSidebarWidth(sceneSidebarPreferredWidth, false); });
+}
+
+/** Public images can skip GAS; private images retain the authorized server path. */
+function requestSceneThumbnail(fileId, complete) {
+  function viaGas() {
+    var request = google.script.run.withSuccessHandler(function (result) {
+      complete(result && result.success && /^data:image\/jpeg;base64,/.test(result.imageUrl || '') ? result.imageUrl : null, 'gas');
+    }).withFailureHandler(function () { complete(null, 'gas'); });
+    if (canEdit) request.prepareSceneThumbnail(withEditToken({ fileId: fileId }));
+    else request.getSceneThumbnail(fileId);
+  }
+  // Editors keep preparing the stored derivative used by the private fallback.
+  if (!sceneThumbnailDirectEnabled || canEdit) { viaGas(); return; }
+  var url = 'https://lh3.googleusercontent.com/d/' + encodeURIComponent(fileId) + '=w320';
+  var image = new Image(), settled = false;
+  var timer = setTimeout(function () { finish(false); }, 2500);
+  function finish(success) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    image.onload = image.onerror = null;
+    if (success) complete(url, 'direct');
+    else viaGas();
+  }
+  image.onload = function () { finish(true); };
+  image.onerror = function () { finish(false); };
+  image.crossOrigin = 'anonymous';
+  image.src = url;
+}
+
+/** At most two background reads; scene changes pause new work and folder changes invalidate callbacks. */
+function startSceneThumbnailQueue() {
+  var generation = ++sceneThumbnailGeneration;
+  clearTimeout(sceneThumbnailTimer);
+  var nodes = Array.prototype.slice.call(document.querySelectorAll('.scene-thumbnail'));
+  var next = 0;
+  var started = Date.now(), completed = 0;
+  var stats = { generation: generation, total: nodes.length, loaded: 0, failed: 0, direct: 0, gas: 0, cache: 0, firstReady: null };
+  sceneThumbnailResume = pump;
+  function pump() {
+    if (generation !== sceneThumbnailGeneration) return;
+    clearTimeout(sceneThumbnailTimer);
+    if (isSwitching || !sceneDisplayReady || scenePrefetchActive) {
+      sceneThumbnailTimer = setTimeout(pump, 250);
+      return;
+    }
+    while (sceneThumbnailActive < 2 && next < nodes.length) start(nodes[next++]);
+  }
+  function start(node) {
+    var key = node.dataset.fileId;
+    var cached = sceneThumbnailCache.get(key);
+    sceneThumbnailActive++;
+    var settled = false;
+    function finish(url, source) {
+      if (settled) return;
+      settled = true;
+      sceneThumbnailActive--;
+      if (generation !== sceneThumbnailGeneration) {
+        if (sceneThumbnailResume) sceneThumbnailResume();
+        return;
+      }
+      if (node.isConnected && url) {
+        sceneThumbnailCache.set(key, url);
+        while (sceneThumbnailCache.size > 100) sceneThumbnailCache.delete(sceneThumbnailCache.keys().next().value);
+        node.crossOrigin = 'anonymous';
+        node.src = url;
+        node.classList.add('loaded');
+        stats.loaded++;
+        if (stats.firstReady === null) stats.firstReady = Date.now() - started;
+      } else {
+        stats.failed++;
+      }
+      stats[source]++;
+      if (++completed === nodes.length && scenePerformanceEnabled) {
+        stats.duration = Date.now() - started;
+        console.info('[thumbnail-perf]', JSON.stringify(stats));
+      }
+      pump();
+    }
+    if (cached) finish(cached, 'cache');
+    else requestSceneThumbnail(key, finish);
+  }
+  sceneThumbnailTimer = setTimeout(pump, 350);
+}
+
 function buildSceneSidebar(images) {
   var sidebar  = document.getElementById('scene-sidebar');
   var list     = document.getElementById('scene-list');
@@ -2625,6 +2909,13 @@ function buildSceneSidebar(images) {
       // ---- サブフォルダアイテム ----
       var folderEl = document.createElement('div');
       folderEl.className = 'scene-folder-item';
+      folderEl.tabIndex = 0;
+      folderEl.setAttribute('role', 'button');
+      folderEl.addEventListener('keydown', function (evt) {
+        if (evt.key !== 'Enter' && evt.key !== ' ') return;
+        evt.preventDefault();
+        folderEl.click();
+      });
       folderEl.dataset.folderId = img.id;
       folderEl.innerHTML =
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
@@ -2641,7 +2932,7 @@ function buildSceneSidebar(images) {
       var item = document.createElement('div');
       item.className = 'scene-item';
       item.dataset.id = img.id;
-      item.tabIndex = 0;
+      item.tabIndex = -1;
       item.innerHTML =
         (canEdit
           ? '<button type="button" class="scene-drag-handle" draggable="true" aria-label="シーンを並び替える" aria-disabled="false" title="ドラッグして並び替え">' +
@@ -2652,7 +2943,25 @@ function buildSceneSidebar(images) {
         '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>' +
         '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' +
         '</svg>' +
-        '<span class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</span>';
+        '<button type="button" class="scene-item-name">' + escapeHtml(getSceneDisplayName(img)) + '</button>';
+      var thumbnail = document.createElement('img');
+      thumbnail.className = 'scene-thumbnail';
+      thumbnail.alt = '';
+      thumbnail.draggable = false;
+      thumbnail.decoding = 'async';
+      thumbnail.dataset.fileId = img.id;
+      var sceneIcon = item.querySelector(':scope > svg');
+      if (sceneIcon) sceneIcon.replaceWith(thumbnail);
+      if (canEdit) {
+        var menuButton = document.createElement('button');
+        menuButton.type = 'button';
+        menuButton.className = 'scene-menu-button';
+        menuButton.textContent = '⋮';
+        menuButton.setAttribute('aria-label', getSceneDisplayName(img) + 'の操作');
+        menuButton.setAttribute('aria-haspopup', 'true');
+        menuButton.addEventListener('click', function (evt) { openSceneContextMenu(evt, img); });
+        item.appendChild(menuButton);
+      }
       var dragHandle = item.querySelector('.scene-drag-handle');
       if (dragHandle) {
         ['click', 'mousedown', 'pointerdown', 'contextmenu'].forEach(function (eventName) {
@@ -2679,6 +2988,10 @@ function buildSceneSidebar(images) {
         loadScene(img);
         setMobileSceneSheetExpanded(false);
       });
+      item.addEventListener('mouseenter', function () { scheduleSceneImagePrefetch(img.id); });
+      item.addEventListener('focusin', function () { scheduleSceneImagePrefetch(img.id); });
+      item.addEventListener('mouseleave', function () { clearTimeout(scenePrefetchTimer); });
+      item.addEventListener('focusout', function () { clearTimeout(scenePrefetchTimer); });
       item.addEventListener('contextmenu', function (evt) {
         if (shouldSuppressSceneItemInteraction()) {
           evt.preventDefault();
@@ -2698,6 +3011,9 @@ function buildSceneSidebar(images) {
   setSceneReorderSaving(sceneReorderState.saving);
 
   sidebar.classList.remove('hidden');
+  initSceneSidebarResize();
+  startSceneThumbnailQueue();
+  startSceneMetadataPrefetchQueue(images);
   panorama.classList.add('with-sidebar');
   document.getElementById('flat-map-container').classList.add('with-sidebar');
   if (isPublicViewingMode() && isSmallViewport()) {
@@ -2714,6 +3030,9 @@ function openSubfolder(folderItem) {
   cancelHotspotMove('フォルダ移動のため移動をキャンセルしました。', { silent: true });
   // 現在の状態をスタックに積む
   folderStack.push({ id: folderItem.id, name: folderItem.name, items: allImages });
+  var refreshState = foldersRefreshedAfterManualRefresh;
+  var forceRefresh = !folderCacheEnabled || !isPublicViewingMode() ||
+    !!(refreshState && !refreshState[folderItem.id]);
 
   setSceneRefreshButtonState(true);
   google.script.run
@@ -2725,6 +3044,7 @@ function openSubfolder(folderItem) {
         return;
       }
       allImages = res.images || [];
+      if (forceRefresh && refreshState) refreshState[folderItem.id] = true;
       buildSceneSidebar(allImages);
       syncActiveSceneItem(null);
     })
@@ -2733,7 +3053,7 @@ function openSubfolder(folderItem) {
       showToast('フォルダの読み込みに失敗しました。', 'error');
       folderStack.pop();
     })
-    .navigateToFolder(folderItem.id, true);
+    .navigateToFolder(folderItem.id, forceRefresh);
 }
 
 /**
@@ -2749,15 +3069,32 @@ function goBackFolder() {
   syncActiveSceneItem(currentFileId);
 }
 
+function revealActiveSceneCard() {
+  requestAnimationFrame(function () {
+    var list = document.getElementById('scene-list');
+    var card = list && list.querySelector('.scene-item.active');
+    if (!card || !list.clientWidth || !list.clientHeight) return;
+    var bounds = list.getBoundingClientRect();
+    var item = card.getBoundingClientRect();
+    if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
+    else if (item.top < bounds.top) list.scrollTop += item.top - bounds.top;
+    if (item.right > bounds.right) list.scrollLeft += item.right - bounds.right;
+    else if (item.left < bounds.left) list.scrollLeft += item.left - bounds.left;
+  });
+}
+
 function syncActiveSceneItem(activeId) {
   var items = document.querySelectorAll('.scene-item');
   items.forEach(function (el) {
     el.classList.toggle('active', !!activeId && el.dataset.id === activeId);
+    var selectButton = el.querySelector('.scene-item-name');
+    if (selectButton) selectButton.setAttribute('aria-current', el.classList.contains('active') ? 'true' : 'false');
   });
   var toggle = document.getElementById('mobile-scene-sheet-toggle');
   if (toggle && isPublicViewingMode() && isSmallViewport()) {
     toggle.textContent = 'シーンを選ぶ';
   }
+  revealActiveSceneCard();
 }
 
 function setSceneRefreshButtonState(isLoading) {
@@ -2770,6 +3107,11 @@ function setSceneRefreshButtonState(isLoading) {
 function refreshSceneList() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('refresh-scene-list')) return false;
   if (isRefreshingSceneList || !allImages) return;
+  // Root refresh does not invalidate server caches for child folders. Refresh each on its next visit.
+  foldersRefreshedAfterManualRefresh = Object.create(null);
+  clearBase64ImageCache();
+  clearHotspotCache();
+  startSceneMetadataPrefetchQueue([]);
   cancelHotspotMove('一覧更新のため移動をキャンセルしました。', { silent: true });
 
   isRefreshingSceneList = true;
@@ -3053,6 +3395,7 @@ function openSceneContextMenu(evt, img) {
   evt.stopPropagation();
 
   var menu = document.getElementById('scene-context-menu');
+  sceneContextReturnFocus = evt.currentTarget || document.activeElement;
   var settingsButton = menu.querySelector('[data-action="settings"]');
   if (settingsButton) {
     settingsButton.disabled = !isEditMode;
@@ -3065,23 +3408,35 @@ function openSceneContextMenu(evt, img) {
       ? '編集モードで利用できます'
       : (!isRootSceneItem(img) ? 'サブフォルダの画像はホームに設定できません' : '');
   }
+  var deleteButton = menu.querySelector('[data-action="delete"]');
+  if (deleteButton) {
+    deleteButton.disabled = !isEditMode;
+    deleteButton.title = !isEditMode ? '編集モードで利用できます' : '';
+  }
   sceneContextTargetId = img.id;
   menu.classList.add('visible');
 
   var menuWidth = menu.offsetWidth || 168;
   var menuHeight = menu.offsetHeight || 212;
-  var x = Math.min(evt.clientX, window.innerWidth - menuWidth - 10);
-  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  var anchor = sceneContextReturnFocus && sceneContextReturnFocus.getBoundingClientRect
+    ? sceneContextReturnFocus.getBoundingClientRect() : { right: 10, bottom: 70 };
+  var x = Math.min(evt.clientX || anchor.right, window.innerWidth - menuWidth - 10);
+  var y = Math.min(evt.clientY || anchor.bottom, window.innerHeight - menuHeight - 10);
   menu.style.left = Math.max(10, x) + 'px';
   menu.style.top = Math.max(70, y) + 'px';
+  var firstAction = menu.querySelector('button:not(:disabled)');
+  if (firstAction) firstAction.focus();
 }
 
 function closeSceneContextMenu() {
   var menu = document.getElementById('scene-context-menu');
+  var restoreFocus = menu.contains(document.activeElement) && sceneContextReturnFocus;
   menu.classList.remove('visible');
   menu.style.left = '';
   menu.style.top = '';
   sceneContextTargetId = null;
+  sceneContextReturnFocus = null;
+  if (restoreFocus && restoreFocus.isConnected) restoreFocus.focus();
 }
 
 function onSceneContextMenuClick(evt) {
@@ -3198,22 +3553,29 @@ function openHotspotContextMenu(evt, args, sourceElement) {
 
   var menuWidth  = menu.offsetWidth  || 152;
   var menuHeight = menu.offsetHeight || 88;
-  var x = Math.min(evt.clientX, window.innerWidth  - menuWidth  - 10);
-  var y = Math.min(evt.clientY, window.innerHeight - menuHeight - 10);
+  var anchor = hotspotContextTargetElement && hotspotContextTargetElement.getBoundingClientRect
+    ? hotspotContextTargetElement.getBoundingClientRect() : { right: 10, bottom: 70 };
+  var x = Math.min(evt.clientX || anchor.right, window.innerWidth  - menuWidth  - 10);
+  var y = Math.min(evt.clientY || anchor.bottom, window.innerHeight - menuHeight - 10);
   menu.style.left = Math.max(10, x) + 'px';
   menu.style.top  = Math.max(70, y) + 'px';
+  var firstAction = menu.querySelector('button:not(:disabled)');
+  if (firstAction) firstAction.focus();
 }
 
 function closeHotspotContextMenu() {
+  var returnFocus = hotspotContextTargetElement;
   if (hotspotContextTargetElement && hotspotContextTargetElement.classList) {
     hotspotContextTargetElement.classList.remove('hs-marker-selected');
   }
   var menu = document.getElementById('hotspot-context-menu');
+  var restoreFocus = menu.contains(document.activeElement);
   menu.classList.remove('visible');
   menu.style.left = '';
   menu.style.top  = '';
   hotspotContextTarget = null;
   hotspotContextTargetElement = null;
+  if (restoreFocus && returnFocus && returnFocus.isConnected) returnFocus.focus();
 }
 
 function onHotspotEditClick() {
@@ -3242,6 +3604,51 @@ function onHotspotEditClick() {
   openPopup(cx, cy, target);
 }
 
+function openDeleteConfirmation(message, onConfirm) {
+  if (document.getElementById('delete-confirmation')) return;
+  var returnFocus = document.activeElement;
+  var dialog = document.createElement('dialog');
+  dialog.id = 'delete-confirmation';
+  dialog.className = 'delete-confirmation';
+  dialog.setAttribute('role', 'alertdialog');
+  dialog.setAttribute('aria-labelledby', 'delete-confirmation-title');
+  dialog.setAttribute('aria-describedby', 'delete-confirmation-message');
+  var title = document.createElement('h2');
+  title.id = 'delete-confirmation-title';
+  title.textContent = '削除の確認';
+  var description = document.createElement('p');
+  description.id = 'delete-confirmation-message';
+  description.textContent = message;
+  var actions = document.createElement('div');
+  actions.className = 'delete-confirmation-actions';
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'キャンセル';
+  var confirm = document.createElement('button');
+  confirm.type = 'button';
+  confirm.className = 'delete-confirmation-submit';
+  confirm.textContent = '削除する';
+  actions.append(cancel, confirm);
+  dialog.append(title, description, actions);
+  var settled = false;
+  function finish(accepted) {
+    if (settled) return;
+    settled = true;
+    dialog.close();
+    dialog.remove();
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+    if (accepted) onConfirm();
+  }
+  cancel.addEventListener('click', function () { finish(false); });
+  confirm.addEventListener('click', function () { finish(true); });
+  dialog.addEventListener('cancel', function (evt) { evt.preventDefault(); finish(false); });
+  dialog.addEventListener('keydown', function (evt) { evt.stopPropagation(); });
+  dialog.addEventListener('click', function (evt) { evt.stopPropagation(); });
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  cancel.focus();
+}
+
 function onHotspotDeleteClick() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('delete-other-hotspot')) {
     closeHotspotContextMenu();
@@ -3263,6 +3670,15 @@ function onHotspotDeleteClick() {
   }
   if (hasPendingHotspotMutationForTarget(target.id)) {
     showToast('このホットスポットの更新を処理中です。完了までお待ちください。', 'error');
+    return;
+  }
+  if (!isEditMode) return;
+  var confirmedSceneId = currentFileId;
+  var confirmedSceneGeneration = sceneLoadGeneration;
+  openDeleteConfirmation('「' + String(target.label || 'ホットスポット') + '」を削除しますか？\n説明・リンクと添付の関連付けも削除されます。', function () {
+  if (!canEdit || !isEditMode || currentFileId !== confirmedSceneId || sceneLoadGeneration !== confirmedSceneGeneration ||
+      !canStartHotspotMutation() || hasPendingHotspotMutationForTarget(target.id)) {
+    showToast('状態が変わったため削除を中止しました。対象を確認してもう一度操作してください。', 'warning');
     return;
   }
   var mutationRequest = createHotspotMutationRequest(currentFileId || '', 'delete', target.id);
@@ -3301,6 +3717,7 @@ function onHotspotDeleteClick() {
       id: target.id,
       fileId: mutationRequest.fileId
     }));
+  });
 }
 
 function onHotspotMoveClick() {
@@ -3324,14 +3741,16 @@ function onHotspotMoveClick() {
 
 function requestSceneDelete(img) {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('delete-scene')) return false;
-  if (!canEdit) return;
+  if (!canEdit || !isEditMode || !img || !img.id) return;
   var sceneName = String((img && img.name) || '');
-  var ok = window.confirm(
+  openDeleteConfirmation(
     '「' + sceneName + '」を削除しますか？\n' +
     '削除した写真はGoogleドライブのゴミ箱に移動され、\n' +
-    'このシーンに紐づくホットスポットも削除されます。'
-  );
-  if (!ok) return;
+    'このシーンに紐づくホットスポットも削除されます。', function () {
+  if (!canEdit || !isEditMode || !getSceneImageById(img.id)) {
+    showToast('状態が変わったため削除を中止しました。', 'warning');
+    return;
+  }
 
   google.script.run
     .withSuccessHandler(function (result) {
@@ -3354,6 +3773,7 @@ function requestSceneDelete(img) {
     .deleteImageFile(withEditToken({
       fileId: img.id
     }));
+  });
 }
 
 function applySceneDeleteLocally(fileId) {
@@ -3452,7 +3872,7 @@ function focusSceneListItem(fileId) {
   var items = document.querySelectorAll('.scene-item');
   for (var i = 0; i < items.length; i++) {
     if (String(items[i].dataset.id || '') === String(fileId)) {
-      items[i].focus();
+      (items[i].querySelector('.scene-item-name') || items[i]).focus();
       return;
     }
   }
@@ -3569,7 +3989,7 @@ function onSceneSettingsBackdropClick(evt) {
 function reloadCurrentSceneAfterSettings(previousScene, nextScene) {
   if (!nextScene || String(nextScene.id || nextScene.fileId || '') !== String(currentFileId || '')) return;
   var fileId = String(nextScene.id || nextScene.fileId || '');
-  delete hotspotCacheByFileId[fileId];
+  clearHotspotCache(fileId);
   preloadedScenes.delete(fileId);
 
   var previousType = getExplicitSceneType(previousScene || {});
@@ -3916,19 +4336,30 @@ function finishScenePerformanceRecord(record, status) {
   record.status = String(status || 'loaded');
   record.marks.total = finishedAt;
   record.duration = finishedAt - record.marks.sceneStart;
+  if (!appStartupPerformance.finished) {
+    appStartupPerformance.finished = true;
+    console.info('[app-perf]', JSON.stringify({
+      status: record.status,
+      duration: finishedAt - appStartupPerformance.startedAt,
+      configDuration: appStartupPerformance.configEnd == null || appStartupPerformance.configStart == null
+        ? null : appStartupPerformance.configEnd - appStartupPerformance.configStart
+    }));
+  }
   if (activeScenePerformanceRecord === record) activeScenePerformanceRecord = null;
   var relativeMarks = {};
   Object.keys(record.marks).forEach(function (name) {
     relativeMarks[name] = record.marks[name] - record.marks.sceneStart;
   });
-  console.info('[scene-perf]', {
+  console.info('[scene-perf]', JSON.stringify({
     generation: record.generation,
     delivery: record.delivery,
     type: record.type,
     status: record.status,
     duration: record.duration,
+    hotspotSource: record.hotspotSource || 'network',
+    metadataPrefetch: sceneMetadataPrefetchEnabled,
     marks: relativeMarks
-  });
+  }));
 }
 
 function preloadSceneImage(imageUrl, shouldHandle, performanceRecord, timeoutMs) {
@@ -3982,8 +4413,9 @@ function startHotspotPreparation(fileId, northFileId, shouldHandle, performanceR
   markScenePerformanceRecord(performanceRecord, 'hotspotsStart');
   return new Promise(function (resolve) {
     var canHandle = typeof shouldHandle === 'function' ? shouldHandle : function () { return true; };
-    loadHotspotsCached(fileId, function (result) {
+    loadHotspotsCached(fileId, function (result, source) {
       if (!canHandle()) return;
+      if (performanceRecord) performanceRecord.hotspotSource = source;
       markScenePerformanceRecord(performanceRecord, 'hotspotsEnd');
       resolve({
         status: 'loaded',
@@ -3999,9 +4431,15 @@ function startHotspotPreparation(fileId, northFileId, shouldHandle, performanceR
 }
 
 function fallbackToBase64(fileId, onSuccess, onFailure) {
+  var requestedQuality = imageQualityMode;
   google.script.run
     .withSuccessHandler(function (res) {
       if (res && res.success && res.imageUrl) {
+        if (scenePerformanceEnabled) console.info('[image-delivery]', JSON.stringify({
+          requestedQuality: requestedQuality,
+          servedQuality: res.quality === 'fast' || res.quality === 'original' ? res.quality : 'unknown',
+          characters: res.imageUrl.length
+        }));
         onSuccess(res.imageUrl);
       } else {
         onFailure((res && res.error) || 'Base64画像を取得できませんでした。');
@@ -4010,11 +4448,87 @@ function fallbackToBase64(fileId, onSuccess, onFailure) {
     .withFailureHandler(function () {
       onFailure('Base64画像の取得中に通信エラーが発生しました。');
     })
-    .getImageDataUri(fileId, 'public');
+    .getImageDataUri(fileId, 'public', requestedQuality);
 }
 
 function loadBase64ImageForScene(fileId, onSuccess, onFailure) {
-  fallbackToBase64(fileId, onSuccess, onFailure);
+  var key = String(fileId || '') + ':' + imageQualityMode;
+  var now = Date.now();
+  base64ImageCache.forEach(function (entry, entryKey) {
+    if (entry.expiresAt <= now) base64ImageCache.delete(entryKey);
+  });
+  var cached = base64ImageCache.get(key);
+  if (cached) {
+    base64ImageCache.delete(key);
+    base64ImageCache.set(key, cached);
+    onSuccess(cached.imageUrl);
+    return;
+  }
+  var pending = base64ImageRequests.get(key);
+  if (pending) {
+    pending.push({ success: onSuccess, failure: onFailure });
+    return;
+  }
+  pending = [{ success: onSuccess, failure: onFailure }];
+  base64ImageRequests.set(key, pending);
+  function finish(imageUrl, error) {
+    // 一覧更新後に到着した旧通信は新しいキャッシュや通信を上書きしない。
+    if (base64ImageRequests.get(key) === pending) {
+      base64ImageRequests.delete(key);
+      if (imageUrl && imageUrl.length <= BASE64_IMAGE_CACHE_MAX_CHARS) {
+        base64ImageCache.set(key, { imageUrl: imageUrl, expiresAt: Date.now() + BASE64_IMAGE_CACHE_TTL_MS });
+        var totalChars = 0;
+        base64ImageCache.forEach(function (entry) { totalChars += entry.imageUrl.length; });
+        while (base64ImageCache.size > BASE64_IMAGE_CACHE_MAX_ENTRIES || totalChars > BASE64_IMAGE_CACHE_MAX_CHARS) {
+          var oldestKey = base64ImageCache.keys().next().value;
+          totalChars -= base64ImageCache.get(oldestKey).imageUrl.length;
+          base64ImageCache.delete(oldestKey);
+        }
+      }
+    }
+    pending.forEach(function (callback) {
+      if (imageUrl) callback.success(imageUrl);
+      else callback.failure(error);
+    });
+  }
+  fallbackToBase64(fileId, function (imageUrl) { finish(imageUrl, null); }, function (error) { finish(null, error); });
+}
+
+function getSceneDeliveryMode(fileId) {
+  if (deliveryMode !== 'auto') return deliveryMode;
+  var key = String(fileId || '') + ':' + imageQualityMode;
+  var cached = base64ImageCache.get(key);
+  return (cached && cached.expiresAt > Date.now()) || base64ImageRequests.has(key) ? 'base64' : 'auto';
+}
+
+function scheduleSceneImagePrefetch(fileId) {
+  clearTimeout(scenePrefetchTimer);
+  var generation = ++scenePrefetchGeneration;
+  scenePrefetchTimer = setTimeout(function () {
+    if (generation !== scenePrefetchGeneration || scenePrefetchActive || isSwitching ||
+        !fileId || fileId === currentFileId || isEditMode || imageQualityMode !== 'fast') return;
+    var connection = navigator.connection;
+    if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
+    scenePrefetchActive = true;
+    var pending = isPublicViewingMode() && !isEditMode ? 2 : 1;
+    function finish() { if (--pending === 0) scenePrefetchActive = false; }
+    if (pending === 2) loadHotspotsCached(fileId, finish, finish, fileId);
+    if (deliveryMode === 'base64') {
+      loadBase64ImageForScene(fileId, finish, finish);
+    } else {
+      // Match the foreground URL / CORS mode. A speculative read must not switch auto to Base64.
+      var scene = (allImages || []).filter(function (item) { return item.id === fileId; })[0] || { id: fileId };
+      preloadSceneImage(getDirectImageUrl(scene), null, null, 3000).then(finish, finish);
+    }
+  }, 180);
+}
+
+function clearBase64ImageCache() {
+  base64ImageCache.clear();
+  base64ImageRequests.clear();
+  sceneThumbnailCache.clear();
+  scenePrefetchGeneration++;
+  clearTimeout(scenePrefetchTimer);
 }
 
 function getHotspotCacheKey(fileId) {
@@ -4037,11 +4551,17 @@ function normalizeHotspotResult(res) {
 }
 
 function clearHotspotCache(fileId) {
+  clearHotspotMediaCache(fileId);
   if (typeof fileId === 'undefined') {
     hotspotCacheByFileId = {};
+    hotspotCacheExpiresByFileId = {};
+    hotspotRequestsByFileId = {};
     return;
   }
-  delete hotspotCacheByFileId[getHotspotCacheKey(fileId)];
+  var key = getHotspotCacheKey(fileId);
+  delete hotspotCacheByFileId[key];
+  delete hotspotCacheExpiresByFileId[key];
+  delete hotspotRequestsByFileId[key];
 }
 
 function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHandle) {
@@ -4050,12 +4570,50 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
   var canHandle = typeof shouldHandle === 'function' ? shouldHandle : function () { return true; };
   var cacheKey = getHotspotCacheKey(northFileId || hotspotFileId);
   var useCache = isPublicViewingMode() && !isEditMode;
-  if (useCache && hotspotCacheByFileId[cacheKey]) {
+  var cacheTarget = hotspotCacheByFileId;
+  if (useCache && hotspotCacheByFileId[cacheKey] && hotspotCacheExpiresByFileId[cacheKey] > Date.now()) {
+    var cachedResult = cloneHotspotResult(hotspotCacheByFileId[cacheKey]);
     setTimeout(function () {
       if (!canHandle()) return;
-      onSuccess(cloneHotspotResult(hotspotCacheByFileId[cacheKey]));
+      onSuccess(cachedResult, 'cache');
     }, 0);
     return;
+  }
+
+  var listener = { success: onSuccess, failure: onFailure, canHandle: canHandle, source: 'network' };
+  var pending = useCache && hotspotRequestsByFileId[cacheKey];
+  if (pending && pending.hotspotFileId === hotspotFileId) {
+    listener.source = 'pending';
+    pending.listeners.push(listener);
+    return;
+  }
+  pending = { hotspotFileId: hotspotFileId, listeners: [listener] };
+  if (useCache) hotspotRequestsByFileId[cacheKey] = pending;
+  var timer = setTimeout(function () { finish(null); }, 30000);
+
+  function finish(result) {
+    if (pending.settled) return;
+    pending.settled = true;
+    clearTimeout(timer);
+    if (useCache && hotspotRequestsByFileId[cacheKey] === pending) {
+      delete hotspotRequestsByFileId[cacheKey];
+      if (result && cacheTarget === hotspotCacheByFileId && !isEditMode) {
+        delete hotspotCacheByFileId[cacheKey];
+        hotspotCacheByFileId[cacheKey] = cloneHotspotResult(result);
+        hotspotCacheExpiresByFileId[cacheKey] = Date.now() + HOTSPOT_CACHE_TTL_MS;
+        var keys = Object.keys(hotspotCacheByFileId);
+        while (keys.length > HOTSPOT_CACHE_MAX_ENTRIES) {
+          var oldest = keys.shift();
+          delete hotspotCacheByFileId[oldest];
+          delete hotspotCacheExpiresByFileId[oldest];
+        }
+      }
+    }
+    pending.listeners.forEach(function (entry) {
+      if (!entry.canHandle()) return;
+      if (result) entry.success(cloneHotspotResult(result), entry.source);
+      else if (typeof entry.failure === 'function') entry.failure();
+    });
   }
 
   var request = northFileId && northFileId !== hotspotFileId
@@ -4064,16 +4622,53 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
 
   google.script.run
     .withSuccessHandler(function (res) {
-      if (!canHandle()) return;
-      var normalized = normalizeHotspotResult(res);
-      if (useCache) hotspotCacheByFileId[cacheKey] = cloneHotspotResult(normalized);
-      onSuccess(cloneHotspotResult(normalized));
+      finish(normalizeHotspotResult(res));
     })
     .withFailureHandler(function () {
-      if (!canHandle()) return;
-      if (typeof onFailure === 'function') onFailure();
+      finish(null);
     })
     .loadHotspots(request);
+}
+
+/** Prepare only lightweight scene metadata, with one background RPC across folder changes. */
+function startSceneMetadataPrefetchQueue(images) {
+  var generation = ++sceneMetadataPrefetchGeneration;
+  clearTimeout(sceneMetadataPrefetchTimer);
+  sceneMetadataPrefetchResume = null;
+  sceneMetadataPrefetchPriority = [];
+  if (!sceneMetadataPrefetchEnabled || !isPublicViewingMode() || isEditMode) return;
+  var candidates = (images || []).filter(function (item) { return item && item.id && item.type !== 'folder'; }).slice(0, 20);
+  var next = 0;
+  sceneMetadataPrefetchResume = schedule;
+  function schedule() {
+    if (generation !== sceneMetadataPrefetchGeneration) return;
+    clearTimeout(sceneMetadataPrefetchTimer);
+    sceneMetadataPrefetchTimer = setTimeout(pump, 350);
+  }
+  function pump() {
+    if (generation !== sceneMetadataPrefetchGeneration || !sceneMetadataPrefetchEnabled || !isPublicViewingMode() || isEditMode) return;
+    var connection = navigator.connection;
+    if (connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || ''))) return;
+    if (isSwitching || !sceneDisplayReady || document.hidden || sceneMetadataPrefetchActive) { schedule(); return; }
+    while (sceneMetadataPrefetchPriority.length || next < candidates.length) {
+      var priorityId = sceneMetadataPrefetchPriority.shift();
+      var index = priorityId ? -1 : next++;
+      var id = priorityId || candidates[index].id;
+      if (id === currentFileId || (hotspotCacheByFileId[id] && hotspotCacheExpiresByFileId[id] > Date.now())) continue;
+      sceneMetadataPrefetchActive++;
+      var started = Date.now();
+      function finish(success) {
+        sceneMetadataPrefetchActive--;
+        if (generation === sceneMetadataPrefetchGeneration && scenePerformanceEnabled) {
+          console.info('[metadata-prefetch]', JSON.stringify({ index: index, success: success, duration: Date.now() - started }));
+        }
+        if (sceneMetadataPrefetchResume) sceneMetadataPrefetchResume();
+      }
+      loadHotspotsCached(id, function () { finish(true); }, function () { finish(false); }, id);
+      return;
+    }
+  }
+  schedule();
 }
 
 /**
@@ -4082,6 +4677,12 @@ function loadHotspotsCached(fileId, onSuccess, onFailure, northFileId, shouldHan
  */
 function preloadJumpScenes(hotspots) {
   if (!Array.isArray(hotspots)) return;
+  if (hotspotPrefetchEnabled && canPrefetchHotspotContent()) {
+    sceneMetadataPrefetchPriority = hotspots.map(function (hs) { return hs.jumpSceneId; }).filter(function (id, index, ids) {
+      return id && id !== currentFileId && ids.indexOf(id) === index && getSceneImageById(id);
+    }).slice(0, 4);
+    if (sceneMetadataPrefetchResume) sceneMetadataPrefetchResume();
+  }
   hotspots.forEach(function (hs) {
     var sceneId = hs.jumpSceneId;
     if (!sceneId || preloadedScenes.has(sceneId)) return;
@@ -4108,12 +4709,14 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     return false;
   }
   var sceneStartedAt = scenePerformanceNow_();
+  var sceneDeliveryMode = getSceneDeliveryMode(imgData.id);
+  closeQuizModal({ restoreFocus: false });
   closePhotoLightbox({ restoreFocus: false });
   stopGyroIfActive('load-scene');
   cancelHotspotMove('シーンが変更されたため移動をキャンセルしました。', { silent: true });
   closePopup();
   closeActiveInfoPopup({ restoreFocus: false });
-  clearHotspotAudioCache();
+  prepareHotspotMediaForSceneChange();
   var loadGeneration = ++sceneLoadGeneration;
   isSwitching   = true;
   currentFileId = imgData.id;
@@ -4136,7 +4739,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
                        !_tSidebar.classList.contains('hidden') &&
                        !sidebarCollapsed &&
                        window.innerWidth > 600;
-    _transOverlay.style.left = _tHasSidebar ? '200px' : '0';
+    _transOverlay.style.left = _tHasSidebar ? 'var(--scene-sidebar-width)' : '0';
     _transOverlay.classList.add('active');
   }
 
@@ -4159,6 +4762,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
 
   // scenes の明示種別を優先し、旧データだけファイル名へフォールバック
   is2DMode = sceneIs2D;
+  syncSceneActionButtons();
 
   // GASコールが返ってこない場合のタイムアウト（30秒）
   var sceneLoadTimer = setTimeout(function () {
@@ -4172,7 +4776,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   var directImageUrl = getDirectImageUrl(imgData);
   var autoFallbackController = null;
   var pannellumSession = null;
-  if (deliveryMode === 'auto') {
+  if (sceneDeliveryMode === 'auto') {
     autoFallbackController = createAutoFallbackController(
       isCurrentLoad,
       performanceRecord,
@@ -4183,7 +4787,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   var hotspotPreparation = startHotspotPreparation(imgData.id, imgData.id, isCurrentLoad, performanceRecord);
   var directImagePreparation = null;
   var base64Preparation = null;
-  if (deliveryMode === 'base64') {
+  if (sceneDeliveryMode === 'base64') {
     base64Preparation = startBase64ImagePreparation(imgData.id, isCurrentLoad, performanceRecord);
   } else {
     directImagePreparation = preloadSceneImage(
@@ -4207,7 +4811,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   hotspotPreparation.then(function (prepared) {
     if (!isCurrentLoad()) return;
     setTimeout(function () {
-      if (isCurrentLoad()) preloadJumpScenes(prepared.hotspots || []);
+      if (isCurrentSceneLoadRequest(loadGeneration, imgData.id)) preloadJumpScenes(prepared.hotspots || []);
     }, 0);
   });
 
@@ -4222,6 +4826,9 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     if (autoFallbackController) autoFallbackController.cancel();
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'loaded');
+    hotspotPreparation.then(function (prepared) {
+      if (isCurrentSceneLoadRequest(loadGeneration, imgData.id)) scheduleHotspotMediaPrefetch(prepared.hotspots);
+    });
   }
 
   function showDeliveryError(message) {
@@ -4231,7 +4838,10 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     isSwitching = false;
     finishScenePerformanceRecord(performanceRecord, 'error');
     clearSceneTransitionOverlay();
-    showLoadError(message);
+    showLoadError(message, sceneDeliveryMode === 'direct' ? function () {
+      deliveryMode = 'base64';
+      loadScene(imgData, preferredYaw, preferredPitch);
+    } : null);
   }
 
   function beginBase64Fallback() {
@@ -4369,7 +4979,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
     );
   }
 
-  if (deliveryMode === 'base64') {
+  if (sceneDeliveryMode === 'base64') {
     Promise.all([hotspotPreparation, base64Preparation]).then(function (prepared) {
       if (!isCurrentLoad()) return;
       if (prepared[1].status !== 'loaded') {
@@ -4397,7 +5007,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
       if (autoFallbackController) {
         autoFallbackController.startFallback('direct-display-failed');
       } else {
-        showDeliveryError('画像の読み込みに失敗しました。Driveの共有設定を確認するか、delivery=auto を試してください。');
+        showDeliveryError('画像を読み込めませんでした。互換表示で再試行するか、画像の共有設定を確認してください。');
       }
     });
   });
@@ -4414,12 +5024,14 @@ function showSceneLoading() {
                    !sidebar.classList.contains('hidden') &&
                    !sidebarCollapsed &&
                    window.innerWidth > 600;
-  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.style.left = hasSidebar ? 'var(--scene-sidebar-width)' : '0';
   loading.innerHTML = '<div class="loading-ring"></div><p>読み込んでいます...</p>';
   loading.classList.remove('hidden');
 }
 
 function showSceneEmptyState(message) {
+  sceneControlsAvailable = false;
+  sceneGyroAvailable = false;
   setSceneDisplayReady(false);
   var loading = document.getElementById('loading');
   var sidebar = document.getElementById('scene-sidebar');
@@ -4427,7 +5039,7 @@ function showSceneEmptyState(message) {
                    !sidebar.classList.contains('hidden') &&
                    !sidebarCollapsed &&
                    window.innerWidth > 600;
-  loading.style.left = hasSidebar ? '200px' : '0';
+  loading.style.left = hasSidebar ? 'var(--scene-sidebar-width)' : '0';
   loading.innerHTML =
     '<p style="font-size:14px;color:#71717A;text-align:center;padding:0 20px">' +
     escapeHtml(message || 'シーン一覧から写真を選択してください。') +
@@ -4479,28 +5091,31 @@ function setHotspotFolderButtonBusy(busy) {
   syncDriveFolderButtons();
 }
 
-function syncSceneActionButton_(id, visible) {
+function syncSceneActionButton_(id, visible, enabled) {
   var button = document.getElementById(id);
   if (!button) return;
   visible = !!visible;
   button.classList.toggle('visible', visible);
   button.hidden = !visible;
-  button.disabled = !visible;
+  button.disabled = !visible || !enabled;
   button.setAttribute('aria-hidden', visible ? 'false' : 'true');
-  button.tabIndex = visible ? 0 : -1;
+  button.tabIndex = visible && enabled ? 0 : -1;
 }
 
 /** シーン読込状態と編集状態から、画像上の操作ボタンを一括同期する。 */
 function syncSceneActionButtons() {
   var canUseScene = !!sceneDisplayReady;
-  syncSceneActionButton_('fullscreen-btn', canUseScene && !isEditMode);
-  syncSceneActionButton_('btn-home', canUseScene && !!homeImageId);
-  syncSceneActionButton_('quality-toggle-btn', canUseScene);
-  syncSceneActionButton_('gyro-toggle-btn', canUseScene);
+  if (canUseScene) sceneGyroAvailable = isGyroSupported();
+  syncSceneActionButton_('fullscreen-btn', sceneControlsAvailable && !isEditMode, canUseScene && !isEditMode);
+  syncSceneActionButton_('btn-home', sceneControlsAvailable && !!homeImageId, canUseScene);
+  syncSceneActionButton_('quality-toggle-btn', sceneControlsAvailable, canUseScene);
+  syncSceneActionButton_('gyro-toggle-btn', sceneControlsAvailable && !is2DMode && !isEditMode && sceneGyroAvailable, canUseScene);
+  updateGyroBtn();
 }
 
 function setSceneDisplayReady(ready) {
   sceneDisplayReady = !!ready;
+  if (sceneDisplayReady) sceneControlsAvailable = true;
   syncSceneActionButtons();
 }
 
@@ -4533,7 +5148,7 @@ function createPannellumViewerConfig(imageUrl, spots, northOffset, initialYaw, i
     panorama:        imageUrl,
     crossOrigin:    'anonymous',
     autoLoad:        true,
-    autoRotate:     -1.5,
+    autoRotate:     0,
     showControls:    false,
     hotSpots:        pannellumSpots
   };
@@ -4777,16 +5392,25 @@ function updateGyroBtn() {
   if (!btn) return;
   btn.classList.toggle('gyro-active', isGyroActive);
   btn.title = isGyroActive ? 'ジャイロOFF' : 'ジャイロON';
+  if (gyroPermissionPending) btn.title = 'ジャイロの起動を確認中';
+  btn.disabled = btn.hidden || !sceneDisplayReady || gyroPermissionPending;
+  btn.setAttribute('aria-busy', gyroPermissionPending ? 'true' : 'false');
   btn.setAttribute('aria-pressed', isGyroActive ? 'true' : 'false');
 }
 
 function stopGyroIfActive(reason) {
-  if (!isGyroActive) return;
+  gyroRequestGeneration++;
+  gyroPermissionPending = false;
   if (viewer) {
     try { viewer.stopOrientation(); } catch (e) { /* ignore */ }
   }
   isGyroActive = false;
   updateGyroBtn();
+}
+
+function isGyroSupported() {
+  return !!(typeof DeviceOrientationEvent !== 'undefined' && viewer &&
+    typeof viewer.isOrientationSupported === 'function' && viewer.isOrientationSupported());
 }
 
 /**
@@ -4796,37 +5420,77 @@ function stopGyroIfActive(reason) {
  */
 function toggleGyro() {
   if (typeof guardHotspotFormOperation === 'function' && !guardHotspotFormOperation('toggle-gyro')) return false;
+  if (!sceneDisplayReady || is2DMode || isEditMode || !isGyroSupported() || gyroPermissionPending) return false;
   if (isGyroActive) {
     // ---- OFF ----
     stopGyroIfActive('toggle');
     return;
   }
 
-  // ---- ON ----
-  function startGyro() {
-    if (!viewer) return;
-    try {
-      viewer.startOrientation();
+  var targetViewer = viewer;
+  var targetSceneGeneration = sceneLoadGeneration;
+  var requestGeneration = ++gyroRequestGeneration;
+  gyroPermissionPending = true;
+  updateGyroBtn();
+  function isCurrentRequest() {
+    return requestGeneration === gyroRequestGeneration && viewer === targetViewer &&
+      targetSceneGeneration === sceneLoadGeneration && sceneDisplayReady && !is2DMode && !isEditMode;
+  }
+  function failStart(message) {
+    if (!isCurrentRequest()) return;
+    gyroPermissionPending = false;
+    isGyroActive = false;
+    updateGyroBtn();
+    showToast(message, 'error');
+  }
+  function checkStarted(attempt) {
+    if (!isCurrentRequest()) {
+      try { targetViewer.stopOrientation(); } catch (e) { /* destroyed viewer */ }
+      return;
+    }
+    // Pannellum may finish its own permission promise after startOrientation returns.
+    if (typeof targetViewer.isOrientationActive === 'function' && targetViewer.isOrientationActive()) {
+      gyroPermissionPending = false;
       isGyroActive = true;
       updateGyroBtn();
+    } else if (attempt < 20) {
+      setTimeout(function () { checkStarted(attempt + 1); }, 100);
+    } else {
+      targetViewer.stopOrientation();
+      failStart('ジャイロを開始できませんでした。端末の対応と許可設定をご確認ください。');
+    }
+  }
+  // ---- ON ----
+  function startGyro() {
+    if (!isCurrentRequest()) return;
+    try {
+      targetViewer.startOrientation();
+      checkStarted(0);
     } catch (e) {
-      showToast('ジャイロの起動に失敗しました', 'error');
+      failStart('ジャイロの起動に失敗しました');
     }
   }
 
   // iOS 13+ Safari: requestPermission が必要
   if (typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission()
+    var permissionRequest;
+    try {
+      permissionRequest = DeviceOrientationEvent.requestPermission();
+    } catch (error) {
+      failStart('ジャイロの許可リクエストに失敗しました');
+      return;
+    }
+    Promise.resolve(permissionRequest)
       .then(function (permission) {
         if (permission === 'granted') {
           startGyro();
         } else {
-          showToast('ジャイロの許可が得られませんでした', 'error');
+          failStart('ジャイロの許可が得られませんでした');
         }
       })
       .catch(function () {
-        showToast('ジャイロの許可リクエストに失敗しました', 'error');
+        failStart('ジャイロの許可リクエストに失敗しました');
       });
   } else {
     // Android / デスクトップ等: 許可不要でそのまま開始
@@ -6206,6 +6870,7 @@ function buildMarkerElement(container, args) {
 // =============================================
 function onMarkerClick(evt, args) {
   if (isEditMode) return; // 編集モード中は無効
+  closeQuizModal({ restoreFocus: false });
 
   // ジャンプ機能: jumpSceneId が設定されていればシーン移動
   if (args && args.jumpSceneId) {
@@ -6243,8 +6908,12 @@ function onMarkerClick(evt, args) {
       linkEl.classList.add('hidden');
     }
 
-    quizCard.classList.remove('is-flipped');
+    closeActiveInfoPopup({ restoreFocus: false });
+    activeQuizReturnFocus = evt && evt.currentTarget && evt.currentTarget.focus ? evt.currentTarget : document.activeElement;
+    setQuizAnswerVisible(false);
     quizOverlay.classList.remove('hidden');
+    renderQuizAttachments(args);
+    document.getElementById('quiz-flip-button').focus();
     return;
   }
 
@@ -6360,15 +7029,60 @@ function clearHotspotAudioCache() {
   hotspotAudioInFlight = {};
   hotspotAudioPrefetchTimers.forEach(function (timer) { clearTimeout(timer); });
   hotspotAudioPrefetchTimers = [];
+  Object.keys(hotspotMediaCacheExpires).forEach(function (key) {
+    if (key.indexOf('audio|') === 0) delete hotspotMediaCacheExpires[key];
+  });
+}
+
+/** Retain bounded authorized reads on navigation; editing and refresh invalidate them. */
+function prepareHotspotMediaForSceneChange() {
+  hotspotMediaPrefetchGeneration++;
+  clearTimeout(hotspotMediaPrefetchTimer);
+  if (!mediaWarmupEnabled || !isPublicViewingMode() || isEditMode) {
+    clearHotspotAudioCache();
+    return;
+  }
+  hotspotAudioPrefetchTimers.forEach(function (timer) { clearTimeout(timer); });
+  hotspotAudioPrefetchTimers = [];
+}
+
+function clearHotspotMediaCache(fileId) {
+  hotspotMediaPrefetchGeneration++;
+  clearTimeout(hotspotMediaPrefetchTimer);
+  var prefix = typeof fileId === 'undefined' || !String(fileId || '') ? null : String(fileId) + '|';
+  [photoCache, photoInFlight, hotspotAudioCache, hotspotAudioInFlight].forEach(function (cache) {
+    Object.keys(cache).forEach(function (key) {
+      if (prefix === null || key.indexOf(prefix) === 0) delete cache[key];
+    });
+  });
+  Object.keys(hotspotMediaCacheExpires).forEach(function (key) {
+    if (prefix === null || key.slice(key.indexOf('|') + 1).indexOf(prefix) === 0) delete hotspotMediaCacheExpires[key];
+  });
+  photoCacheOrder = photoCacheOrder.filter(function (key) { return !!photoCache[key]; });
+  hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (key) { return !!hotspotAudioCache[key]; });
+}
+
+function getCachedHotspotMedia(kind, key) {
+  var cache = kind === 'photo' ? photoCache : hotspotAudioCache;
+  var expiryKey = kind + '|' + key;
+  if (cache[key] && hotspotMediaCacheExpires[expiryKey] > Date.now()) return cache[key];
+  delete cache[key];
+  delete hotspotMediaCacheExpires[expiryKey];
+  if (kind === 'photo') photoCacheOrder = photoCacheOrder.filter(function (item) { return item !== key; });
+  else hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (item) { return item !== key; });
+  return null;
 }
 
 function putHotspotAudioCache(cacheKey, value) {
   delete hotspotAudioCache[cacheKey];
   hotspotAudioCache[cacheKey] = value;
+  hotspotMediaCacheExpires['audio|' + cacheKey] = Date.now() + HOTSPOT_MEDIA_CACHE_TTL_MS;
   hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (key) { return key !== cacheKey; });
   hotspotAudioCacheOrder.push(cacheKey);
   while (hotspotAudioCacheOrder.length > HOTSPOT_AUDIO_CACHE_LIMIT) {
-    delete hotspotAudioCache[hotspotAudioCacheOrder.shift()];
+    var oldest = hotspotAudioCacheOrder.shift();
+    delete hotspotAudioCache[oldest];
+    delete hotspotMediaCacheExpires['audio|' + oldest];
   }
 }
 
@@ -6391,19 +7105,21 @@ function normalizeHotspotAudioIdentity(args) {
   };
 }
 
-/** 同じ音声のキャッシュ・通信中要求を共有し、シーン世代が変わった応答は破棄する。 */
+/** Share bounded audio reads across scenes; popup handlers still validate their own scene. */
 function requestHotspotAudio(identity, callbacks) {
   var normalized = normalizeHotspotAudioIdentity(identity);
   var handlers = callbacks || {};
   if (!normalized.fileId || !normalized.hotspotId || !normalized.audioId) {
     if (typeof handlers.failure === 'function') handlers.failure();
+    if (typeof handlers.settled === 'function') handlers.settled();
     return false;
   }
   var cacheKey = getHotspotAudioCacheKey(normalized);
-  if (hotspotAudioCache[cacheKey]) {
-    var cachedResult = hotspotAudioCache[cacheKey];
+  var cachedResult = getCachedHotspotMedia('audio', cacheKey);
+  if (cachedResult) {
     setTimeout(function () {
       if (typeof handlers.success === 'function') handlers.success(cachedResult, true);
+      if (typeof handlers.settled === 'function') handlers.settled();
     }, 0);
     return true;
   }
@@ -6412,25 +7128,38 @@ function requestHotspotAudio(identity, callbacks) {
   if (currentEntry && currentEntry.requestGeneration === hotspotAudioRequestGeneration) {
     if (typeof handlers.success === 'function') currentEntry.successHandlers.push(handlers.success);
     if (typeof handlers.failure === 'function') currentEntry.failureHandlers.push(handlers.failure);
+    if (typeof handlers.settled === 'function') currentEntry.settledHandlers.push(handlers.settled);
     return true;
   }
 
   var entry = {
     cacheKey: cacheKey,
     identity: normalized,
+    reusable: mediaWarmupEnabled && isPublicViewingMode() && !isEditMode,
     requestGeneration: hotspotAudioRequestGeneration,
     successHandlers: typeof handlers.success === 'function' ? [handlers.success] : [],
-    failureHandlers: typeof handlers.failure === 'function' ? [handlers.failure] : []
+    failureHandlers: typeof handlers.failure === 'function' ? [handlers.failure] : [],
+    settledHandlers: typeof handlers.settled === 'function' ? [handlers.settled] : []
   };
   hotspotAudioInFlight[cacheKey] = entry;
+  var requestTimer = setTimeout(finishFailure, 30000);
+
+  function settleRequest() {
+    if (entry.finished) return false;
+    entry.finished = true;
+    clearTimeout(requestTimer);
+    entry.settledHandlers.forEach(function (handler) { handler(); });
+    return true;
+  }
 
   function isCurrentEntry() {
     return hotspotAudioInFlight[cacheKey] === entry &&
       entry.requestGeneration === hotspotAudioRequestGeneration &&
-      sceneLoadGeneration === entry.identity.sceneGeneration &&
-      (!currentFileId || String(currentFileId) === entry.identity.fileId);
+      !isEditMode && (entry.reusable || (sceneLoadGeneration === entry.identity.sceneGeneration &&
+      (!currentFileId || String(currentFileId) === entry.identity.fileId)));
   }
   function finishFailure() {
+    if (!settleRequest()) return;
     if (!isCurrentEntry()) return;
     delete hotspotAudioInFlight[cacheKey];
     entry.failureHandlers.forEach(function (handler) { handler(); });
@@ -6438,6 +7167,7 @@ function requestHotspotAudio(identity, callbacks) {
 
   google.script.run
     .withSuccessHandler(function (result) {
+      if (!settleRequest()) return;
       if (!isCurrentEntry()) return;
       delete hotspotAudioInFlight[cacheKey];
       if (!result || !result.success || !result.dataUri) {
@@ -6469,11 +7199,140 @@ function prefetchHotspotAudio(args) {
   return requestHotspotAudio(identity);
 }
 
+function canPrefetchHotspotContent() {
+  var connection = navigator.connection;
+  return hotspotPrefetchEnabled && isPublicViewingMode() && !isEditMode &&
+    !(connection && (connection.saveData || /(^|-)2g$/.test(connection.effectiveType || '')));
+}
+
+/** Share authorized photo reads between intent, idle preparation and the popup. */
+function requestHotspotPhoto(args, callbacks) {
+  var handlers = callbacks || {};
+  var fileId = String(args && args.fileId || currentFileId || '');
+  var hotspotId = String(args && args.id || '');
+  var photoId = String(args && args.photoId || '');
+  var key = [fileId, hotspotId, photoId].join('|');
+  if (!fileId || !hotspotId || !photoId) {
+    if (handlers.failure) handlers.failure();
+    if (handlers.settled) handlers.settled();
+    return;
+  }
+  var cached = getCachedHotspotMedia('photo', key);
+  if (cached) {
+    setTimeout(function () {
+      if (handlers.success) handlers.success(cached);
+      if (handlers.settled) handlers.settled();
+    }, 0);
+    return;
+  }
+  var generation = sceneLoadGeneration;
+  var pending = photoInFlight[key];
+  if (pending && (pending.reusable || pending.generation === generation)) {
+    pending.handlers.push(handlers);
+    return;
+  }
+  var entry = { generation: generation, handlers: [handlers],
+    reusable: mediaWarmupEnabled && isPublicViewingMode() && !isEditMode };
+  photoInFlight[key] = entry;
+  var requestTimer = setTimeout(function () { finish(null); }, 30000);
+  function finish(result) {
+    if (entry.finished) return;
+    entry.finished = true;
+    clearTimeout(requestTimer);
+    var current = photoInFlight[key] === entry && !isEditMode && (entry.reusable ||
+      (sceneLoadGeneration === generation && (!currentFileId || String(currentFileId) === fileId)));
+    if (photoInFlight[key] === entry) delete photoInFlight[key];
+    var data = current && result && result.success && result.dataUri;
+    if (data) {
+      photoCache[key] = String(data);
+      hotspotMediaCacheExpires['photo|' + key] = Date.now() + HOTSPOT_MEDIA_CACHE_TTL_MS;
+      photoCacheOrder = photoCacheOrder.filter(function (item) { return item !== key; });
+      photoCacheOrder.push(key);
+      while (photoCacheOrder.length > 4) {
+        var oldest = photoCacheOrder.shift();
+        delete photoCache[oldest];
+        delete hotspotMediaCacheExpires['photo|' + oldest];
+      }
+    }
+    entry.handlers.forEach(function (listener) {
+      if (current && data && listener.success) listener.success(String(data));
+      if (current && !data && listener.failure) listener.failure();
+      if (listener.settled) listener.settled();
+    });
+  }
+  google.script.run.withSuccessHandler(finish).withFailureHandler(function () { finish(null); })
+    .getHotspotPhotoDataUri({ fileId: fileId, hotspotId: hotspotId, photoId: photoId });
+}
+
+/** At most two attachments per scene and two background slots across scene changes. */
+function scheduleHotspotMediaPrefetch(hotspots) {
+  clearTimeout(hotspotMediaPrefetchTimer);
+  var prefetchGeneration = ++hotspotMediaPrefetchGeneration;
+  if (!canPrefetchHotspotContent()) return;
+  var generation = sceneLoadGeneration;
+  var candidates = [];
+  (hotspots || []).forEach(function (args) {
+    if (args.jumpSceneId || (!mediaWarmupEnabled && args.markerIcon === 'quiz')) return;
+    if (args.photoId) candidates.push({ args: args, photo: true });
+    if (args.audioId) candidates.push({ args: args, photo: false });
+  });
+  candidates = candidates.slice(0, 2);
+  function isCurrentQueue() {
+    return generation === sceneLoadGeneration && prefetchGeneration === hotspotMediaPrefetchGeneration;
+  }
+  function schedule() {
+    if (!isCurrentQueue()) return;
+    clearTimeout(hotspotMediaPrefetchTimer);
+    hotspotMediaPrefetchTimer = setTimeout(pump, 500);
+  }
+  function pump() {
+    if (!isCurrentQueue() || !canPrefetchHotspotContent() || !candidates.length) return;
+    var connection = navigator.connection;
+    var limit = mediaWarmupEnabled && !(connection && connection.effectiveType === '3g') ? 2 : 1;
+    if (isSwitching || !sceneDisplayReady || document.hidden || hotspotMediaPrefetchActive >= limit) { schedule(); return; }
+    while (candidates.length && hotspotMediaPrefetchActive < limit) {
+      var candidate = candidates.shift();
+      if (mediaWarmupEnabled) {
+        var key = [candidate.args.fileId || currentFileId || '', candidate.args.id || '',
+          candidate.photo ? candidate.args.photoId : candidate.args.audioId].join('|');
+        var kind = candidate.photo ? 'photo' : 'audio';
+        var pending = (candidate.photo ? photoInFlight : hotspotAudioInFlight)[key];
+        if (getCachedHotspotMedia(kind, key) || (pending && pending.reusable)) continue;
+      }
+      hotspotMediaPrefetchActive++;
+      if (candidate.photo) requestHotspotPhoto(candidate.args, { settled: releaseSlot });
+      else requestHotspotAudio(candidate.args, { settled: releaseSlot });
+    }
+    if (candidates.length) schedule();
+  }
+  function releaseSlot() { hotspotMediaPrefetchActive--; schedule(); }
+  schedule();
+}
+
 function bindHotspotAudioPrefetch(container, args) {
-  if (!container || !args || !args.audioId || args.jumpSceneId) return;
+  if (!container || !args) return;
   container.tabIndex = 0;
   container.setAttribute('role', 'button');
   container.setAttribute('aria-label', String(args.label || 'ホットスポット') + 'を開く');
+  container.addEventListener('click', function (event) {
+    if (!canEdit || !isEditMode) return;
+    event.stopPropagation();
+    openHotspotContextMenu(event, args, container);
+  });
+  container.addEventListener('keydown', function (event) {
+    if (event.target !== container || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    container.click();
+  });
+  if (!args.audioId && !args.photoId && !args.jumpSceneId) return;
+  function prefetchContent() {
+    if (args.jumpSceneId) {
+      if (canPrefetchHotspotContent()) scheduleSceneImagePrefetch(args.jumpSceneId);
+    } else {
+      if (args.audioId) prefetchHotspotAudio(args);
+      if (args.photoId && (mediaWarmupEnabled || args.markerIcon !== 'quiz') && canPrefetchHotspotContent()) requestHotspotPhoto(args);
+    }
+  }
   var hoverTimer = null;
   function cancelHoverPrefetch() {
     if (hoverTimer === null) return;
@@ -6492,14 +7351,14 @@ function bindHotspotAudioPrefetch(container, args) {
       hotspotAudioPrefetchTimers = hotspotAudioPrefetchTimers.filter(function (timer) {
         return timer !== completedTimer;
       });
-      prefetchHotspotAudio(args);
+      prefetchContent();
     }, HOTSPOT_AUDIO_PREFETCH_DELAY_MS);
     hotspotAudioPrefetchTimers.push(hoverTimer);
   });
   container.addEventListener('pointerleave', cancelHoverPrefetch);
   container.addEventListener('focusin', function () {
     cancelHoverPrefetch();
-    prefetchHotspotAudio(args);
+    prefetchContent();
   });
 }
 
@@ -6549,14 +7408,12 @@ function loadHotspotAudioForPopup(popup, args) {
 function renderPhotoInPopup(popup, args) {
   var fileId = String(args && args.fileId || currentFileId || '');
   var hotspotId = String(args && args.id || '');
-  var photoId = String(args && args.photoId || '');
   var popupGeneration = popup && popup.__infoPopupGeneration;
   var sceneGeneration = sceneLoadGeneration;
-  var cacheKey = [fileId, hotspotId, photoId].join('|');
   function isCurrentPhotoRequest() {
     return !!(popup && popup.isConnected && popup.id === 'active-info-popup' &&
       popup.__infoPopupGeneration === popupGeneration && infoPopupGeneration === popupGeneration &&
-      sceneLoadGeneration === sceneGeneration && String(currentFileId || '') === fileId &&
+      sceneLoadGeneration === sceneGeneration && (!currentFileId || String(currentFileId) === fileId) &&
       popup.dataset.fileId === fileId && popup.dataset.hotspotId === hotspotId);
   }
   function showPhotoInArea(dataUri) {
@@ -6579,34 +7436,14 @@ function renderPhotoInPopup(popup, args) {
     area.parentNode.replaceChild(button, area);
   }
 
-  // キャッシュあり
-  if (photoCache[cacheKey]) {
-    showPhotoInArea(photoCache[cacheKey]);
-    return;
-  }
-
-  google.script.run
-    .withSuccessHandler(function (result) {
-      if (!isCurrentPhotoRequest()) return;
-      var area = popup.querySelector('#popup-photo-area');
-      if (!area) return; // popup が閉じられた場合
-      if (result && result.success) {
-        photoCache[cacheKey] = result.dataUri;
-        showPhotoInArea(result.dataUri);
-      } else {
-        area.textContent = '写真を読み込めませんでした';
-      }
-    })
-    .withFailureHandler(function () {
+  requestHotspotPhoto(args, {
+    success: showPhotoInArea,
+    failure: function () {
       if (!isCurrentPhotoRequest()) return;
       var area = popup.querySelector('#popup-photo-area');
       if (area) area.textContent = '写真を読み込めませんでした';
-    })
-    .getHotspotPhotoDataUri({
-      fileId: fileId,
-      hotspotId: hotspotId,
-      photoId: photoId
-    });
+    }
+  });
 }
 
 function isPhotoLightboxOpen() {
@@ -6984,6 +7821,7 @@ function toggleMode(options) {
       return toggleMode(nextOptions);
     });
   }
+  stopGyroIfActive('mode');
   isEditMode = !isEditMode;
   document.body.classList.toggle('edit-mode-active', isEditMode);
   if (!isEditMode) {
@@ -7079,7 +7917,10 @@ function toggleMode(options) {
   setSceneReorderSaving(sceneReorderState.saving);
   syncDriveFolderButtons();
   syncSceneActionButtons();
+  if (isEditMode) clearHotspotCache();
+  startSceneMetadataPrefetchQueue(allImages);
   scheduleAppLayoutMetrics();
+  revealActiveSceneCard();
 }
 
 function shouldIgnorePanoramaPointer(evt) {
@@ -7433,8 +8274,10 @@ function onSaveClick() {
 
   if (targetArgs) {
     // ── 更新処理 ──────────────────────────────────────
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('updateHotspot', saveData, [targetArgs.id], function () {
+      return isCurrentHotspotMutationRequest(mutationRequest) && isHotspotFormSessionActive() &&
+        hotspotSaveUiRequestId === mutationRequest.id;
+    }).then(function (result) {
         finishHotspotMutationRequest(mutationRequest);
         if (result && result.success) clearHotspotCache(mutationRequest.fileId);
         var ownsSaveUi = resetHotspotSaveUi(mutationRequest, '更新する');
@@ -7461,19 +8304,19 @@ function onSaveClick() {
             'error'
           );
         }
-      })
-      .withFailureHandler(function () {
+      }, function (error) {
         finishHotspotMutationRequest(mutationRequest);
         resetHotspotSaveUi(mutationRequest, '更新する');
         if (!isCurrentHotspotMutationRequest(mutationRequest)) return;
-        showToast('通信エラーが発生しました。再度お試しください。', 'error');
-      })
-      .updateHotspot(withEditToken(saveData), targetArgs.id);
+        showToast(getHotspotEditFailureMessage(error), 'error');
+      });
 
   } else {
     // ── 新規保存処理 ───────────────────────────────────
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('saveHotspot', saveData, [], function () {
+      return isCurrentHotspotMutationRequest(mutationRequest) && isHotspotFormSessionActive() &&
+        hotspotSaveUiRequestId === mutationRequest.id;
+    }).then(function (result) {
         finishHotspotMutationRequest(mutationRequest);
         if (result && result.success) clearHotspotCache(mutationRequest.fileId);
         var ownsSaveUi = resetHotspotSaveUi(mutationRequest, '保存する');
@@ -7501,14 +8344,12 @@ function onSaveClick() {
             'error'
           );
         }
-      })
-      .withFailureHandler(function () {
+      }, function (error) {
         finishHotspotMutationRequest(mutationRequest);
         resetHotspotSaveUi(mutationRequest, '保存する');
         if (!isCurrentHotspotMutationRequest(mutationRequest)) return;
-        showToast('通信エラーが発生しました。再度お試しください。', 'error');
-      })
-      .saveHotspot(withEditToken(saveData));
+        showToast(getHotspotEditFailureMessage(error), 'error');
+      });
   }
 }
 
@@ -7636,9 +8477,12 @@ function showToast(message, type) {
 // =============================================
 //  ローディングエラー表示
 // =============================================
-function showLoadError(message) {
+function showLoadError(message, compatibleRetry) {
   setSceneDisplayReady(false);
   var loading = document.getElementById('loading');
+  var transition = document.getElementById('scene-transition-overlay');
+  if (transition) transition.classList.remove('active');
+  loading.classList.remove('hidden');
   loading.innerHTML =
     '<p style="color:#ef4444;font-size:14px;text-align:center;padding:0 20px">' +
     escapeHtml(message) + '<br><br>' +
@@ -7646,6 +8490,77 @@ function showLoadError(message) {
     'style="background:#fbbf24;border:none;border-radius:8px;padding:8px 20px;' +
     'font-size:13px;font-weight:600;color:#78350f;cursor:pointer">' +
     '再読み込み</button></p>';
+  if (typeof compatibleRetry === 'function') {
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'compatible-retry-button';
+    retry.textContent = '互換表示で再試行';
+    retry.addEventListener('click', function () {
+      if (retry.disabled) return;
+      retry.disabled = true;
+      compatibleRetry();
+    });
+    loading.appendChild(retry);
+  }
+}
+
+function setQuizAnswerVisible(visible) {
+  var card = document.getElementById('quiz-card');
+  var front = card.querySelector('.quiz-card-front');
+  var back = card.querySelector('.quiz-card-back');
+  card.classList.toggle('is-flipped', visible);
+  front.inert = visible;
+  back.inert = !visible;
+  front.setAttribute('aria-hidden', String(visible));
+  back.setAttribute('aria-hidden', String(!visible));
+  var button = document.getElementById('quiz-flip-button');
+  button.textContent = visible ? '問題に戻る' : '答えを見る';
+  button.setAttribute('aria-expanded', String(visible));
+}
+
+function toggleQuizAnswer() {
+  setQuizAnswerVisible(!document.getElementById('quiz-card').classList.contains('is-flipped'));
+}
+
+function renderQuizAttachments(args) {
+  if (!args.photoId && !args.audioId) return;
+  var media = document.createElement('div');
+  media.id = 'active-info-popup';
+  media.className = 'quiz-attachments';
+  media.__infoPopupGeneration = infoPopupGeneration;
+  media.dataset.fileId = String(args.fileId || currentFileId || '');
+  media.dataset.hotspotId = String(args.id || '');
+  media.dataset.audioId = String(args.audioId || '');
+  if (args.photoId) {
+    var photo = document.createElement('div');
+    photo.id = 'popup-photo-area';
+    photo.className = 'info-popup-photo-placeholder';
+    photo.textContent = '写真を読み込んでいます...';
+    media.appendChild(photo);
+  }
+  if (args.audioId) {
+    var audioArea = document.createElement('div');
+    audioArea.id = 'popup-audio-area';
+    audioArea.className = 'info-popup-audio is-loading';
+    audioArea.innerHTML = '<audio controls preload="none" aria-disabled="true" aria-label="クイズの音声"></audio>' +
+      '<span class="info-popup-audio-status" role="status">音声を準備しています…</span>';
+    media.appendChild(audioArea);
+  }
+  var flip = document.getElementById('quiz-flip-button');
+  flip.parentNode.insertBefore(media, flip);
+  if (args.photoId) renderPhotoInPopup(media, args);
+  if (args.audioId) loadHotspotAudioForPopup(media, args);
+}
+
+function closeQuizModal(options) {
+  var overlay = document.getElementById('quiz-modal-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  closeActiveInfoPopup({ restoreFocus: false });
+  closePhotoLightbox({ restoreFocus: false });
+  overlay.classList.add('hidden');
+  var returnFocus = activeQuizReturnFocus;
+  activeQuizReturnFocus = null;
+  if ((!options || options.restoreFocus !== false) && returnFocus && returnFocus.isConnected) returnFocus.focus();
 }
 
 // =============================================
@@ -8213,8 +9128,8 @@ function loadAudioVendorBundle() {
   if (audioVendorBundlePromise) return audioVendorBundlePromise;
 
   var request = new Promise(function (resolve, reject) {
-    google.script.run
-      .withSuccessHandler(function (result) {
+    runHotspotEditRequest('getAudioVendorBundle', {})
+      .then(function (result) {
         try {
           if (!result || result.version !== '1.50.8') {
             throw new Error('Audio vendor version mismatch.');
@@ -8232,11 +9147,9 @@ function loadAudioVendorBundle() {
         } catch (error) {
           reject(error);
         }
-      })
-      .withFailureHandler(function (error) {
-        reject(error instanceof Error ? error : new Error(String(error || 'Audio vendor request failed.')));
-      })
-      .getAudioVendorBundle(withEditToken({}));
+      }, function (error) {
+        reject(error instanceof Error ? error : new Error(String(error && error.message || error || 'Audio vendor request failed.')));
+      });
   });
 
   audioVendorBundlePromise = request.catch(function (error) {
@@ -8269,7 +9182,36 @@ function syncHotspotAudioAttachButton() {
   if (button.disabled !== shouldDisable) button.disabled = shouldDisable;
 }
 
-function openHotspotAudioEditor(trigger) {
+function chooseHotspotAudioFile(trigger) {
+  if (!canEdit || !isEditMode || !isHotspotFormSessionActive() || currentPopupMode !== 'info') return false;
+  var state = hotspotAudioAttachmentState;
+  if (state.base64Converting || state.vendorLoading || state.editorOpen) return false;
+  var input = document.getElementById('hotspot-audio-source-file');
+  if (!input) return false;
+  var generation = state.generation;
+  var sceneId = String(hotspotFormSessionState.startSceneId || '');
+  input.value = '';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    input.value = '';
+    input.onchange = null;
+    input.oncancel = null;
+    if (!file || generation !== state.generation || !isHotspotFormSessionActive() ||
+        String(hotspotFormSessionState.startSceneId || '') !== sceneId) return;
+    openHotspotAudioEditor(trigger, file);
+  };
+  input.oncancel = function () {
+    input.value = '';
+    input.onchange = null;
+    input.oncancel = null;
+    if (generation === state.generation && trigger && trigger.isConnected) trigger.focus();
+  };
+  // Keep this synchronous with the user's click so the native picker is permitted.
+  input.click();
+  return true;
+}
+
+function openHotspotAudioEditor(trigger, selectedFile) {
   if (!canEdit || !isEditMode || !isHotspotFormSessionActive() || currentPopupMode !== 'info') return false;
   var state = hotspotAudioAttachmentState;
   if (state.base64Converting) return false;
@@ -8303,15 +9245,17 @@ function openHotspotAudioEditor(trigger) {
       }
       releaseOpeningAttempt();
       editorSetupStarted = true;
-      return showHotspotAudioEditor(trigger);
+      return showHotspotAudioEditor(trigger, selectedFile);
     })
-    .catch(function () {
+    .catch(function (error) {
       var releasedOpeningAttempt = releaseOpeningAttempt();
       if ((releasedOpeningAttempt || editorSetupStarted) &&
           generation === state.generation && isHotspotFormSessionActive() &&
           currentPopupMode === 'info' &&
           String(hotspotFormSessionState.startSceneId || '') === formSceneId) {
-        setHotspotAudioError('音声エディターを準備できませんでした。もう一度お試しください。');
+        setHotspotAudioError(/編集権限/.test(String(error && error.message || error || ''))
+          ? getHotspotEditFailureMessage(error)
+          : '音声エディターを準備できませんでした。もう一度お試しください。');
         if (trigger && trigger.isConnected) {
           setTimeout(function () { try { trigger.focus(); } catch (error) {} }, 0);
         }
@@ -8322,7 +9266,7 @@ function openHotspotAudioEditor(trigger) {
   return openingPromise;
 }
 
-function showHotspotAudioEditor(trigger) {
+function showHotspotAudioEditor(trigger, selectedFile) {
   var dialog = document.getElementById('hotspot-audio-editor-dialog');
   var editor = window.HemisphereAudioEditor;
   if (!dialog || !editor || typeof editor.init !== 'function') {
@@ -8381,8 +9325,16 @@ function showHotspotAudioEditor(trigger) {
     state.resultObserver = null;
     throw error;
   }
-  var fileInput = dialog.querySelector('#hae-audio-file');
-  if (fileInput) setTimeout(function () { fileInput.focus(); }, 0);
+  if (selectedFile) {
+    Promise.resolve(editor.loadFile(selectedFile)).then(function () {
+      if (!state.editorOpen || generation !== state.generation) return;
+      var target = dialog.querySelector('[data-hae-start-time]');
+      if (target && target.getClientRects().length) target.focus();
+    });
+  } else {
+    var fileInput = dialog.querySelector('#hae-audio-file');
+    if (fileInput) setTimeout(function () { fileInput.focus(); }, 0);
+  }
   return true;
 }
 
@@ -9011,7 +9963,7 @@ function getShareOptionsFromModal() {
   return {
     format: getCheckedRadioValue('share-format', 'url'),
     baseUrl: baseUrl,
-    delivery: getCheckedRadioValue('share-delivery', 'direct'),
+    delivery: getCheckedRadioValue('share-delivery', 'auto'),
     sceneId: currentView.sceneId,
     yaw: currentView.yaw,
     pitch: currentView.pitch
@@ -9040,7 +9992,7 @@ function openShareModal() {
   cancelHotspotMove('共有画面を開いたため移動をキャンセルしました。', { silent: true });
   stopGyroIfActive('share');
   setCheckedRadioValue('share-format', 'url');
-  setCheckedRadioValue('share-delivery', 'direct');
+  setCheckedRadioValue('share-delivery', 'auto');
   setCheckedRadioValue('share-target', 'home');
   updateShareOutput();
   document.getElementById('embed-modal-backdrop').classList.add('visible');

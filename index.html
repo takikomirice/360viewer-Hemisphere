@@ -202,6 +202,7 @@
       </button>
     </div>
     <div id="scene-list"></div>
+    <div id="scene-sidebar-resize" role="separator" tabindex="0" aria-label="シーン一覧の幅を調整" aria-orientation="vertical" aria-controls="scene-sidebar" aria-valuemin="140" aria-valuemax="480" aria-valuenow="160" title="ドラッグまたは左右キーで幅を変更"></div>
   </div>
   <div id="scene-context-menu">
     <button type="button" class="scene-context-menu-btn" data-action="settings">設定の変更</button>
@@ -528,7 +529,8 @@
         </div>
         <div class="form-group" id="audio-attachment-group">
           <span class="form-label">音声（任意・1件まで）</span>
-          <button id="hotspot-audio-open-editor-btn" class="hotspot-audio-open-editor" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">音声を選んで編集</button>
+          <button id="hotspot-audio-open-editor-btn" class="hotspot-audio-open-editor" type="button" onclick="chooseHotspotAudioFile(event.currentTarget)">音声を選んで編集</button>
+          <input id="hotspot-audio-source-file" type="file" accept="audio/mp4,audio/mpeg,audio/wav,.m4a,.mp3,.wav" hidden>
           <div id="hotspot-audio-attachment-card" class="hotspot-audio-attachment-card" hidden>
             <audio id="hotspot-audio-preview" class="hotspot-audio-preview" controls preload="none" aria-label="添付する音声の確認再生" hidden></audio>
             <div class="hotspot-audio-details">
@@ -536,7 +538,7 @@
               <span id="hotspot-audio-file-meta" class="hotspot-audio-file-meta"></span>
             </div>
             <div class="hotspot-audio-actions">
-              <button id="hotspot-audio-change-btn" class="hotspot-audio-action" type="button" onclick="openHotspotAudioEditor(event.currentTarget)">変更</button>
+              <button id="hotspot-audio-change-btn" class="hotspot-audio-action" type="button" onclick="chooseHotspotAudioFile(event.currentTarget)">変更</button>
               <button id="hotspot-audio-remove-btn" class="hotspot-audio-action danger" type="button" onclick="toggleHotspotAudioRemoval()">解除</button>
             </div>
           </div>
@@ -624,7 +626,7 @@
           <label class="hae-file-card" for="hae-audio-file" aria-describedby="hae-input-limits">
             <svg aria-hidden="true"><use href="#hae-icon-audio"></use></svg>
             <span class="hae-file-card-formats">M4A / MP3 / WAV</span>
-            <span id="hae-input-limits" class="hae-file-card-limits">5min / 50MB recommended<br>10min / 200MB max</span>
+            <span id="hae-input-limits" class="hae-file-card-limits">推奨：5分・50MBまで<br>上限：10分・200MB</span>
           </label>
           <input id="hae-audio-file" class="hae-visually-hidden" type="file" accept="audio/mp4,audio/mpeg,audio/wav,.m4a,.mp3,.wav">
         </section>
@@ -659,7 +661,7 @@
             </section>
             <aside class="hae-range-controls" data-hae-range-controls aria-label="切り出し範囲の操作">
               <div class="hae-range-primary"><div class="hae-time-row" aria-label="選択時間"><span><svg aria-hidden="true"><use href="#hae-icon-start"></use></svg><input class="hae-time-input" data-hae-start-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="開始時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-end"></use></svg><input class="hae-time-input" data-hae-end-time type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="終了時刻" aria-describedby="hae-time-instructions"></span><span><svg aria-hidden="true"><use href="#hae-icon-span"></use></svg><input class="hae-time-input" data-hae-duration type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="選択時間" aria-describedby="hae-time-instructions"></span></div>
-                <div class="hae-operation-bar" aria-label="範囲編集操作"><button class="hae-icon-button" type="button" data-hae-play="selection" aria-label="選択範囲を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button><button class="hae-icon-button hae-icon-button-primary" type="button" data-hae-confirm aria-label="この範囲をMP3にする"><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg></button><button class="hae-icon-button" type="button" data-hae-cancel aria-label="キャンセルして音声を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
+                <div class="hae-operation-bar" aria-label="範囲編集操作"><button class="hae-icon-button" type="button" data-hae-play="selection" aria-label="選択範囲を再生" aria-pressed="false"><svg aria-hidden="true"><use href="#hae-icon-play"></use></svg></button><button class="hae-icon-button hae-icon-button-primary hae-text-button" type="button" data-hae-confirm aria-label="この範囲をMP3にする"><svg aria-hidden="true"><use href="#hae-icon-check"></use></svg><span>音声を作成</span></button><button class="hae-icon-button" type="button" data-hae-cancel aria-label="キャンセルして音声を閉じる"><svg aria-hidden="true"><use href="#hae-icon-close"></use></svg></button></div>
               </div>
               <section class="hae-loudness-panel" data-hae-loudness-panel aria-label="音量調整">
                 <div class="hae-loudness-top"><label class="hae-auto-switch"><input type="checkbox" data-hae-loudness-enabled aria-label="自動音量調整" checked><span class="hae-auto-track" aria-hidden="true">AUTO</span></label><span class="hae-loudness-status" data-hae-loudness-status aria-live="polite"></span></div>
@@ -791,22 +793,23 @@
 <!-- =============================================
      クイズ（はてな）モーダル
 ============================================= -->
-<div id="quiz-modal-overlay" class="hidden">
+<div id="quiz-modal-overlay" class="hidden" role="dialog" aria-modal="true" aria-label="クイズ">
   <div class="quiz-card-container">
     <div class="quiz-card" id="quiz-card">
       <div class="quiz-card-front">
         <h3 id="quiz-card-title"></h3>
         <p id="quiz-card-question"></p>
-        <span class="flip-hint">クリックして答えを見る ↻</span>
+        <span class="flip-hint">カードを押して答えを見る ↻</span>
       </div>
-      <div class="quiz-card-back">
+      <div class="quiz-card-back" aria-hidden="true" inert>
         <h3>こたえ</h3>
         <p id="quiz-card-answer"></p>
         <a id="quiz-card-link" href="#" target="_blank" rel="noopener noreferrer" class="hidden">さらに詳しく</a>
       </div>
     </div>
+    <button id="quiz-flip-button" type="button" aria-controls="quiz-card" aria-expanded="false">答えを見る</button>
   </div>
-  <button id="quiz-modal-close">×</button>
+  <button id="quiz-modal-close" type="button" aria-label="クイズを閉じる">×</button>
 </div>
 
 <!-- 共有モーダル -->
@@ -834,7 +837,7 @@
           </span>
           <span>URL</span>
         </label>
-        <label class="share-icon-option" title="iframeコードをコピー">
+        <label class="share-icon-option" title="Webサイトへの埋め込みコードをコピー">
           <input type="radio" name="share-format" value="iframe" onchange="updateShareOutput()">
           <span class="share-format-icon" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -842,9 +845,9 @@
               <polyline points="8 6 2 12 8 18"/>
             </svg>
           </span>
-          <span>iframe</span>
+          <span>埋め込み</span>
         </label>
-        <label class="share-icon-option" title="public URLのQRコードを表示">
+        <label class="share-icon-option" title="閲覧用リンクのQRコードを表示">
           <input type="radio" name="share-format" value="qr" onchange="updateShareOutput()">
           <span class="share-format-icon" aria-hidden="true">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
@@ -857,22 +860,22 @@
     </div>
 
     <div class="embed-section">
-      <div class="share-option-title">画像配信</div>
+      <div class="share-option-title">画像の表示方法</div>
       <div class="share-segment share-compact-segment">
-        <label class="share-compact-option" title="Drive直リンクで表示します。最速の通常モードです。">
-          <input type="radio" name="share-delivery" value="direct" checked onchange="updateShareOutput()">
-          <span class="share-choice-main">通常</span>
-          <span class="share-choice-sub">最速</span>
+        <label class="share-compact-option" title="画像を直接読み込みます。共有設定によっては表示できない場合があります。">
+          <input type="radio" name="share-delivery" value="direct" onchange="updateShareOutput()">
+          <span class="share-choice-main">直接表示</span>
+          <span class="share-choice-sub">高速</span>
         </label>
-        <label class="share-compact-option" title="直リンクで失敗したときだけBase64 fallbackを試します。">
-          <input type="radio" name="share-delivery" value="auto" onchange="updateShareOutput()">
-          <span class="share-choice-main">互換</span>
-          <span class="share-choice-sub">失敗時Base64</span>
+        <label class="share-compact-option" title="直接読み込めない場合は、互換表示に自動で切り替えます。">
+          <input type="radio" name="share-delivery" value="auto" checked onchange="updateShareOutput()">
+          <span class="share-choice-main">自動</span>
+          <span class="share-choice-sub">推奨</span>
         </label>
-        <label class="share-compact-option" title="最初からBase64 Data URIを使う最終手段です。">
+        <label class="share-compact-option" title="最初から互換表示を使います。初回の読み込みには時間がかかります。">
           <input type="radio" name="share-delivery" value="base64" onchange="updateShareOutput()">
-          <span class="share-choice-main">Base64</span>
-          <span class="share-choice-sub">最終手段</span>
+          <span class="share-choice-main">互換表示</span>
+          <span class="share-choice-sub">固定</span>
         </label>
       </div>
     </div>
@@ -880,20 +883,20 @@
     <div class="embed-section">
       <div class="share-option-title">共有対象</div>
       <div class="share-segment share-compact-segment">
-        <label class="share-compact-option" title="sceneを含めず、ホームまたは先頭画像から開きます。">
+        <label class="share-compact-option" title="ホームに設定された画像から開きます。">
           <input type="radio" name="share-target" value="home" checked onchange="updateShareOutput()">
           <span class="share-choice-main">ホーム</span>
-          <span class="share-choice-sub">sceneなし</span>
+          <span class="share-choice-sub">最初の画像</span>
         </label>
-        <label class="share-compact-option" title="現在のシーンIDを共有URLに含めます。">
+        <label class="share-compact-option" title="いま表示している画像から開きます。">
           <input type="radio" name="share-target" value="scene" onchange="updateShareOutput()">
           <span class="share-choice-main">シーン</span>
-          <span class="share-choice-sub">scene</span>
+          <span class="share-choice-sub">この画像</span>
         </label>
-        <label class="share-compact-option" title="現在のシーンと、取得できる場合はyaw/pitchを含めます。">
+        <label class="share-compact-option" title="いま見ている画像と向きで開きます。">
           <input type="radio" name="share-target" value="view" onchange="updateShareOutput()">
           <span class="share-choice-main">視点</span>
-          <span class="share-choice-sub">scene + yaw/pitch</span>
+          <span class="share-choice-sub">この向き</span>
         </label>
       </div>
     </div>
@@ -901,11 +904,11 @@
     <div class="embed-section">
       <div class="embed-section-label">
         <span id="share-output-label" class="embed-badge embed-badge-public">共有URL</span>
-        <span class="embed-section-desc">常に public 用。editKey は含めません。</span>
+        <span class="embed-section-desc">閲覧用のリンクです。編集権限は含みません。</span>
       </div>
       <div id="share-qr-panel" class="share-qr-panel" hidden>
         <div id="share-qr-code" class="share-qr-code" aria-label="共有URLのQRコード"></div>
-        <p id="share-qr-note" class="share-qr-note">このQRは public URL です。editKey は含みません。</p>
+        <p id="share-qr-note" class="share-qr-note">カメラで読み取ると閲覧画面が開きます。</p>
         <button class="embed-copy-btn share-qr-copy-btn" onclick="copyShareOutput()" title="URLをコピー">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>

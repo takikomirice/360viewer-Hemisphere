@@ -4,5 +4,9 @@
 CLAUDE.md
 node_modules/
 output/playwright/
+output/quality-audit/
+output/spot-attachments/
+output/release-v3/
 playwright-report/
 test-results/
+debug.log

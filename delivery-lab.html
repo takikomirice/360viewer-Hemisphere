@@ -1,0 +1,113 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+<style>body{margin:0;background:#17191d;color:#fff;font:14px system-ui}header{padding:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}select,button{font:inherit;padding:7px}#view{height:62vh}#status{padding:10px}pre{white-space:pre-wrap;max-height:25vh;overflow:auto;margin:8px}small{color:#bbc}</style>
+</head><body><header><strong>Google内の画像配信比較</strong>
+<select id="scene" aria-label="比較する写真"></select>
+<select id="method" aria-label="配信方式"><option value="single">現在の一枚画像</option><option value="full">軽い全景 → 高精細全景</option><option value="tiles">軽い全景 → 分割画像</option><option value="profile">一枚画像の処理内訳（改善後）</option><option value="profile-native">一枚画像の処理内訳（従来の変換）</option></select>
+<label><input id="cold" type="checkbox" checked>アプリ内キャッシュを消して開始</label>
+<button id="start" disabled>計測開始</button><button id="cancel">中止</button><button id="series" disabled>3方式を3回比較</button>
+<button id="encoding" disabled>変換の改善前後を3回比較</button>
+<small>編集や共有設定の変更は行いません。サーバー側キャッシュは消去しません。</small></header>
+<div id="status" role="status">写真一覧を取得しています</div><div id="view"></div><pre id="results" aria-label="計測結果"></pre>
+<?!= include('progressive-client'); ?>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), cache=new Map();
+let generation=0, viewer=null, monitor=null, records=[], running=false, activeRpc=0;
+function rpc(name,args) {return new Promise((resolve,reject)=>{
+  if(activeRpc>=2){reject(Error('前の通信の終了を待って再試行してください'));return;}
+  activeRpc++;
+  const timer=setTimeout(()=>reject(Error('GAS応答が30秒以内にありませんでした')),30000);
+  const finish=callback=>value=>{activeRpc--;clearTimeout(timer);callback(value);};
+  google.script.run.withSuccessHandler(finish(resolve)).withFailureHandler(finish(()=>reject(Error('GASとの通信に失敗しました'))))[name](...args);
+});}
+function frame(){return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}
+function decode(url){return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(Error('画像を復号できませんでした'));image.src=url;});}
+function saveCache(key,value) {
+  cache.delete(key);cache.set(key,{value,expires:Date.now()+300000,chars:JSON.stringify(value).length});
+  let chars=0;cache.forEach(entry=>chars+=entry.chars);
+  while(chars>24000000 || cache.size>100){const key=cache.keys().next().value;chars-=cache.get(key).chars;cache.delete(key);}
+}
+async function measure(method,cold) {
+  const id=$('scene').value;
+  if(!id)throw Error('写真を選択してください');
+  if(cold)cache.clear();
+  const mine=++generation, started=performance.now();
+  clearInterval(monitor);if(viewer){viewer.destroy();viewer=null;}
+  const row={method,cache:cold?'cleared':'retained',firstImageReadyMs:null,firstSceneMs:null,currentViewMs:null,rpcMs:0,frameWaitMs:0,slowFrameWait:false,rpcCount:0,cacheHits:0,imageBytes:0,tiles:0,status:'running'};
+  records.push(row);const publish=()=>{$('results').textContent=JSON.stringify(records,null,2);};publish();
+  const current=()=>mine===generation;
+  async function paintWait(){const start=performance.now();await frame();const elapsed=performance.now()-start;row.frameWaitMs+=Math.round(elapsed);if(elapsed>250)row.slowFrameWait=true;}
+  async function get(name,args,key) {
+    const old=cache.get(key);if(old && old.expires>Date.now()){row.cacheHits++;return old.value;}
+    row.rpcCount++;const rpcStart=performance.now();let result;
+    try{result=await rpc(name,args);}finally{row.rpcMs+=Math.round(performance.now()-rpcStart);}
+    if(!result || !result.success)throw Error(result?.error || '画像を取得できませんでした');
+    if(!current())throw Error('中止');
+    if(result.timings)row.serverTimings=result.timings;
+    if(result.imageUrl)row.imageBytes+=Math.floor(result.imageUrl.split(',')[1].length*3/4);
+    if(result.tiles)result.tiles.forEach(tile=>row.imageBytes+=Math.floor(tile.imageUrl.split(',')[1].length*3/4));
+    if(!result.failed || !result.failed.length)saveCache(key,result);return result;
+  }
+  $('status').textContent='最初の景色を取得しています';
+  let first;
+  try {
+    first=method.startsWith('profile')?await get('getImageDeliveryProfile',[id,method==='profile-native'],id+':'+method):
+      method==='single'?await get('getImageDataUri',[id,'public','fast'],id+':single'):
+      await get('getSceneProgressiveImage',[id,'preview'],id+':preview');
+    const image=await decode(first.imageUrl);if(!current())throw Error('中止');
+    row.firstImageReadyMs=Math.round(performance.now()-started);publish();
+    const canvas=document.createElement('canvas');canvas.width=first.width||image.width;canvas.height=first.height||image.height;
+    const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0,canvas.width,canvas.height);
+    const instance=pannellum.viewer('view',{type:'equirectangular',panorama:canvas,dynamic:true,dynamicUpdate:true,autoLoad:true,yaw:0,pitch:0,hfov:90,showControls:true});
+    viewer=instance;
+    await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('描画タイムアウト')),15000);instance.on('load',()=>{clearTimeout(timer);resolve();});instance.on('error',()=>{clearTimeout(timer);reject(Error('描画失敗'));});if(instance.isLoaded()){clearTimeout(timer);resolve();}});
+    await paintWait();if(!current())throw Error('中止');instance.setUpdate(false);
+    row.firstSceneMs=Math.round(performance.now()-started);publish();
+    $('status').textContent=method==='single'||method.startsWith('profile')?'表示完了':'操作できます。細部を読み込んでいます';
+    if(method==='full') {
+      const full=await get('getSceneProgressiveImage',[id,'full'],id+':full:'+first.checksum);
+      const high=await decode(full.imageUrl);if(!current())throw Error('中止');
+      ctx.drawImage(high,0,0,canvas.width,canvas.height);instance.setUpdate(true);await paintWait();instance.setUpdate(false);
+    }
+    if(method==='tiles') {
+      const loaded=new Set();let fetching=false;
+      async function refine() {
+        if(fetching || !current())return;
+        fetching=true;
+        try {
+          while(current()) {
+            const hfov=instance.getHfov(), vfov=2*Math.atan(Math.tan(hfov*Math.PI/360)*$('view').clientHeight/$('view').clientWidth)*180/Math.PI;
+            const wanted=HemisphereProgressive.visibleTiles(instance.getYaw(),instance.getPitch(),hfov,vfov);
+            const missing=wanted.filter(index=>!loaded.has(index));
+            if(!missing.length)break;
+            const indices=missing.slice(0,8);
+            const batch=await get('getSceneTileBatch',[{fileId:id,checksum:first.checksum,tiles:indices}],id+':tiles:'+first.checksum+':'+indices.join(','));
+            for(const tile of batch.tiles){const picture=await decode(tile.imageUrl);if(!current())return;
+              ctx.drawImage(picture,(tile.index%8)*canvas.width/8,Math.floor(tile.index/8)*canvas.height/4,canvas.width/8,canvas.height/4);loaded.add(tile.index);}
+            instance.setUpdate(true);await paintWait();if(!current())return;instance.setUpdate(false);row.tiles=loaded.size;publish();
+            if(batch.failed.length)throw Error('一部の分割画像が取得できませんでした。再計測で再試行できます。');
+          }
+        } finally {fetching=false;}
+      }
+      await refine();
+      monitor=setInterval(()=>refine().catch(error=>{if(current()){clearInterval(monitor);$('status').textContent=error.message;}}),500);
+    }
+    if(!current())throw Error('中止');
+    row.currentViewMs=Math.round(performance.now()-started);row.status='complete';$('status').textContent='表示完了。ドラッグで方向を変えられます';publish();
+  } catch(error) {row.status=error.message;if(current())$('status').textContent=error.message;publish();}
+  return row;
+}
+async function run(series) {
+  if(running)return;running=true;$('start').disabled=true;$('series').disabled=true;$('encoding').disabled=true;
+  try {
+    if(series){const methods=series==='encoding'?['profile-native','profile']:['single','full','tiles'];for(let repeat=0;repeat<3;repeat++)for(let offset=0;offset<methods.length;offset++){const row=await measure(methods[(offset+repeat)%methods.length],$('cold').checked);if(row.status!=='complete')return;}}
+    else await measure($('method').value,$('cold').checked);
+  } finally {running=false;$('start').disabled=false;$('series').disabled=false;$('encoding').disabled=false;}
+}
+$('start').onclick=()=>run(false);$('series').onclick=()=>run(true);
+$('encoding').onclick=()=>run('encoding');
+$('cancel').onclick=()=>{generation++;clearInterval(monitor);if(viewer)viewer.setUpdate(false);$('status').textContent='中止しました。送信済みの通信は応答を待ちます';};
+rpc('getConfig',['public',false]).then(config=>{for(const image of config.images||[]){const option=document.createElement('option');option.value=image.id;option.textContent=image.name;$('scene').append(option);} $('start').disabled=false;$('series').disabled=false;$('encoding').disabled=false;$('status').textContent='分割配信は派生画像を準備済みの写真を選んでください。一枚画像の計測は全写真で利用できます。';}).catch(error=>{$('status').textContent=error.message;});
+</script></body></html>

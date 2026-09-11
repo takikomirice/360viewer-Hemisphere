@@ -46,7 +46,7 @@ Runs as a **container-bound** Google Apps Script (bound to a Google Spreadsheet)
 ### ③ Add Apps Script to the Spreadsheet
 
 1. In the spreadsheet menu, click **"Extensions"** → **"Apps Script"**
-2. From the left panel, click **"+ New file"** and create these 5 files: `Code.js`, `index.html`, `styles.html`, `app.html`, `appsscript.json`
+2. From the left panel, click **"+ New file"** and create these 7 files: `Code.js`, `index.html`, `styles.html`, `app.html`, `appsscript.json`, `delivery-lab.html`, `progressive-client.html` (the last two provide the delivery comparison lab).
 3. Paste each repository file into its matching Apps Script file. Because this is a multi-file project, using [clasp](#local-development-clasp) below is normally recommended
    - **Note**: The audio editor UI is integrated into `index.html`, its CSS into `styles.html`, and the pinned vendor code, audio editor, and 360Viewer client into `app.html` in dependency order. All three HTML files are required
 4. (Optional) For bulk input sheet integration, run **"設定"** → **"一括入力用スプシを作成"** in the spreadsheet menu. This creates and links the official input sheet.
@@ -94,6 +94,18 @@ Run **"設定"** → **"編集用URLを生成・更新"** to generate the edit U
 ---
 
 ## Usage
+
+### Scene thumbnails and sidebar width
+
+The scene list uses photo cards with centered white names on a translucent bottom band. On desktop, drag its right edge or focus the divider and use the arrow keys to resize it (140–480px, default 160px); the width is saved in this browser. Mobile retains the bottom scene list and uses two columns when the viewing sheet is expanded.
+
+After the panorama is ready, at most two thumbnail requests run in the background. Opening the editing URL saves missing thumbnails in the existing `Hemisphere Hotspot/thumbnail` folder; viewing URLs only read images. Source IDs and content checksums prevent duplicate generation. Sharing permissions remain unchanged.
+
+In fast quality mode, hovering or focusing a scene prefetches one image and, in viewing mode, its hotspots. Cached revisits avoid the direct-image fallback wait. Data saver, 2G, and original quality disable intent prefetch. The Google-only comparison lab at `?deliveryLab=1` compares a single image, preview-to-full refinement, and preview-to-tile refinement using private Drive derivatives served through GAS. The regular viewer retains single-image delivery. See the [setup and measurement notes](docs/google-progressive-delivery.md).
+
+Fast single-image delivery now encodes the same JPEG bytes locally in GAS V8 to reduce conversion time without changing image quality. The lab can compare the old and new conversion methods and report server-stage durations; this comparison needs no prepared derivatives. See [profiling and measurement notes](docs/image-delivery-profile.md).
+
+Theme switching remains available while a scene loads. After the first scene is displayed, applicable fullscreen, home, quality, and gyro buttons stay in place but remain disabled until the next image is ready, including after a loading failure. A successful retry enables them again. Controls that do not apply to the current mode remain hidden.
 
 ### View Mode (for students)
 
@@ -330,6 +342,8 @@ Using [clasp](https://github.com/google/clasp):
 
 ## Releases
 
+The latest version is **[v3.0.0](https://github.com/takikomirice/360viewer-Hemisphere/releases/tag/v3.0.0)**, featuring scene thumbnail cards, faster scene navigation, and reusable photo/audio loading. Existing spreadsheet data remains compatible. See the [release notes and upgrade instructions (Japanese)](docs/releases/v3.0.0.md). Update all seven Apps Script files, then update the existing web app deployment to a new version; publishing a GitHub release alone does not update the public web app.
+
 See [GitHub Releases](https://github.com/takikomirice/360viewer-Hemisphere/releases) for version-specific changes and upgrade instructions.
 
 ---
@@ -388,6 +402,8 @@ The primary settings appear in this order; other existing settings remain after 
 The config-sheet `EDIT_KEY` is authoritative for URL generation and normal authentication. Setup migrates a legacy `EDIT_KEY` Script Property when the config value is blank. If an existing config key differs, the legacy key remains accepted only while the stored legacy `EDIT_URL` explicitly contains it; running **"編集用URLを生成・更新"** switches authentication to the config key alone. If the config cannot be read, edit authentication fails closed instead of falling back to the legacy key.
 
 Regenerating `EDIT_KEY` immediately invalidates both old edit URLs and temporary edit tokens already issued from the previous key.
+
+When a temporary token expires, hotspot saves, updates, and audio-editor loading revalidate the original edit URL and retry once while preserving pending photos and audio. A changed or revoked edit key still requires the latest `EDIT_URL` from config. Network failures and partial saves are not automatically retried.
 
 ### scenes sheet (per-image settings)
 
