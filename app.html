@@ -1155,8 +1155,12 @@ var photoCache           = {};    // 写真データURIのキャッシュ {fileI
 var photoCacheOrder = [];
 var photoInFlight = {};
 var hotspotPrefetchEnabled = true; // hotspotPrefetch=0 で比較用に無効化
+var mediaWarmupEnabled = true; // mediaWarmup=0 でシーン間再利用・並行先読みを比較
+var hotspotMediaCacheExpires = {};
+var HOTSPOT_MEDIA_CACHE_TTL_MS = 5 * 60 * 1000;
 var hotspotMediaPrefetchTimer = null;
-var hotspotMediaPrefetchActive = false;
+var hotspotMediaPrefetchActive = 0;
+var hotspotMediaPrefetchGeneration = 0;
 var PHOTO_LIGHTBOX_MIN_SCALE = 1;
 var PHOTO_LIGHTBOX_MAX_SCALE = 5;
 var PHOTO_LIGHTBOX_ZOOM_FACTOR = 1.35;
@@ -2126,6 +2130,7 @@ window.addEventListener('load', function () {
     scenePerformanceEnabled = String((loc.parameter && loc.parameter.perf) || '') === '1';
     sceneMetadataPrefetchEnabled = String((loc.parameter && loc.parameter.metadataPrefetch) || '') !== '0';
     hotspotPrefetchEnabled = String((loc.parameter && loc.parameter.hotspotPrefetch) || '') !== '0';
+    mediaWarmupEnabled = String((loc.parameter && loc.parameter.mediaWarmup) || '') !== '0';
     sceneThumbnailDirectEnabled = String((loc.parameter && loc.parameter.thumbnailDelivery) || '') !== 'gas';
     initialSceneId = String((loc.parameter && loc.parameter.scene) || '').trim();
     initialYaw = parseNumberParam(loc.parameter && loc.parameter.yaw);
@@ -2185,6 +2190,7 @@ function teardownHotspotFormForPageExit() {
  * 設定取得後: フォルダモードと単一画像モードを振り分ける
  */
 function loadSingleImageScene(config) {
+  prepareHotspotMediaForSceneChange();
   closeQuizModal({ restoreFocus: false });
   var sceneStartedAt = scenePerformanceNow_();
   var loadGeneration = ++sceneLoadGeneration;
@@ -4536,6 +4542,7 @@ function normalizeHotspotResult(res) {
 }
 
 function clearHotspotCache(fileId) {
+  clearHotspotMediaCache(fileId);
   if (typeof fileId === 'undefined') {
     hotspotCacheByFileId = {};
     hotspotCacheExpiresByFileId = {};
@@ -4700,7 +4707,7 @@ function loadScene(imgData, preferredYaw, preferredPitch) {
   cancelHotspotMove('シーンが変更されたため移動をキャンセルしました。', { silent: true });
   closePopup();
   closeActiveInfoPopup({ restoreFocus: false });
-  clearHotspotAudioCache();
+  prepareHotspotMediaForSceneChange();
   var loadGeneration = ++sceneLoadGeneration;
   isSwitching   = true;
   currentFileId = imgData.id;
@@ -7013,15 +7020,60 @@ function clearHotspotAudioCache() {
   hotspotAudioInFlight = {};
   hotspotAudioPrefetchTimers.forEach(function (timer) { clearTimeout(timer); });
   hotspotAudioPrefetchTimers = [];
+  Object.keys(hotspotMediaCacheExpires).forEach(function (key) {
+    if (key.indexOf('audio|') === 0) delete hotspotMediaCacheExpires[key];
+  });
+}
+
+/** Retain bounded authorized reads on navigation; editing and refresh invalidate them. */
+function prepareHotspotMediaForSceneChange() {
+  hotspotMediaPrefetchGeneration++;
+  clearTimeout(hotspotMediaPrefetchTimer);
+  if (!mediaWarmupEnabled || !isPublicViewingMode() || isEditMode) {
+    clearHotspotAudioCache();
+    return;
+  }
+  hotspotAudioPrefetchTimers.forEach(function (timer) { clearTimeout(timer); });
+  hotspotAudioPrefetchTimers = [];
+}
+
+function clearHotspotMediaCache(fileId) {
+  hotspotMediaPrefetchGeneration++;
+  clearTimeout(hotspotMediaPrefetchTimer);
+  var prefix = typeof fileId === 'undefined' || !String(fileId || '') ? null : String(fileId) + '|';
+  [photoCache, photoInFlight, hotspotAudioCache, hotspotAudioInFlight].forEach(function (cache) {
+    Object.keys(cache).forEach(function (key) {
+      if (prefix === null || key.indexOf(prefix) === 0) delete cache[key];
+    });
+  });
+  Object.keys(hotspotMediaCacheExpires).forEach(function (key) {
+    if (prefix === null || key.slice(key.indexOf('|') + 1).indexOf(prefix) === 0) delete hotspotMediaCacheExpires[key];
+  });
+  photoCacheOrder = photoCacheOrder.filter(function (key) { return !!photoCache[key]; });
+  hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (key) { return !!hotspotAudioCache[key]; });
+}
+
+function getCachedHotspotMedia(kind, key) {
+  var cache = kind === 'photo' ? photoCache : hotspotAudioCache;
+  var expiryKey = kind + '|' + key;
+  if (cache[key] && hotspotMediaCacheExpires[expiryKey] > Date.now()) return cache[key];
+  delete cache[key];
+  delete hotspotMediaCacheExpires[expiryKey];
+  if (kind === 'photo') photoCacheOrder = photoCacheOrder.filter(function (item) { return item !== key; });
+  else hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (item) { return item !== key; });
+  return null;
 }
 
 function putHotspotAudioCache(cacheKey, value) {
   delete hotspotAudioCache[cacheKey];
   hotspotAudioCache[cacheKey] = value;
+  hotspotMediaCacheExpires['audio|' + cacheKey] = Date.now() + HOTSPOT_MEDIA_CACHE_TTL_MS;
   hotspotAudioCacheOrder = hotspotAudioCacheOrder.filter(function (key) { return key !== cacheKey; });
   hotspotAudioCacheOrder.push(cacheKey);
   while (hotspotAudioCacheOrder.length > HOTSPOT_AUDIO_CACHE_LIMIT) {
-    delete hotspotAudioCache[hotspotAudioCacheOrder.shift()];
+    var oldest = hotspotAudioCacheOrder.shift();
+    delete hotspotAudioCache[oldest];
+    delete hotspotMediaCacheExpires['audio|' + oldest];
   }
 }
 
@@ -7044,7 +7096,7 @@ function normalizeHotspotAudioIdentity(args) {
   };
 }
 
-/** 同じ音声のキャッシュ・通信中要求を共有し、シーン世代が変わった応答は破棄する。 */
+/** Share bounded audio reads across scenes; popup handlers still validate their own scene. */
 function requestHotspotAudio(identity, callbacks) {
   var normalized = normalizeHotspotAudioIdentity(identity);
   var handlers = callbacks || {};
@@ -7054,8 +7106,8 @@ function requestHotspotAudio(identity, callbacks) {
     return false;
   }
   var cacheKey = getHotspotAudioCacheKey(normalized);
-  if (hotspotAudioCache[cacheKey]) {
-    var cachedResult = hotspotAudioCache[cacheKey];
+  var cachedResult = getCachedHotspotMedia('audio', cacheKey);
+  if (cachedResult) {
     setTimeout(function () {
       if (typeof handlers.success === 'function') handlers.success(cachedResult, true);
       if (typeof handlers.settled === 'function') handlers.settled();
@@ -7074,6 +7126,7 @@ function requestHotspotAudio(identity, callbacks) {
   var entry = {
     cacheKey: cacheKey,
     identity: normalized,
+    reusable: mediaWarmupEnabled && isPublicViewingMode() && !isEditMode,
     requestGeneration: hotspotAudioRequestGeneration,
     successHandlers: typeof handlers.success === 'function' ? [handlers.success] : [],
     failureHandlers: typeof handlers.failure === 'function' ? [handlers.failure] : [],
@@ -7093,8 +7146,8 @@ function requestHotspotAudio(identity, callbacks) {
   function isCurrentEntry() {
     return hotspotAudioInFlight[cacheKey] === entry &&
       entry.requestGeneration === hotspotAudioRequestGeneration &&
-      sceneLoadGeneration === entry.identity.sceneGeneration &&
-      (!currentFileId || String(currentFileId) === entry.identity.fileId);
+      !isEditMode && (entry.reusable || (sceneLoadGeneration === entry.identity.sceneGeneration &&
+      (!currentFileId || String(currentFileId) === entry.identity.fileId)));
   }
   function finishFailure() {
     if (!settleRequest()) return;
@@ -7155,8 +7208,8 @@ function requestHotspotPhoto(args, callbacks) {
     if (handlers.settled) handlers.settled();
     return;
   }
-  if (photoCache[key]) {
-    var cached = photoCache[key];
+  var cached = getCachedHotspotMedia('photo', key);
+  if (cached) {
     setTimeout(function () {
       if (handlers.success) handlers.success(cached);
       if (handlers.settled) handlers.settled();
@@ -7165,26 +7218,32 @@ function requestHotspotPhoto(args, callbacks) {
   }
   var generation = sceneLoadGeneration;
   var pending = photoInFlight[key];
-  if (pending && pending.generation === generation) {
+  if (pending && (pending.reusable || pending.generation === generation)) {
     pending.handlers.push(handlers);
     return;
   }
-  var entry = { generation: generation, handlers: [handlers] };
+  var entry = { generation: generation, handlers: [handlers],
+    reusable: mediaWarmupEnabled && isPublicViewingMode() && !isEditMode };
   photoInFlight[key] = entry;
   var requestTimer = setTimeout(function () { finish(null); }, 30000);
   function finish(result) {
     if (entry.finished) return;
     entry.finished = true;
     clearTimeout(requestTimer);
-    var current = photoInFlight[key] === entry && sceneLoadGeneration === generation && !isEditMode &&
-      (!currentFileId || String(currentFileId) === fileId);
+    var current = photoInFlight[key] === entry && !isEditMode && (entry.reusable ||
+      (sceneLoadGeneration === generation && (!currentFileId || String(currentFileId) === fileId)));
     if (photoInFlight[key] === entry) delete photoInFlight[key];
     var data = current && result && result.success && result.dataUri;
     if (data) {
       photoCache[key] = String(data);
+      hotspotMediaCacheExpires['photo|' + key] = Date.now() + HOTSPOT_MEDIA_CACHE_TTL_MS;
       photoCacheOrder = photoCacheOrder.filter(function (item) { return item !== key; });
       photoCacheOrder.push(key);
-      while (photoCacheOrder.length > 4) delete photoCache[photoCacheOrder.shift()];
+      while (photoCacheOrder.length > 4) {
+        var oldest = photoCacheOrder.shift();
+        delete photoCache[oldest];
+        delete hotspotMediaCacheExpires['photo|' + oldest];
+      }
     }
     entry.handlers.forEach(function (listener) {
       if (current && data && listener.success) listener.success(String(data));
@@ -7196,30 +7255,47 @@ function requestHotspotPhoto(args, callbacks) {
     .getHotspotPhotoDataUri({ fileId: fileId, hotspotId: hotspotId, photoId: photoId });
 }
 
-/** At most two attachments per scene, one background media RPC across scene changes. */
+/** At most two attachments per scene and two background slots across scene changes. */
 function scheduleHotspotMediaPrefetch(hotspots) {
   clearTimeout(hotspotMediaPrefetchTimer);
+  var prefetchGeneration = ++hotspotMediaPrefetchGeneration;
   if (!canPrefetchHotspotContent()) return;
   var generation = sceneLoadGeneration;
   var candidates = [];
   (hotspots || []).forEach(function (args) {
-    if (args.jumpSceneId || args.markerIcon === 'quiz') return;
+    if (args.jumpSceneId || (!mediaWarmupEnabled && args.markerIcon === 'quiz')) return;
     if (args.photoId) candidates.push({ args: args, photo: true });
     if (args.audioId) candidates.push({ args: args, photo: false });
   });
   candidates = candidates.slice(0, 2);
+  function isCurrentQueue() {
+    return generation === sceneLoadGeneration && prefetchGeneration === hotspotMediaPrefetchGeneration;
+  }
   function schedule() {
-    if (generation === sceneLoadGeneration) hotspotMediaPrefetchTimer = setTimeout(pump, 500);
+    if (!isCurrentQueue()) return;
+    clearTimeout(hotspotMediaPrefetchTimer);
+    hotspotMediaPrefetchTimer = setTimeout(pump, 500);
   }
   function pump() {
-    if (generation !== sceneLoadGeneration || !canPrefetchHotspotContent() || !candidates.length) return;
-    if (isSwitching || !sceneDisplayReady || document.hidden || hotspotMediaPrefetchActive) { schedule(); return; }
-    var candidate = candidates.shift();
-    hotspotMediaPrefetchActive = true;
-    function settled() { hotspotMediaPrefetchActive = false; schedule(); }
-    if (candidate.photo) requestHotspotPhoto(candidate.args, { settled: settled });
-    else requestHotspotAudio(candidate.args, { settled: settled });
+    if (!isCurrentQueue() || !canPrefetchHotspotContent() || !candidates.length) return;
+    var limit = mediaWarmupEnabled ? 2 : 1;
+    if (isSwitching || !sceneDisplayReady || document.hidden || hotspotMediaPrefetchActive >= limit) { schedule(); return; }
+    while (candidates.length && hotspotMediaPrefetchActive < limit) {
+      var candidate = candidates.shift();
+      if (mediaWarmupEnabled) {
+        var key = [candidate.args.fileId || currentFileId || '', candidate.args.id || '',
+          candidate.photo ? candidate.args.photoId : candidate.args.audioId].join('|');
+        var kind = candidate.photo ? 'photo' : 'audio';
+        var pending = (candidate.photo ? photoInFlight : hotspotAudioInFlight)[key];
+        if (getCachedHotspotMedia(kind, key) || (pending && pending.reusable)) continue;
+      }
+      hotspotMediaPrefetchActive++;
+      if (candidate.photo) requestHotspotPhoto(candidate.args, { settled: releaseSlot });
+      else requestHotspotAudio(candidate.args, { settled: releaseSlot });
+    }
+    if (candidates.length) schedule();
   }
+  function releaseSlot() { hotspotMediaPrefetchActive--; schedule(); }
   schedule();
 }
 
@@ -7244,7 +7320,7 @@ function bindHotspotAudioPrefetch(container, args) {
       if (canPrefetchHotspotContent()) scheduleSceneImagePrefetch(args.jumpSceneId);
     } else {
       if (args.audioId) prefetchHotspotAudio(args);
-      if (args.photoId && args.markerIcon !== 'quiz' && canPrefetchHotspotContent()) requestHotspotPhoto(args);
+      if (args.photoId && (mediaWarmupEnabled || args.markerIcon !== 'quiz') && canPrefetchHotspotContent()) requestHotspotPhoto(args);
     }
   }
   var hoverTimer = null;

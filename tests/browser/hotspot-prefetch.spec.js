@@ -66,3 +66,71 @@ test('real scene completion starts idle media and prioritizes jump metadata', as
   expect(await page.evaluate(() => scenePerformanceRecords.at(-1).hotspotSource)).toBe('cache');
   expect(await page.evaluate(() => window.__HARNESS_ERRORS__)).toEqual([]);
 });
+
+for (const enabled of [false, true]) test(`scene revisit ${enabled ? 'reuses' : 'reloads'} audio, retaining the photo (${enabled})`, async ({ page }) => {
+  await page.goto(`/?mode=public&sceneType=360&storageMode=folder&delivery=direct&mediaWarmup=${enabled ? 1 : 0}`);
+  await expect(page.locator('#loading')).toBeHidden();
+  await page.evaluate(async () => {
+    window.__home = getSceneImageById(currentFileId);
+    window.__attachment = { fileId: currentFileId, id: 'revisit', label: '添付', audioId: 'audio', photoId: 'photo' };
+    await Promise.all([
+      new Promise(resolve => requestHotspotPhoto(window.__attachment, { success: resolve })),
+      new Promise(resolve => requestHotspotAudio(window.__attachment, { success: resolve }))
+    ]);
+    loadScene(allImages.find(item => item.id !== currentFileId && item.type !== 'folder'));
+  });
+  await page.waitForFunction(() => sceneDisplayReady && !isSwitching);
+  await page.evaluate(() => loadScene(window.__home));
+  await page.waitForFunction(() => sceneDisplayReady && !isSwitching);
+  await page.evaluate(() => onMarkerClick({ clientX: 220, clientY: 200 }, window.__attachment));
+  await expect(page.locator('.info-popup-photo')).toBeVisible();
+  await expect(page.locator('#active-info-popup audio')).toHaveAttribute('src', /^data:audio/);
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getHotspotAudioData').length)).toBe(enabled ? 1 : 2);
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => c.method === 'getHotspotPhotoDataUri').length)).toBe(1);
+  expect(await page.evaluate(() => window.__HARNESS_ERRORS__)).toEqual([]);
+});
+
+test('pending media survive navigation without filling an unrelated popup', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360&storageMode=folder&delivery=direct');
+  await expect(page.locator('#loading')).toBeHidden();
+  await page.evaluate(() => {
+    window.__HARNESS_BEHAVIOR__.getHotspotPhotoDataUri = { delay: 1000 };
+    window.__HARNESS_BEHAVIOR__.getHotspotAudioData = { delay: 1000 };
+    window.__home = getSceneImageById(currentFileId);
+    window.__attachment = { fileId: currentFileId, id: 'pending', label: '移動前', audioId: 'audio', photoId: 'photo' };
+    onMarkerClick({ clientX: 220, clientY: 200 }, window.__attachment);
+    loadScene(allImages.find(item => item.id !== currentFileId && item.type !== 'folder'));
+  });
+  await page.waitForFunction(() => sceneDisplayReady && !isSwitching);
+  await page.evaluate(() => onMarkerClick({ clientX: 220, clientY: 200 }, { id: 'other', fileId: currentFileId, label: '別のシーン' }));
+  await expect.poll(() => page.evaluate(() => Object.keys(photoCache).length + Object.keys(hotspotAudioCache).length)).toBe(2);
+  await expect(page.locator('#active-info-popup')).toContainText('別のシーン');
+  await expect(page.locator('#active-info-popup img, #active-info-popup audio')).toHaveCount(0);
+  await page.evaluate(() => loadScene(window.__home));
+  await page.waitForFunction(() => sceneDisplayReady && !isSwitching);
+  await page.evaluate(() => onMarkerClick({ clientX: 220, clientY: 200 }, window.__attachment));
+  await expect(page.locator('.info-popup-photo')).toBeVisible();
+  await expect(page.locator('#active-info-popup audio')).toHaveAttribute('src', /^data:audio/);
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => /^getHotspot(Photo|Audio)/.test(c.method)).length)).toBe(2);
+});
+
+test('quiz photo and audio start together and open from the prepared cache', async ({ page }) => {
+  await page.goto('/?mode=public&sceneType=360&storageMode=folder&delivery=direct');
+  await expect(page.locator('#loading')).toBeHidden();
+  await page.evaluate(() => {
+    window.__HARNESS_BEHAVIOR__.getHotspotPhotoDataUri = { delay: 800 };
+    window.__HARNESS_BEHAVIOR__.getHotspotAudioData = { delay: 800 };
+    window.__quiz = { fileId: currentFileId, id: 'quiz-media', label: 'クイズ', description: '問題|答え',
+      markerIcon: 'quiz', photoId: 'quiz-photo', audioId: 'quiz-audio' };
+    scheduleHotspotMediaPrefetch([window.__quiz]);
+  });
+  await expect.poll(() => page.evaluate(() => Object.keys(photoCache).length + Object.keys(hotspotAudioCache).length)).toBe(2);
+  const calls = await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => /^getHotspot(Photo|Audio)/.test(c.method)));
+  expect(calls).toHaveLength(2);
+  expect(Math.abs(calls[0].startedAt - calls[1].startedAt)).toBeLessThan(100);
+  await page.evaluate(() => onMarkerClick({ clientX: 220, clientY: 200 }, window.__quiz));
+  await expect(page.locator('#quiz-modal-overlay .info-popup-photo')).toBeVisible();
+  await expect(page.locator('#quiz-modal-overlay audio')).toHaveAttribute('src', /^data:audio/);
+  expect(await page.locator('#quiz-modal-overlay audio').evaluate(el => el.paused && !el.autoplay)).toBe(true);
+  expect(await page.evaluate(() => window.__HARNESS_CALLS__.filter(c => /^getHotspot(Photo|Audio)/.test(c.method)).length)).toBe(2);
+});

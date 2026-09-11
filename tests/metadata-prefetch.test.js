@@ -15,6 +15,7 @@ function harness() {
     scenePerformanceEnabled: false, sceneDisplayReady: true, isSwitching: false, isEditMode: false,
     currentFileId: 'home', navigator: { connection: {} }, document: { hidden: false },
     readOnly: true, isPublicViewingMode: () => c.readOnly,
+    clearHotspotMediaCache() {},
     Date: { now: () => now }, console,
     setTimeout(fn, ms) { timers.set(++timerId, { fn, at: now + ms }); return timerId; },
     clearTimeout(id) { timers.delete(id); },

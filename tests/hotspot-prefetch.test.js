@@ -6,15 +6,18 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'app.h
 
 function harness(realAudio = false) {
   const requests = [], timers = new Map();
-  let timer = 0;
+  let timer = 0, now = 1000;
   const c = {
     photoCache: {}, photoCacheOrder: [], photoInFlight: {},
     hotspotAudioCache: {}, hotspotAudioCacheOrder: [], hotspotAudioInFlight: {}, hotspotAudioRequestGeneration: 0,
     HOTSPOT_AUDIO_CACHE_LIMIT: 2,
-    hotspotPrefetchEnabled: true, hotspotMediaPrefetchTimer: null, hotspotMediaPrefetchActive: false,
+    mediaWarmupEnabled: false, hotspotMediaCacheExpires: {}, HOTSPOT_MEDIA_CACHE_TTL_MS: 300000,
+    hotspotMediaPrefetchGeneration: 0, hotspotAudioPrefetchTimers: [],
+    hotspotPrefetchEnabled: true, hotspotMediaPrefetchTimer: null, hotspotMediaPrefetchActive: 0,
     sceneLoadGeneration: 1, currentFileId: 'home', isEditMode: false, isSwitching: false,
     sceneDisplayReady: true, isPublicViewingMode: () => true,
     document: { hidden: false }, navigator: { connection: {} },
+    Date: { now: () => now },
     setTimeout(fn, ms) { timers.set(++timer, { fn, ms }); return timer; }, clearTimeout(id) { timers.delete(id); },
     google: { script: { run: { withSuccessHandler(success) { return { withFailureHandler(failure) {
       return { getHotspotPhotoDataUri(request) { requests.push({ request, success, failure }); },
@@ -24,12 +27,15 @@ function harness(realAudio = false) {
   };
   vm.createContext(c);
   const names = ['canPrefetchHotspotContent', 'requestHotspotPhoto', 'scheduleHotspotMediaPrefetch'];
+  for (const name of ['getCachedHotspotMedia', 'clearHotspotMediaCache', 'prepareHotspotMediaForSceneChange', 'clearHotspotAudioCache']) {
+    if (source.includes('function ' + name + '(')) names.push(name);
+  }
   if (realAudio) names.push('normalizeHotspotAudioIdentity', 'getHotspotAudioCacheKey', 'putHotspotAudioCache', 'requestHotspotAudio');
   for (const name of names) {
     const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
     assert.ok(match, `${name} exists`); vm.runInContext(match[0], c);
   }
-  return { c, requests, tick() { const entry = [...timers.entries()].sort((a, b) => a[1].ms - b[1].ms)[0]; assert.ok(entry); timers.delete(entry[0]); entry[1].fn(); } };
+  return { c, requests, advance(ms) { now += ms; }, tick() { const entry = [...timers.entries()].sort((a, b) => a[1].ms - b[1].ms)[0]; assert.ok(entry); timers.delete(entry[0]); entry[1].fn(); } };
 }
 const photo = { fileId: 'home', id: 'photo', photoId: 'p' };
 const audio = { fileId: 'home', id: 'audio', audioId: 'a' };
@@ -116,4 +122,54 @@ test('lost audio reads time out and ignore late duplicate completion', () => {
   assert.equal(settled, 1); assert.equal(Object.keys(c.hotspotAudioCache).length, 0);
   requests[1].success({ success: true, dataUri: 'fresh' });
   assert.equal(c.hotspotAudioCache['home|audio|a'].dataUri, 'fresh');
+});
+
+test('completed and pending attachments survive scene navigation but expire after five minutes', () => {
+  const { c, requests, tick, advance } = harness(true); c.mediaWarmupEnabled = true;
+  c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio);
+  c.sceneLoadGeneration++; c.currentFileId = 'elsewhere';
+  requests[0].success({ success: true, dataUri: 'photo' });
+  requests[1].success({ success: true, dataUri: 'audio' });
+  c.currentFileId = 'home'; c.sceneLoadGeneration++;
+  c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio); tick(); tick();
+  assert.equal(requests.length, 2, 'navigation must not cause duplicate media reads');
+  advance(300001); c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio);
+  assert.equal(requests.length, 4, 'expired attachments are reauthorized');
+});
+
+test('revisiting while a photo or audio is pending joins its original request', () => {
+  const { c, requests } = harness(true); c.mediaWarmupEnabled = true;
+  c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio);
+  c.sceneLoadGeneration += 2;
+  c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio);
+  assert.equal(requests.length, 2);
+});
+
+test('media invalidation discards late responses and pending background candidates', () => {
+  const { c, requests, tick } = harness(true); c.mediaWarmupEnabled = true;
+  c.requestHotspotPhoto(photo); c.requestHotspotAudio(audio);
+  assert.equal(typeof c.clearHotspotMediaCache, 'function');
+  c.clearHotspotMediaCache('home');
+  requests[0].success({ success: true, dataUri: 'old' }); requests[1].success({ success: true, dataUri: 'old' });
+  assert.equal(Object.keys(c.photoCache).length + Object.keys(c.hotspotAudioCache).length, 0);
+  c.scheduleHotspotMediaPrefetch([photo, audio]); c.clearHotspotMediaCache('home');
+  c.requestHotspotPhoto(photo); tick(); // Only the explicit request timeout remains.
+  assert.equal(requests.length, 3);
+});
+
+test('photo and audio idle reads start together, with two global slots across scenes', () => {
+  const { c, requests, tick } = harness(true); c.mediaWarmupEnabled = true;
+  c.scheduleHotspotMediaPrefetch([photo, audio, { ...photo, photoId: 'third' }]); tick();
+  assert.equal(requests.length, 2, 'audio must not wait for the photo response');
+  c.sceneLoadGeneration++; c.currentFileId = 'next';
+  c.scheduleHotspotMediaPrefetch([{ ...photo, fileId: 'next' }]); tick();
+  assert.equal(requests.length, 2, 'scene changes must not exceed the background limit');
+  requests[0].success({ success: true, dataUri: 'photo' }); tick();
+  assert.equal(requests.length, 3);
+});
+
+test('quiz photo/audio participate in bounded idle preparation', () => {
+  const { c, requests, tick } = harness(true); c.mediaWarmupEnabled = true;
+  c.scheduleHotspotMediaPrefetch([{ ...photo, audioId: 'a', markerIcon: 'quiz' }]); tick();
+  assert.equal(requests.length, 2);
 });
